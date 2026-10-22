@@ -289,7 +289,7 @@ describe('onebotSettings remote — W6 白名单扩展（W1/W2 观测/调试 6 �
   it('6 个新键入快照：默认值正确、落在 diagnostics 组、计入 ALL_KEYS', () => {
     const editor = new FakeConfigEditor()
     const snapshot = getSettings(editor, createRevisionState())
-    expect(ALL_KEYS).toHaveLength(29) // W6 19→25、W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）
+    expect(ALL_KEYS).toHaveLength(30) // W6 19→25、W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）
     expect(snapshot.groups.diagnostics).toEqual([...NEW_BOOLEAN_KEYS])
     for (const key of NEW_BOOLEAN_KEYS) {
       expect(snapshot.config[key]).toBe(NEW_DEFAULTS[key])
@@ -383,7 +383,7 @@ describe('onebotSettings remote — W6 失败守卫（configEditor 失败场景�
 describe('onebotSettings remote — W7 workspacePath 白名单扩展（connection 组 26 键）', () => {
   it('workspacePath 入快照：默认值 \'\'、connection 组键序追加、ALL_KEYS 25→26', () => {
     const snapshot = getSettings(new FakeConfigEditor(), createRevisionState())
-    expect(ALL_KEYS).toHaveLength(29) // T2 26→27（newMessagePolicy 入 behavior 组）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）
+    expect(ALL_KEYS).toHaveLength(30) // T2 26→27（newMessagePolicy 入 behavior 组）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）、T10 29→30（reasoningEffort）
     expect(SCHEMA_DEFAULTS.workspacePath).toBe('')
     expect(SETTINGS_GROUPS.connection).toEqual(['mode', 'host', 'port', 'url', 'accessToken', 'botQQ', 'workspacePath'])
     expect(snapshot.groups.connection).toEqual(SETTINGS_GROUPS.connection)
@@ -489,7 +489,7 @@ describe('onebotSettings remote — W7 listWorkspaces（workspace 注册表只�
 describe('onebotSettings remote — P1/T2 newMessagePolicy 白名单扩展（behavior 组 28 键）', () => {
   it('newMessagePolicy 入快照：默认 \'queue\'、behavior 组尾追加、ALL_KEYS 26→27', () => {
     const snapshot = getSettings(new FakeConfigEditor(), createRevisionState())
-    expect(ALL_KEYS).toHaveLength(29) // W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）
+    expect(ALL_KEYS).toHaveLength(30) // W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）
     expect(SCHEMA_DEFAULTS.newMessagePolicy).toBe('queue')
     expect(SETTINGS_GROUPS.behavior).toEqual([
       'interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs',
@@ -532,7 +532,7 @@ describe('onebotSettings remote — P1/T2 newMessagePolicy 白名单扩展（beh
 describe('onebotSettings remote — T9 autoSteerPolicy 白名单扩展（behavior 组 27→28 键，用户裁决 2026-10-12）', () => {
   it('autoSteerPolicy 入快照：默认 \'admin\'、behavior 组尾追加（newMessagePolicy 之后）、ALL_KEYS 27→28', () => {
     const snapshot = getSettings(new FakeConfigEditor(), createRevisionState())
-    expect(ALL_KEYS).toHaveLength(29) // W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）
+    expect(ALL_KEYS).toHaveLength(30) // W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）
     expect(SCHEMA_DEFAULTS.autoSteerPolicy).toBe('admin')
     expect(SETTINGS_GROUPS.behavior).toEqual([
       'interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs',
@@ -572,17 +572,17 @@ describe('onebotSettings remote — T9 autoSteerPolicy 白名单扩展（behavio
   })
 })
 
-describe('onebotSettings remote — T3 deferredTimeoutMs 白名单扩展（behavior 组 28→29 键）', () => {
+describe('onebotSettings remote — T3 deferredTimeoutMs 白名单扩展（behavior 组 28→29 键）后续 T10 reasoningEffort 29→30', () => {
   it('deferredTimeoutMs 入快照：默认 600000、behavior 组尾追加（autoSteerPolicy 之后）、ALL_KEYS 28→29', () => {
     const snapshot = getSettings(new FakeConfigEditor(), createRevisionState())
-    expect(ALL_KEYS).toHaveLength(29) // W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）
+    expect(ALL_KEYS).toHaveLength(30) // W7 25→26（workspacePath）、T2 26→27（newMessagePolicy）、T9 27→28（autoSteerPolicy）、T3 28→29（deferredTimeoutMs）
     expect(SCHEMA_DEFAULTS.deferredTimeoutMs).toBe(600_000)
     expect(SETTINGS_GROUPS.behavior).toEqual([
       'interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs',
     ])
     expect(snapshot.groups.behavior).toEqual(SETTINGS_GROUPS.behavior)
     expect(snapshot.config.deferredTimeoutMs).toBe(600_000)
-    expect(snapshot.effect).toBe('restart') // 与全部 29 键同粒度：热重启生效
+    expect(snapshot.effect).toBe('restart') // 与全部 30 键同粒度：热重启生效
   })
 
   it('deferredTimeoutMs 写入走数字通道（≥0）：合法值进覆盖行并递增 revision；非法值拒写 bad-request 且 edit 零调用', async () => {

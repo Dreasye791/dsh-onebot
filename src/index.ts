@@ -94,6 +94,11 @@ type Context = CordisContext & {
 export const name = 'dsh-onebot'
 export const inject = ['tools', 'systemPrompt', 'agents', 'sessions', 'agentDefaultModel', 'agentPresets', 'sessionPersistence', 'workspaceRegistry', 'commands', 'llm']
 
+/** QQ 通道可选的思考强度档位。'' = 不覆盖，继承宿主 agent-default-model
+ * 的 reasoningEffort（保持 0.9.4 及以前的行为）。其余取值是上游 codebuddy-cli
+ * 适配器 STANDARD_EFFORTS 的合法档位（none 为「关闭思考」的上游拼写）。 */
+export type ReasoningEffort = '' | 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
 /** Plugin configuration (validated by schemastery). */
 export interface Config {
   mode: 'reverse' | 'forward'
@@ -151,6 +156,10 @@ export interface Config {
   fontFiles: string[]
   fontFamilies: string[]
   agentPreset: string
+  /** QQ 通道的思考强度覆盖：留空（默认）=继承宿主 agent-default-model 的
+   * reasoningEffort；非空则本通道创建/恢复的每个 agent 都用该值，不影响
+   * Web/GUI 会话。合法值取自 codebuddy-cli 适配器的 STANDARD_EFFORTS。 */
+  reasoningEffort: ReasoningEffort
   workspacePath: string
   inboundFileMaxBytes: number
   /** @deprecated D4a alias of inboundFileMaxBytes; honored for one release. */
@@ -298,6 +307,8 @@ export const Config: Z<Config> = z.object({
     .description('t2i 渲染器优先使用的字体家族名（覆盖平台默认）'),
   agentPreset: z.string().default('')
     .description('QQ 会话加入的 agent 预设 id；留空用部署默认（settings 的 agent-presets.default，当前为 router-flash）。创建时总是解析有效预设并写入会话 header，Web 界面可见；resume 优先恢复会话自己记录的预设'),
+  reasoningEffort: z.union([z.const(''), z.const('none'), z.const('low'), z.const('medium'), z.const('high'), z.const('xhigh'), z.const('max')]).default('')
+    .description('QQ 通道的思考强度覆盖：留空（默认）=继承宿主 agent-default-model 的 reasoningEffort（即 0.9.4 及以前的行为）；填 none/low/medium/high/xhigh/max 则只影响 QQ 通道创建的会话，Web/GUI 会话不受影响。none = 关闭思考（上游对「不支持关闭」的模型会报错，此时请退到 low）'),
   workspacePath: z.string().default('')
     .description('QQ 会话的工作区目录（写入会话 cwd，并自动归入该工作区，不存在则创建）；留空时使用宿主进程工作目录并在启动时告警提醒（宿主未提供可编程查询的默认工作区），单聊 /workspace 覆盖优先且已持久化到会话映射文件，重启/恢复失败均不丢失'),
   inboundFileMaxBytes: z.number().default(INBOUND_FILE_MAX_BYTES)
@@ -528,6 +539,7 @@ export function apply(ctx: Context, config: Config): void {
       fontFiles: config.fontFiles,
       fontFamilies: config.fontFamilies,
       agentPreset: config.agentPreset,
+      reasoningEffort: config.reasoningEffort,
       workspacePath: config.workspacePath,
       maxInboundFileBytes: config.inboundFileMaxBytes,
       chatIdleEvictDays: config.chatIdleEvictDays,

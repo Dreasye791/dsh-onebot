@@ -196,7 +196,7 @@ export interface RegistryDeps {
   agentPresets: AgentPresetsLike | undefined
   defaultModel: (() => ModelSelection | undefined) | undefined
   /** The only config fields the registry reads. */
-  config: Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes' | 'chatIdleEvictDays'>
+  config: Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes' | 'chatIdleEvictDays' | 'reasoningEffort'>
   log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void
   /** Bridge stop flag (guards the resume loop). */
   isStopping(): boolean
@@ -255,9 +255,22 @@ export class ChatRegistry {
 
   /** C2: default-model wiring shared by the create and resume assembly paths
    * — agent options for the registry call plus the mutable per-agent
-   * selection ref (undefined when the deployment has no default model). */
+   * selection ref (undefined when the deployment has no default model).
+   *
+   * config.reasoningEffort overrides the host default for this channel only:
+   * installModelSelection's agent/request hook strips the inherited effort and
+   * re-applies `selection.assembled.reasoningEffort`, so overriding it on the
+   * selection we hand to installModelSelection is what actually changes the
+   * request — the host's own agent-default-model stays untouched (Web/GUI
+   * sessions keep inheriting it). Empty string keeps the pre-existing
+   * inheritance verbatim. `sameRoute` compares provider/model only, so an
+   * effort-only difference never emits a model-switch notice. */
   private modelWiring(): { agentOptions: { provider?: string; model?: string }; selectionRef: ModelSelectionRef | undefined } {
-    const selection = this.deps.defaultModel?.()
+    const inherited = this.deps.defaultModel?.()
+    const effort = this.deps.config.reasoningEffort
+    const selection = inherited !== undefined && effort !== undefined && effort !== ''
+      ? { ...inherited, reasoningEffort: effort }
+      : inherited
     const agentOptions: { provider?: string; model?: string } = {}
     if (selection !== undefined) {
       agentOptions.provider = selection.provider

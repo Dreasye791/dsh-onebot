@@ -56,10 +56,10 @@ import type { WorkspaceRegistryLike } from './bridge.js'
 export const ENTRY_ID = 'dsh-onebot'
 /** Typert Remote 命名空间 = cordis 服务键（T1 §4）。 */
 export const NAMESPACE = 'onebotSettings'
-/** 快照固定值：29 键均为插件级热重启生效（T1 §5；W1/W2 新增 6 布尔键同粒度）。 */
+/** 快照固定值：30 键均为插件级热重启生效（T1 §5；W1/W2 新增 6 布尔键同粒度）。 */
 export const REMOTE_EFFECT = 'restart'
 
-/** 设置页 UI 四组 29 键（T1 §4 + T9 autoSteerPolicy + T3 deferredTimeoutMs；与 src/index.ts Config schema 一一对应）。
+/** 设置页 UI 四组 30 键（T1 §4 + T9 autoSteerPolicy + T3 deferredTimeoutMs + T10 reasoningEffort；与 src/index.ts Config schema 一一对应）。
  *  W6：permissions/behavior 三组 19 键保持不动，W1/W2 的 6 个布尔键独立成
  *  「diagnostics（诊断）」组——它们全部默认关（除 actionAuditEnabled 默认开）、
  *  属观测/调试面，与连接权限行为组的使用频率与风险等级都不同，独立分组让
@@ -69,7 +69,7 @@ export const REMOTE_EFFECT = 'restart'
 export const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>> = {
   connection: ['mode', 'host', 'port', 'url', 'accessToken', 'botQQ', 'workspacePath'],
   permissions: ['requireMention', 'adminUsers', 'dmPolicy', 'groupPolicy', 'allowAllUsers', 'allowFrom', 'groupAllowFrom'],
-  behavior: ['interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs'],
+  behavior: ['interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'reasoningEffort'],
   diagnostics: ['actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun'],
 }
 
@@ -102,6 +102,8 @@ export const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>> = {
   autoSteerPolicy: 'admin',
   // T3 (P2)：等待模型回复超时阈值（毫秒；0=关闭超时补发）。
   deferredTimeoutMs: 600_000,
+  // 思考强度覆盖（src/index.ts:310 默认 ''=继承宿主 agent-default-model）。
+  reasoningEffort: '',
   // W6：W1/W2 可观测/调试布尔键（schema 默认值摘自 src/index.ts:297-317）。
   actionAuditEnabled: true,
   traceEnabled: false,
@@ -123,6 +125,8 @@ const ENUM_KEYS: Readonly<Record<string, readonly string[]>> = {
   newMessagePolicy: ['queue', 'steer'],
   // T9-B (用户裁决 2026-10-12)：admin=仅管理员（默认）；all=不限。
   autoSteerPolicy: ['admin', 'all'],
+  // 思考强度覆盖：''=继承宿主 agent-default-model（默认）；其余档位只影响 QQ 通道。
+  reasoningEffort: ['', 'none', 'low', 'medium', 'high', 'xhigh', 'max'],
 }
 const NUMBER_KEYS: readonly string[] = ['port', 'interimRecallMs', 'rateLimitPerMinute', 'deferredTimeoutMs']
 /** 数字键取值范围（评审 B4：port 1–65535、时长/频控 ≥0；越界在 Remote 层拒绝，不再只依赖宿主回滚兜底）。 */
@@ -142,7 +146,7 @@ const BOOLEAN_KEYS: readonly string[] = [
 ]
 const STRING_KEYS: readonly string[] = ['host', 'url', 'accessToken', 'botQQ', 'workspacePath']
 const STRING_ARRAY_KEYS: readonly string[] = ['adminUsers', 'allowFrom', 'groupAllowFrom']
-/** 全部 29 键（校验与快照的唯一键集；6 枚举 + 4 数字 + 11 布尔 + 5 字符串 + 3 字符串数组）。 */
+/** 全部 30 键（校验与快照的唯一键集；7 枚举 + 4 数字 + 11 布尔 + 5 字符串 + 3 字符串数组）。 */
 export const ALL_KEYS: readonly string[] = [
   ...Object.keys(ENUM_KEYS), ...NUMBER_KEYS, ...BOOLEAN_KEYS, ...STRING_KEYS, ...STRING_ARRAY_KEYS,
 ]

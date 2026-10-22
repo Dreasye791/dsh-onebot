@@ -87,6 +87,9 @@ export interface BridgeConfig {
   fontFiles: readonly string[]
   fontFamilies: readonly string[]
   agentPreset: string
+  /** QQ 通道的思考强度覆盖：''/缺省 = 继承宿主 agent-default-model（0.9.4 及
+   * 以前的行为）；非空 = 本通道 agent 的 reasoningEffort，Web/GUI 会话不受影响。 */
+  reasoningEffort?: string
   workspacePath: string
   /** Max inbound file bytes fetched via QQ direct link / base64 (0 = no cap). */
   maxInboundFileBytes: number

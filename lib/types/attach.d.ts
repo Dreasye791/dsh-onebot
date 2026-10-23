@@ -23,6 +23,20 @@ export interface AttachPolicy {
     maxImageBytes: number;
     /** 插件账本累计字节软上限（MB）；超过后新图只给路径。0 = 不限。 */
     budgetBytes: number;
+    /**
+     * 账本回收窗口（毫秒，T18）；<=0 = 不回收（旧行为：记账只增不减）。
+     *
+     * 超过该窗口未再被投递的对象会从**记账**里移出，把 `budgetBytes` 的占用
+     * 还回去；只改记账、不删任何文件——磁盘回收仍由宿主的清理策略负责。
+     */
+    retentionMs: number;
+    /**
+     * 单张图片交给宿主落盘的超时（毫秒，T18）；<=0 = 不超时。
+     *
+     * 投递临界区按 `mediaDir` 全局串行，一次卡住的宿主写盘会堵住所有会话的
+     * 图片投递，因此默认给一个有限的等待上限而非无限等。
+     */
+    saveTimeoutMs: number;
 }
 /** 账本里的一条记录：哪些对象是插件贡献的。 */
 export interface LedgerEntry {
@@ -68,6 +82,8 @@ export interface StorageStats {
     budgetBytes: number;
     /** 是否已达软上限（不再投递新图）。 */
     budgetExhausted: boolean;
+    /** 账本回收窗口（毫秒，T18）；0 = 未启用（记账只增不减）。 */
+    retentionMs: number;
 }
 /** 递归统计一个目录：字节数与文件数。目录不存在时返回 0/0。 */
 export declare function dirUsage(dir: string): {
@@ -104,6 +120,20 @@ export declare function recordContribution(ledger: AttachLedger, ref: {
     attachmentId?: unknown;
     bytes?: unknown;
 }, now: number): boolean;
+/**
+ * 把长期未被再引用的对象移出账本（T18）。
+ *
+ * 过期判据取 `lastSeenAt`（重复引用的图不该过期），退回 `firstSeenAt`。
+ * **只改记账、不删文件**——磁盘对象属于宿主附件库，插件无权处置别人的数据。
+ * @param ledger - 就地更新的账本。
+ * @param now - 当前时间戳（毫秒）。
+ * @param retentionMs - 回收窗口（毫秒）；<=0 = 不回收，直接返回 0。
+ * @returns 被移出的条目数与释放的字节数。
+ */
+export declare function pruneLedger(ledger: AttachLedger, now: number, retentionMs: number): {
+    pruned: number;
+    freedBytes: number;
+};
 /** 汇总容量统计（供 /storage 与 qq_storage_stats 使用）。 */
 export declare function storageStats(mediaDir: string, attachmentsDir: string, policy: AttachPolicy): StorageStats;
 /** 投递结果：成功给出宿主引用，失败给出可观测原因（不抛，掉回文本路径）。 */
@@ -132,13 +162,16 @@ export declare const MIB: number;
  *
  * 边界处理：非正数（含负数、NaN）的字节上限统一按 0（不限）处理——配置写错
  * 成 -1 时若当上限用，会让**所有**图片都被拒，那比放开更糟。
- * @param config - 三项配置（enabled 直接取用；两个上限已是字节单位）。
+ * @param config - 五项配置（enabled 直接取用；两个上限已是字节单位；
+ *   `retentionMs` / `saveTimeoutMs` 为毫秒，<=0 = 关闭该机制）。
  * @returns 归一化后的策略。
  */
 export declare function resolveAttachPolicy(config: {
     enabled: boolean;
     maxImageBytes: number;
     budgetBytes: number;
+    retentionMs?: number;
+    saveTimeoutMs?: number;
 }): AttachPolicy;
 /**
  * 把一张已经落盘的图片投递成宿主附件引用（T15 的「真图片块」来源）。
@@ -158,5 +191,7 @@ export declare function resolveAttachPolicy(config: {
 export declare function deliverImage(attachments: unknown, path: string, policy: AttachPolicy, mediaDir: string): Promise<AttachResult>;
 /** 人类可读字节数（与 health.ts 的 formatBytes 同口径，避免跨模块耦合重复导入）。 */
 export declare function humanBytes(size: number): string;
+/** 人类可读时长（天/小时/分钟/毫秒，T18）；用于渲染账本回收窗口。 */
+export declare function humanDuration(ms: number): string;
 /** 把统计快照渲染成一段中文多行文本（/storage 与工具共用）。 */
 export declare function formatStorageStats(stats: StorageStats): string;

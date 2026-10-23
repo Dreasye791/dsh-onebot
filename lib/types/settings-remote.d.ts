@@ -50,9 +50,9 @@ import type { WorkspaceRegistryLike } from './bridge.js';
 export declare const ENTRY_ID = "dsh-onebot";
 /** Typert Remote 命名空间 = cordis 服务键（T1 §4）。 */
 export declare const NAMESPACE = "onebotSettings";
-/** 快照固定值：35 键均为插件级热重启生效（T1 §5；W1/W2 新增 6 布尔键同粒度）。 */
+/** 快照固定值：37 键均为插件级热重启生效（T1 §5；W1/W2 新增 6 布尔键同粒度）。 */
 export declare const REMOTE_EFFECT = "restart";
-/** 设置页 UI 四组 35 键（T1 §4 + T9 autoSteerPolicy + T3 deferredTimeoutMs + T10 reasoningEffort + T11 persona；与 src/index.ts Config schema 一一对应）。
+/** 设置页 UI 四组 37 键（T1 §4 + T9 autoSteerPolicy + T3 deferredTimeoutMs + T10 reasoningEffort + T11 persona；与 src/index.ts Config schema 一一对应）。
  *  W6：permissions/behavior 三组 19 键保持不动，W1/W2 的 6 个布尔键独立成
  *  「diagnostics（诊断）」组——它们全部默认关（除 actionAuditEnabled 默认开）、
  *  属观测/调试面，与连接权限行为组的使用频率与风险等级都不同，独立分组让
@@ -68,7 +68,7 @@ export declare const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>
 export declare const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>>;
 /** 快照返回侧脱敏的键（T1 §3 敏感字段行；写入侧明文落盘属宿主既有行为）。 */
 export declare const SECRET_KEYS: readonly string[];
-/** 全部 35 键（校验与快照的唯一键集；7 枚举 + 6 数字 + 12 布尔 + 7 字符串 + 3 字符串数组）。 */
+/** 全部 37 键（校验与快照的唯一键集；7 枚举 + 8 数字 + 12 布尔 + 7 字符串 + 3 字符串数组）。 */
 export declare const ALL_KEYS: readonly string[];
 /** OnebotSettingsSnapshot（T1 §3 快照结构）。 */
 export interface OnebotSettingsSnapshot {
@@ -76,7 +76,7 @@ export interface OnebotSettingsSnapshot {
     revision: number;
     /** dsh-onebot 条目 fiber 是否 active（fiber.state === 2，同 configEditor.edit 的活性判据）。 */
     entryActive: boolean;
-    /** 35 键生效值；accessToken 脱敏为 ''。 */
+    /** 37 键生效值；accessToken 脱敏为 ''。 */
     config: Record<string, unknown>;
     /** 脱敏键标记：明文是否已配置。 */
     secrets: Array<{
@@ -164,7 +164,7 @@ export interface ReasoningEffortsResult {
 /** T17：查询「当前默认模型实际支持哪些思考档位」（纯函数，绝不抛错）。
  *  失败（服务缺席/无默认模型/无 reasoning 元数据/抛错）统一归一为 available=false。 */
 export declare function listReasoningEfforts(llm: LlmRuntimeLike | undefined, defaultModel: DefaultModelLike | undefined, signal?: AbortSignal): Promise<ReasoningEffortsResult>;
-/** 35 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
+/** 37 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
 export declare function effectiveConfig(raw: Record<string, unknown>): Record<string, unknown>;
 /** updateSettings 入参校验（T1 §4：32 键的任意子集，扁平 JSON）。未知键整单
  *  拒绝（不静默丢弃）；类型/枚举不符拒绝；具体取值合法性交由宿主 schemastery

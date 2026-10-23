@@ -419,8 +419,6 @@ export declare class ChatBridge {
      * 三道闸门（单图大小 / 总预算 / 宿主能力）在 attach.deliverImage 里，这里只
      * 接线「运行时取到的服务」与「配置解析出的策略」；异常一律吞掉记 debug。 */
     private deliverInboundImage;
-    /** T15：取走该聊天待投递的图片附件引用（取走即清空，避免跨轮重复投递）。 */
-    private takePendingAttachments;
     /** M3-D4c: steer a completed voice transcript into the chat's agent — the
      * running turn consumes it at its nearest step boundary; an idle agent
      * opens a turn. No live chat (dispatch dropped/never happened) drops it. */

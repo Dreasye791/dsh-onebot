@@ -25,8 +25,17 @@ export interface AttachPolicy {
   enabled: boolean
   /** 单张图片字节上限；超过则不走附件投递（避免一张巨图吃掉配额）。0 = 不限。 */
   maxImageBytes: number
-  /** 插件账本累计字节软上限（MB）；超过后新图只给路径。0 = 不限。 */
+  /** 插件账本累计字节软上限（字节）；超过后新图只给路径。0 = 不限。 */
   budgetBytes: number
+  /** 账本回收窗口（字节时间，毫秒）：`lastSeenAt` 早于 now-该值的条目在下次
+   *  投递前被移出账本，从而把软上限占用还回去。0 = 不回收（只增不减）。
+   *  注意它只影响本插件的预算记账，**不删宿主附件库里的任何文件**——
+   *  宿主对象由宿主自己的清理策略回收（`MediaStore.cleanupExpired` 之类）。 */
+  retentionMs: number
+  /** 单次投递的宿主写盘超时（毫秒）：超过即放弃本次投递并退回路径文本。
+   *  0 = 不超时。存在的理由见 `withLedgerLock` 的说明：临界区里包含一次
+   *  无超时的宿主调用，卡住就会堵死所有会话的图片投递。 */
+  saveTimeoutMs: number
 }
 
 /** 账本里的一条记录：哪些对象是插件贡献的。 */
@@ -75,6 +84,8 @@ export interface StorageStats {
   budgetBytes: number
   /** 是否已达软上限（不再投递新图）。 */
   budgetExhausted: boolean
+  /** 账本回收窗口（毫秒）；0 = 不回收（只增不减）。 */
+  retentionMs: number
 }
 
 const LEDGER_FILE = 'attachment-ledger.json'
@@ -214,6 +225,40 @@ export function recordContribution(
   return false
 }
 
+/**
+ * 从账本里移出过期条目，返回被释放的字节数（就地更新，调用方负责落盘）。
+ *
+ * 存在的理由：`withinBudget` 只看「累计已用 < 上限」，而账本只增不减 ——
+ * 软上限一旦用满，即使宿主附件库被清空、磁盘上一个对象都不剩，本插件仍然
+ * 永久拒绝新图（只能手删账本 JSON 才能恢复，而文档里没有这个入口）。
+ *
+ * 语义边界（必须说清，否则容易被误读成删除文件）：
+ * - 只改本插件的预算记账，**不删** `<mediaDir>` 与宿主附件库里的任何文件；
+ * - 被移出的对象若日后再次投递，宿主按内容寻址命中同一 attachmentId，
+ *   会作为新条目重新记账（bytes 与当时一致，不会重复占用磁盘）；
+ * - `retentionMs <= 0` 表示不回收（保持旧行为：只增不减）。
+ * @param ledger - 就地更新的账本。
+ * @param now - 当前时间戳（毫秒）。
+ * @param retentionMs - 回收窗口（毫秒）；<=0 = 不回收。
+ * @returns 被移出的条目数与释放的字节数。
+ */
+export function pruneLedger(ledger: AttachLedger, now: number, retentionMs: number): { pruned: number; freedBytes: number } {
+  if (!Number.isFinite(retentionMs) || retentionMs <= 0) return { pruned: 0, freedBytes: 0 }
+  const cutoff = now - retentionMs
+  let pruned = 0
+  let freedBytes = 0
+  for (const [id, entry] of Object.entries(ledger.entries)) {
+    // 用 lastSeenAt 而不是 firstSeenAt：一张图只要还在被重复引用（去重命中），
+    // 就不该过期；只有真正长期没再出现的对象才让出配额。
+    const last = entry.lastSeenAt > 0 ? entry.lastSeenAt : entry.firstSeenAt
+    if (last >= cutoff) continue
+    delete ledger.entries[id]
+    pruned += 1
+    freedBytes += entry.bytes
+  }
+  return { pruned, freedBytes }
+}
+
 /** 汇总容量统计（供 /storage 命令使用）。 */
 export function storageStats(mediaDir: string, attachmentsDir: string, policy: AttachPolicy): StorageStats {
   const media = dirUsage(mediaDir)
@@ -238,6 +283,7 @@ export function storageStats(mediaDir: string, attachmentsDir: string, policy: A
     ledgerDedupHits: dedupHits,
     budgetBytes: policy.budgetBytes,
     budgetExhausted: policy.budgetBytes > 0 && bytes >= policy.budgetBytes,
+    retentionMs: policy.retentionMs,
   }
 }
 
@@ -302,20 +348,27 @@ export const MIB = 1024 * 1024
  *
  * 边界处理：非正数（含负数、NaN）的字节上限统一按 0（不限）处理——配置写错
  * 成 -1 时若当上限用，会让**所有**图片都被拒，那比放开更糟。
- * @param config - 三项配置（enabled 直接取用；两个上限已是字节单位）。
+ * @param config - 五项配置（enabled 直接取用；两个上限已是字节单位；
+ *   retentionMs / saveTimeoutMs 为毫秒，<=0 = 关闭该机制）。
  * @returns 归一化后的策略。
  */
 export function resolveAttachPolicy(config: {
   enabled: boolean
   maxImageBytes: number
   budgetBytes: number
+  retentionMs?: number
+  saveTimeoutMs?: number
 }): AttachPolicy {
   const max = Number.isFinite(config.maxImageBytes) ? config.maxImageBytes : 0
   const budget = Number.isFinite(config.budgetBytes) ? config.budgetBytes : 0
+  const retention = Number.isFinite(config.retentionMs) ? config.retentionMs as number : 0
+  const saveTimeout = Number.isFinite(config.saveTimeoutMs) ? config.saveTimeoutMs as number : 0
   return {
     enabled: config.enabled,
     maxImageBytes: max > 0 ? Math.round(max) : 0,
     budgetBytes: budget > 0 ? Math.round(budget) : 0,
+    retentionMs: retention > 0 ? Math.round(retention) : 0,
+    saveTimeoutMs: saveTimeout > 0 ? Math.round(saveTimeout) : 0,
   }
 }
 
@@ -367,14 +420,24 @@ export async function deliverImage(
   // 账本永久少记对象。串行化后每张图看到的都是前一张已记账后的账本。
   return await withLedgerLock(mediaDir, async () => {
     const ledger = readLedger(mediaDir)
+    // 先回收过期条目再判预算：否则「只增不减」会让软上限一旦用满就永久锁死
+    // （即使宿主侧对象早被清掉）。回收只改本插件的记账，不删任何文件。
+    const now = Date.now()
+    const pruned = pruneLedger(ledger, now, policy.retentionMs)
+    if (pruned.pruned > 0) {
+      writeLedger(mediaDir, ledger)
+    }
     if (!withinBudget(ledger, policy)) return { skipped: 'budget' }
     let refs: ImageAttachmentRef[]
     try {
-      refs = await host.saveImages([{
+      // 宿主写盘走超时闸：临界区是全 mediaDir 串行的，一次卡死会让**所有**
+      // 会话的图片投递排队等候。超时后放弃本次投递（退回路径文本），
+      // 不阻塞后续消息。
+      refs = await withTimeout(host.saveImages([{
         data: new Uint8Array(data),
         mediaType,
         name: path.slice(Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/')) + 1),
-      }])
+      }]), policy.saveTimeoutMs, 'host.saveImages')
     } catch {
       return { skipped: 'save-failed' }
     }
@@ -389,6 +452,33 @@ export async function deliverImage(
     writeLedger(mediaDir, ledger)
     return { ref, dedupHit }
   })
+}
+
+/**
+ * 给任意 Promise 加一个超时闸：超时即抛错（调用方按「本次投递失败」处理）。
+ *
+ * 为什么必须自己造而不用 `AbortSignal.timeout`：宿主的 `saveImages` 不接受
+ * signal（其入参只有 `{data, mediaType, name}`），只能从外面放弃等待。
+ * 放弃等待不会取消宿主已经开始的写盘，但能让**临界区**及时释放——那是本
+ * 函数唯一的目标（避免一个卡住的写盘堵死所有会话的图片投递）。
+ * 计时器在 finally 里清掉，不留悬挂句柄（否则进程退出会被拖住）。
+ * @param promise - 要加超时的 Promise。
+ * @param timeoutMs - 超时毫秒数；<=0 或非有限值 = 不超时。
+ * @param label - 超时错误里的操作名（便于定位）。
+ */
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return await promise
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => { reject(new Error(label + ' 超时（' + timeoutMs + 'ms）')) }, timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
 }
 
 /**
@@ -415,12 +505,16 @@ async function withLedgerLock<T>(mediaDir: string, task: () => Promise<T>): Prom
   // 用 then(task, task) 保证前一个任务即使失败也不会卡死整条队列。
   const run = previous.then(task, task)
   // 队列尾只关心「这一轮结束了」，不关心成败，否则会把拒因传播给后续任务。
-  ledgerLocks.set(mediaDir, run.then(() => undefined, () => undefined))
+  const tail = run.then(() => undefined, () => undefined)
+  ledgerLocks.set(mediaDir, tail)
   try {
     return await run
   } finally {
-    // 尾任务结束且没有新任务接上时回收键，避免 mediaDir 无界增长。
-    if (ledgerLocks.get(mediaDir) === undefined) ledgerLocks.delete(mediaDir)
+    // 只有「本任务仍是队尾」时才回收键，避免 mediaDir 无界增长；若期间已有
+    // 新任务接上（`ledgerLocks.get(...)` 已指向别人的 tail），保持不动。
+    // 注意判据必须是 tail 同一性 —— 早前用 `get(...) === undefined` 恒为假，
+    // 键永远不会被回收（无界增长），是实实在在的死代码。
+    if (ledgerLocks.get(mediaDir) === tail) ledgerLocks.delete(mediaDir)
   }
 }
 
@@ -440,6 +534,27 @@ export function humanBytes(size: number): string {
   return (unit === 0 ? String(Math.round(value)) : value.toFixed(1)) + ' ' + units[unit]
 }
 
+/** 人类可读的时长（毫秒 → 天/小时/分钟），供 /storage 的回收窗口显示。 */
+export function humanDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return '0'
+  const day = 24 * 60 * 60 * 1000
+  const hour = 60 * 60 * 1000
+  const minute = 60 * 1000
+  if (ms >= day) {
+    const days = ms / day
+    return (Number.isInteger(days) ? String(days) : days.toFixed(1)) + ' 天'
+  }
+  if (ms >= hour) {
+    const hours = ms / hour
+    return (Number.isInteger(hours) ? String(hours) : hours.toFixed(1)) + ' 小时'
+  }
+  if (ms >= minute) {
+    const minutes = ms / minute
+    return (Number.isInteger(minutes) ? String(minutes) : minutes.toFixed(1)) + ' 分钟'
+  }
+  return String(Math.round(ms)) + ' 毫秒'
+}
+
 /** 把统计快照渲染成一段中文多行文本（/storage 与工具共用）。 */
 export function formatStorageStats(stats: StorageStats): string {
   const lines = [
@@ -457,5 +572,10 @@ export function formatStorageStats(stats: StorageStats): string {
   } else {
     lines.push('软上限：未设置（attachmentBudgetMB=0，不限制）')
   }
+  // 回收窗口必须显示：用户看到「已达上限」时要能知道多久会自动让出配额，
+  // 以及为什么磁盘上的宿主对象还在（本插件只记账、不删文件）。
+  lines.push(stats.retentionMs > 0
+    ? '账本回收：' + humanDuration(stats.retentionMs) + ' 内未再出现的对象自动移出记账（不删文件）'
+    : '账本回收：未启用（attachmentRetentionMB=0，记账只增不减）')
   return lines.join('\n')
 }

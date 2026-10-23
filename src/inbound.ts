@@ -157,12 +157,20 @@ export interface InboundContext {
    * nickname (T9-A): pre-sanitized sender display name for the /steer
    * <user_message> boundary attribute. */
   tryHandleCommand(chatId: ChatId, text: string, userId: string, nickname?: string): Promise<boolean>
-  /** Message body assembly (bridge facade: overridable, see the pipeline-order test). */
-  buildBody(text: string, media: MediaRef[], chatId: ChatId): Promise<string>
+  /** Message body assembly (bridge facade: overridable, see the pipeline-order test).
+   *
+   * `images` (T15)：本轮消息已投递成功的图片引用收集器。由调用方按消息新建、
+   * 随消息一路传到 dispatch——**不能**挂在 per-chat settings 上，那样同 chat
+   * 并发入站（handleInbound 是 fire-and-forget）会互相取走对方的图。 */
+  buildBody(text: string, media: MediaRef[], chatId: ChatId, images?: ImageAttachmentRef[]): Promise<string>
   /** Quote (reply) expansion (bridge facade: overridable, see the pipeline-order test). */
   expandQuote(messageId: string): Promise<string>
   /** Turn dispatch — bridge-owned orchestration (ensureChat + per-turn prefixes). */
-  dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string): Promise<void>
+  /** Turn dispatch — bridge-owned orchestration (ensureChat + per-turn prefixes).
+   *
+   * `images` (T15)：本条消息的图片引用，按出现顺序。显式随调用链传递，不再
+   * 走 per-chat 的可变数组（见 buildBody 的说明）。 */
+  dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string, images?: ImageAttachmentRef[]): Promise<void>
   /** T15: 把一张已落盘的入站图片投递给宿主附件库，换回一个不变量引用（用于
    * content 里的 image 块）。返回 undefined = 未投递（未启用/超限/宿主不支持），
    * 调用方退回 `[图片:<路径>]` 文本注解。可选：测试装配可省略（等于关闭投递）。 */
@@ -176,7 +184,7 @@ export interface InboundContext {
    * carries no media, no quote and no forward (steer eligibility precondition:
    * media-bearing messages always queue, never steer). Optional: absent =
    * the pre-T2 pipeline (0.8.1 behavior for every message). */
-  interceptBusyTurn?(chatId: ChatId, text: string, role: UserRole, nickname: string | undefined, plain: boolean): Promise<boolean>
+  interceptBusyTurn?(chatId: ChatId, text: string, role: UserRole, nickname: string | undefined, plain: boolean, images?: ImageAttachmentRef[]): Promise<boolean>
   /** Outbound facade (the B7 rate-limit notice). */
   sendToChat(chatId: ChatId, text: string): Promise<string[]>
   /** Bridge log line callback. */
@@ -312,15 +320,14 @@ export class InboundPipeline {
       return
     }
 
-    // T15：每条入站消息的待投递附件集合必须自成一体。`buildBody` 一旦成功
-    // 投递就把引用压入 `pendingAttachments` 并返回 `[图片]`，而限流/空内容/
-    // busy 拦截都在它之后早退——若这些分支不清空，上一轮被丢弃消息的图片会
-    // 被下一条**无关**消息当作 image 块投给模型（模型莫名其妙重看旧图）。
-    // 进入前先清掉历史残留，保证本轮只含本轮消息的图。
-    const settings = this.ctx.getSettings(chatId)
-    settings.pendingAttachments = undefined
-
-    const body = await this.ctx.buildBody(inbound.text, inbound.media, chatId)
+    // T15：本条消息的图片引用集合，**局部**于本次 processInbound 调用。
+    // 之前它挂在 per-chat settings 上（settings.pendingAttachments），而同 chat
+    // 的入站是 fire-and-forget 并发的：A 消息的图会被 B 消息的 dispatch 取走
+    // （串图），或 B 进入时清空把 A 尚未消费的图丢掉（丢图）。改成随消息显式
+    // 传递后，两条消息各持一份，互不影响——各早退分支也不再需要「清空」这个
+    // 补救动作，因为它们手里的数组随栈帧一起消失。
+    const images: ImageAttachmentRef[] = []
+    const body = await this.ctx.buildBody(inbound.text, inbound.media, chatId, images)
 
     let quote = ''
     if (inbound.replyId !== undefined) {
@@ -336,16 +343,13 @@ export class InboundPipeline {
         // the pre-routing /ocr ref so a direct image in the same message
         // stays the /ocr target.
         const pending = this.ctx.getSettings(chatId).pendingImageRef
-        forward = await this.ctx.buildBody(expansion.text, expansion.media, chatId)
+        forward = await this.ctx.buildBody(expansion.text, expansion.media, chatId, images)
         this.ctx.getSettings(chatId).pendingImageRef = pending
       }
     }
 
     const isAdmin = classifyUserRole(userId, policy.adminUsers) === 'admin'
     if (this.rateLimited(chatId)) {
-      // 早退必须清空本轮的待投递附件：图已落进宿主附件库（空间已花掉），
-      // 但这条消息不会被 dispatch，引用若留下会被下一条无关消息带走。
-      this.ctx.getSettings(chatId).pendingAttachments = undefined
       return
     }
 
@@ -357,7 +361,6 @@ export class InboundPipeline {
     const content = [forward, quote, body].filter(part => part !== '').join('\n')
     if (content.trim() === '') {
       // pipeline-hooks.md #17: this drop used to be fully silent.
-      this.ctx.getSettings(chatId).pendingAttachments = undefined
       this.ctx.log('debug', '消息展开后无有效文本内容，已丢弃: ' + chatId)
       currentTrace()?.emit('dispatch', { ok: false, reason: TRACE_REASONS.inboundEmptyContent })
       return
@@ -379,15 +382,13 @@ export class InboundPipeline {
     // turn). Seam absent = pre-T2 behavior (straight dispatch).
     const plain = inbound.media.length === 0 && inbound.replyId === undefined && inbound.forwardId === undefined
     if (this.ctx.interceptBusyTurn !== undefined
-      && await this.ctx.interceptBusyTurn(chatId, final, role, nickname, plain)) {
-      // busy 分支内部两条路径的附件归属都成立：steer 只可能发生在 plain=true
-      // （即无媒体的消息）上，本来就无图；排队路径已由 interceptBusyTurn 内的
-      // dispatchFollowup 消费掉本轮的附件。这里的清空仅是防御性兜底，防止将来
-      // 该 seam 新增早退分支时把引用留给下一条无关消息。
-      this.ctx.getSettings(chatId).pendingAttachments = undefined
+      && await this.ctx.interceptBusyTurn(chatId, final, role, nickname, plain, images)) {
+      // 两条路径的图片归属都在 seam 内部处理（steer 只可能发生在 plain=true，
+      // 即无媒体的消息上，本就没有图；排队路径把 images 一起交给它自己的
+      // dispatch）。**这里不再需要清空**——images 是本次调用的局部数组。
       return
     }
-    await this.ctx.dispatchFollowup(chatId, final, role, nickname)
+    await this.ctx.dispatchFollowup(chatId, final, role, nickname, images)
   }
 
   /** W2-②: (chatId, message_id) sliding-window dedup against OneBot
@@ -460,20 +461,31 @@ export class InboundPipeline {
     text: string,
     media: MediaRef[],
     chatId: ChatId,
+    images?: ImageAttachmentRef[],
   ): Promise<string> {
     if (media.length === 0) return text
     let out = text
+    // 游标而不是每轮 `out.indexOf(placeholder)` 从头找：同一段文本里多张图片
+    // 会共用同一个占位符 `[图片]`（placeholderFor 只按 kind 区分，不含序号），
+    // 从头找会让每一轮都命中**第一个**仍在的占位符——前一张成功投递后其占位
+    // 符已被 annotation 替换，但若某张失败（annotation 为空、占位符原样保留），
+    // 后续图就会把 annotation 写到那张失败图的位置上，导致文本顺序与 image
+    // 块顺序相反。游标保证「处理顺序 = 占位符出现顺序」，两者恒定一致。
+    let searchFrom = 0
     for (const ref of media) {
       const placeholder = placeholderFor(ref)
-      const idx = out.indexOf(placeholder)
-      const annotation = await this.resolveMediaRef(ref, chatId, true)
+      const idx = out.indexOf(placeholder, searchFrom)
+      const annotation = await this.resolveMediaRef(ref, chatId, true, images)
       if (idx >= 0 && annotation !== '') {
         out = out.slice(0, idx) + annotation + out.slice(idx + placeholder.length)
+        searchFrom = idx + annotation.length
       } else if (idx >= 0) {
         // pipeline-hooks.md #10: a failed resolution used to leave the
         // placeholder silently unresolved.
         this.ctx.log('debug', '媒体解析失败，占位符保留原文: ' + placeholder)
         currentTrace()?.emit('media', { ok: false, reason: TRACE_REASONS.mediaResolveFailed })
+        // 占位符原样留着，游标跳过它，否则下一张图会命中同一个位置。
+        searchFrom = idx + placeholder.length
       }
     }
     return out
@@ -485,7 +497,7 @@ export class InboundPipeline {
    * `settings.pendingAttachments`、注解降级为 `[图片]`（像素已随 image 块送达，
    * 再重复一遍路径只会浪费 token）；未投递则保持 `[图片:<路径>]` 原样。命令
    * 路由（/ocr 等）取注解时传 false，只关心路径、不必付附件投递的代价。 */
-  async resolveMediaRef(ref: MediaRef, chatId: ChatId, attach = false): Promise<string> {
+  async resolveMediaRef(ref: MediaRef, chatId: ChatId, attach = false, images?: ImageAttachmentRef[]): Promise<string> {
     if (ref.kind === 'file') {
       return await this.resolveNasFile(ref)
     }
@@ -518,8 +530,9 @@ export class InboundPipeline {
             currentTrace()?.emit('media', { ok: false, reason: '附件投递异常: ' + describeError(error) })
           }
           if (delivered !== undefined) {
-            const queued = settings.pendingAttachments ?? (settings.pendingAttachments = [])
-            queued.push(delivered)
+            // 收集器由调用方按消息新建（见 processInbound 里的 images）；
+            // 缺席时（命令路由 /ocr 等传 attach=false）这条分支不会走到。
+            images?.push(delivered)
             return '[图片]'
           }
         }

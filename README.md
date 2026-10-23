@@ -202,6 +202,8 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `attachInboundImages` | `true` | 入站图片投递（T15）：把落盘的入站图片交给宿主附件库，作为真正的 `image` 块进入消息 content，模型能直接看图；`false` = 退回旧行为（只在文本里给 `[图片:<路径>]`，模型得自己读文件）。投递受宿主附件服务可用性与下方两个上限约束，任一环节不满足就自动回退成文本，不影响回复 |
 | `attachMaxImageMB` | `10` | 单张图片投递上限（MB，T15）：超过该大小的图不投递给模型，退回 `[图片:<路径>]` 文本注解（模型仍可自行读文件），避免一张巨图吃掉配额；`0` = 不限 |
 | `attachmentBudgetMB` | `500` | 附件库软上限（MB，T15）：本插件账本累计占用达到该值后，**新的入站图片不再投递**（退回路径文本），`/storage` 以该值为分母给百分比并标出「已达上限」；**不自动删除**附件（附件库由宿主统一管理、跨插件共享，插件不擅自清理别人的东西）。`0` = 不限（只统计） |
+| `attachmentRetentionHours` | `0` | 账本回收窗口（小时，T18）：超过该时长未再被投递的附件对象会从本插件的**预算记账**里移出，把 `attachmentBudgetMB` 的占用还回去；`0` = 不回收（旧行为：记账只增不减，软上限用满后永久降级）。**只改记账、不删任何文件**——`mediaDir` 与宿主附件库里的对象仍由宿主的清理策略回收，本插件不动别人的数据。设了软上限又担心用满后一直收不了新图时打开它，如 `72` |
+| `attachmentSaveTimeoutMs` | `15000` | 单张入站图片交给宿主落盘的超时（毫秒，T18）：超时即放弃本次投递、退回路径文本。投递临界区按 `mediaDir` 全局串行，一次卡住的宿主写盘会堵住**所有会话**的图片投递，因此默认 15 秒；`0` = 不超时 |
 | `outboundImageMaxBytes` | `8388608` | 出站图片大小上限（字节）：t2i 小结卡等出站图片超限时自动回退纯文本（旧名 `maxImageBytes` deprecated，本版兼容读取） |
 | `maxVoiceBytes` | `15728640` | 出站语音大小上限（字节） |
 | `maxFileBytes` | `20971520` | 出站视频/文件大小上限（字节） |
@@ -233,13 +235,15 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 |---|---|
 | 什么时候投递 | 仅入站**图片**段（png/jpg/jpeg/webp/gif）；表情、卡片、文件段不走这条 |
 | 怎么投递 | 先把图落进 `mediaDir`（既有逻辑不变：四路解析、大图按 `inboundImageMaxPx` 压缩、GIF 不压），再把**同一份字节**交给宿主附件服务 `ctx.attachments`，拿回 content-addressed 引用，拼成 `{ type: 'image', attachment }` 块放进消息 content |
-| 三道闸门（都不抛错） | ① 单图超 `attachMaxImageMB` → `too-large`；② 本插件账本累计已达 `attachmentBudgetMB` → `budget`；③ 宿主附件服务不可用 / 类型不支持 / 写入失败 → `host-unavailable`、`unsupported-type`、`save-failed` |
+| 三道闸门（都不抛错） | ① 单图超 `attachMaxImageMB` → `too-large`；② 本插件账本累计已达 `attachmentBudgetMB` → `budget`；③ 宿主附件服务不可用 / 类型不支持 / 写入失败（含 `attachmentSaveTimeoutMs` 超时）→ `host-unavailable`、`unsupported-type`、`save-failed` |
 | 闸门不过怎么办 | 掉回旧行为：content 里给 `[图片:<路径>]`，消息照常可达（模型仍可自行 `read` 该文件）。**视觉增强失败绝不影响消息本身** |
 | 去重 | 账本按 `attachmentId` 记 `hits`；同一张图重复进来命中宿主内容寻址去重，**不占新空间**，仅 `hits+1` |
-| 账本位置 | `<mediaDir>/attach-ledger.json`（本插件自己写的贡献记录，用于统计「我占了多少」，不碰宿主附件库里的其它对象） |
-| 容量统计 | QQ 里发 `/storage`（仅管理员）：`mediaDir` 总占用与文件数、宿主附件库总量、本插件贡献（对象数/字节/去重命中次数）、`attachmentBudgetMB` 软上限与已用百分比 |
+| 账本位置 | `<mediaDir>/attachment-ledger.json`（本插件自己写的贡献记录，用于统计「我占了多少」，不碰宿主附件库里的其它对象） |
+| 记账回收 | `attachmentRetentionHours` > 0 时，每次投递前先把 `lastSeenAt` 超出窗口的条目移出账本（把软上限占用还回去）；只改记账、不删文件 |
+| 卡死保护 | 宿主写盘受 `attachmentSaveTimeoutMs`（默认 15 秒）约束：超时即放弃本次投递，避免一个卡住的写盘因临界区串行而堵死全部会话 |
+| 容量统计 | QQ 里发 `/storage`（仅管理员）：`mediaDir` 总占用与文件数、宿主附件库总量、本插件贡献（对象数/字节/去重命中次数）、`attachmentBudgetMB` 软上限与已用百分比、`attachmentRetentionHours` 回收窗口是否启用 |
 
-**为什么不自动清理附件库**：附件库由宿主统一管理、跨插件共享，插件看不出哪些对象是别人还在用的。所以 `attachmentBudgetMB` 只做统计口径与降级闸门——达到上限后**新图片自动降级为文本路径**，`/storage` 会标出「已达上限」；**不删任何东西**。真正想回收空间时，找宿主侧清理，或把 `attachmentBudgetMB` 设小以提前降级。投递被闸门拦下的具体原因（`too-large` / `budget` / `host-unavailable` / `unsupported-type` / `save-failed`）走 `logLevel=debug` 日志，不刷 warn——因为预算长期超限时每张图都会触发一条，warn 级会淹没真故障。
+**为什么不自动清理附件库**：附件库由宿主统一管理、跨插件共享，插件看不出哪些对象是别人还在用的。所以 `attachmentBudgetMB` 只做统计口径与降级闸门——达到上限后**新图片自动降级为文本路径**，`/storage` 会标出「已达上限」；**不删任何东西**。想自动让出配额而不删文件，把 `attachmentRetentionHours` 设成非 0（如 `72`）：过期对象只是从记账里移出，磁盘文件仍在，宿主按内容寻址去重后再次投递不会重复占用。投递被闸门拦下的具体原因（`too-large` / `budget` / `host-unavailable` / `unsupported-type` / `save-failed`）走 `logLevel=debug` 日志，不刷 warn——因为预算长期超限时每张图都会触发一条，warn 级会淹没真故障。
 
 `mediaDir` 本身的临时文件仍由既有 `tempTtlHours`（默认 6 小时）定期清理。
 
@@ -248,11 +252,11 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 dsh Web GUI 的设置页提供本插件的可视化配置（host-plane Remote `onebotSettings`，写入 profile 层
 `cordis.patch.yml` 中 `dsh-onebot` 条目的 config 覆盖行——与手改 patch、宿主原生设置页是同一个持久层）。
 
-### 四组 35 键
+### 四组 37 键
 
 | 组 | 键 |
 |---|---|
-| connection（连接） | `mode`、`host`、`port`、`url`、`accessToken`、`botQQ`、`workspacePath`、`memeDir`、`attachInboundImages`、`attachMaxImageMB`、`attachmentBudgetMB` |
+| connection（连接） | `mode`、`host`、`port`、`url`、`accessToken`、`botQQ`、`workspacePath`、`memeDir`、`attachInboundImages`、`attachMaxImageMB`、`attachmentBudgetMB`、`attachmentRetentionHours`、`attachmentSaveTimeoutMs` |
 | permissions（权限） | `requireMention`、`adminUsers`、`dmPolicy`、`groupPolicy`、`allowAllUsers`、`allowFrom`、`groupAllowFrom` |
 | behavior（行为） | `interimMessages`、`interimRecall`、`interimRecallMs`、`sendErrorNotice`、`unknownCommand`、`rateLimitPerMinute`、`newMessagePolicy`、`autoSteerPolicy`、`deferredTimeoutMs`、`reasoningEffort`、`persona` |
 | diagnostics（诊断） | `actionAuditEnabled`、`traceEnabled`、`recordInbound`、`inboxRedact`、`injectEnabled`、`injectDryRun` |
@@ -262,7 +266,7 @@ dsh Web GUI 的设置页提供本插件的可视化配置（host-plane Remote `o
 ### 与 patch config 的优先级
 
 **schema 默认值 ← bundle/底层 patch（继承层） ← profile 覆盖行（设置页写这里）**；同一层内后写的 patch
-条目胜出。设置页键与手改 patch 是同一层的同一行，不存在两套优先级。四组 35 键之外的键
+条目胜出。设置页键与手改 patch 是同一层的同一行，不存在两套优先级。四组 37 键之外的键
 （media/STT/性能/`agentPreset` 等低频键）不设 UI，仍在同一行 config 手改 patch。
 
 ### 生效方式
@@ -302,7 +306,7 @@ dsh Web GUI 的设置页提供本插件的可视化配置（host-plane Remote `o
 | `/preset [id\|序号]` | 查看当前/可用预设（无参编号列表，回复序号即选），或切换 preset（重建会话，新会话 header 记录） |
 | `/session [序号]` | 查看本会话可切回的历史会话（无参编号列表，每项含内容预览、建立时间与退休时间，id 截短显示；日志不可读的项显示「（内容不可读）」且不影响其余项），回复序号切回：当前会话退休进列表、目标会话恢复其历史上下文（含 per-chat 设置），支持来回切换；列表跨重启保留（switchable-sessions.json，每 chat 上限 20 条） |
 | `/status` | 会话全景：chat/session/preset/model/cwd/出站模式/agent/可切回数 状态 |
-| `/storage` | 存储占用：`mediaDir` 总占用与文件数、本插件在宿主附件库里的贡献（`/storage` 会实时遍历附件库按本插件的写入路径统计）、`attachmentBudgetMB` 软上限与百分比 |
+| `/storage` | 存储占用：`mediaDir` 总占用与文件数、本插件在宿主附件库里的贡献（`/storage` 会实时遍历附件库按本插件的写入路径统计）、`attachmentBudgetMB` 软上限与百分比、`attachmentRetentionHours` 回收窗口（未启用时会显式标注「记账只增不减」） |
 | `/retry` | 重跑上一条用户消息（上一轮出错后重试） |
 | `/id` | 只看 chat/session/cwd（排查用） |
 | `/ver` | 插件版本 + git commit |

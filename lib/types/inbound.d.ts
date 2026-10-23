@@ -99,12 +99,19 @@ export interface InboundContext {
      * nickname (T9-A): pre-sanitized sender display name for the /steer
      * <user_message> boundary attribute. */
     tryHandleCommand(chatId: ChatId, text: string, userId: string, nickname?: string): Promise<boolean>;
-    /** Message body assembly (bridge facade: overridable, see the pipeline-order test). */
-    buildBody(text: string, media: MediaRef[], chatId: ChatId): Promise<string>;
+    /** Message body assembly (bridge facade: overridable, see the pipeline-order test).
+     *
+     * `images` (T15)：本轮消息已投递成功的图片引用收集器。由调用方按消息新建、
+     * 随消息一路传到 dispatch——**不能**挂在 per-chat settings 上，那样同 chat
+     * 并发入站（handleInbound 是 fire-and-forget）会互相取走对方的图。 */
+    buildBody(text: string, media: MediaRef[], chatId: ChatId, images?: ImageAttachmentRef[]): Promise<string>;
     /** Quote (reply) expansion (bridge facade: overridable, see the pipeline-order test). */
     expandQuote(messageId: string): Promise<string>;
-    /** Turn dispatch — bridge-owned orchestration (ensureChat + per-turn prefixes). */
-    dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string): Promise<void>;
+    /** Turn dispatch — bridge-owned orchestration (ensureChat + per-turn prefixes).
+     *
+     * `images` (T15)：本条消息的图片引用，按出现顺序。显式随调用链传递，不再
+     * 走 per-chat 的可变数组（见 buildBody 的说明）。 */
+    dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string, images?: ImageAttachmentRef[]): Promise<void>;
     /** T15: 把一张已落盘的入站图片投递给宿主附件库，换回一个不变量引用（用于
      * content 里的 image 块）。返回 undefined = 未投递（未启用/超限/宿主不支持），
      * 调用方退回 `[图片:<路径>]` 文本注解。可选：测试装配可省略（等于关闭投递）。 */
@@ -118,7 +125,7 @@ export interface InboundContext {
      * carries no media, no quote and no forward (steer eligibility precondition:
      * media-bearing messages always queue, never steer). Optional: absent =
      * the pre-T2 pipeline (0.8.1 behavior for every message). */
-    interceptBusyTurn?(chatId: ChatId, text: string, role: UserRole, nickname: string | undefined, plain: boolean): Promise<boolean>;
+    interceptBusyTurn?(chatId: ChatId, text: string, role: UserRole, nickname: string | undefined, plain: boolean, images?: ImageAttachmentRef[]): Promise<boolean>;
     /** Outbound facade (the B7 rate-limit notice). */
     sendToChat(chatId: ChatId, text: string): Promise<string[]>;
     /** Bridge log line callback. */
@@ -184,14 +191,14 @@ export declare class InboundPipeline {
      * Build the message body text: placeholders become annotated local paths
      * (images/voices/videos) and voice files are transcribed when enabled.
      */
-    buildBody(text: string, media: MediaRef[], chatId: ChatId): Promise<string>;
+    buildBody(text: string, media: MediaRef[], chatId: ChatId, images?: ImageAttachmentRef[]): Promise<string>;
     /** Resolve one media ref to a text annotation with a local path.
      *
-     * `attach` (T15): 图片走真图片块投递——成功时把引用压入
-     * `settings.pendingAttachments`、注解降级为 `[图片]`（像素已随 image 块送达，
+     * `attach` (T15): 图片走真图片块投递——成功时把引用压入调用方传入的
+     * `images` 收集器、注解降级为 `[图片]`（像素已随 image 块送达，
      * 再重复一遍路径只会浪费 token）；未投递则保持 `[图片:<路径>]` 原样。命令
      * 路由（/ocr 等）取注解时传 false，只关心路径、不必付附件投递的代价。 */
-    resolveMediaRef(ref: MediaRef, chatId: ChatId, attach?: boolean): Promise<string>;
+    resolveMediaRef(ref: MediaRef, chatId: ChatId, attach?: boolean, images?: ImageAttachmentRef[]): Promise<string>;
     /** M3-D4c: transcribe in the background and deliver the labeled transcript
      * into the chat's turn (steer at the running turn's nearest step boundary,
      * or a new turn when the agent is idle). Failure keeps [语音] as final. */

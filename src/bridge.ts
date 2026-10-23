@@ -50,6 +50,23 @@ import type { FailureRefKind } from './ref.js'
 import type { TraceStage } from './trace.js'
 import type { ImageAttachmentRef } from './attach.js'
 import { deliverImage, resolveAttachPolicy, formatStorageStats, storageStats } from './attach.js'
+/** T15：一条入站用户消息的内容块（文本 + 已投递的图片）。
+ *
+ * 为什么不直接标注宿主的 `UserMessageContent`：该类型名不在本插件的类型面上
+ * （`@deepseek-ai/dsh-llm` 只在此处按需 import 具体的构造器与模型信息类型），
+ * 直接写会得到 TS2304「找不到名称」，使 `npm run build`（tsc -p tsconfig.json，
+ * strict）整条构建失败——src 侧从此无法被编译器校验。
+ *
+ * 形状按宿主实现对齐（`dsh-llm` 的 `contentHasImage` / `replaceImagesForTextModel`
+ * 都以 `block.type === 'image'` 且读 `block.attachment` 判别 image 块），
+ * 因此这里的联合与宿主是可结构兼容的。 */
+export interface InboundContentBlock {
+  type: 'text' | 'image'
+  /** `type: 'text'` 时的正文。 */
+  text?: string
+  /** `type: 'image'` 时的宿主附件引用。 */
+  attachment?: ImageAttachmentRef
+}
 /** T2 (P1): the queue notice sent to a chat when a message arrives while its
  * task is running under the default 'queue' policy — at most ONE per running
  * turn (the flag resets at turn/end) so a burst of queued messages never
@@ -105,6 +122,10 @@ export interface BridgeConfig {
   attachMaxImageBytes?: number
   /** T15：附件库软上限（字节）；0 = 不限。 */
   attachmentBudgetBytes?: number
+  /** T15：账本回收窗口（毫秒）；0 = 不回收（只增不减）。 */
+  attachmentRetentionMs?: number
+  /** T15：单次投递的宿主写盘超时（毫秒）；0 = 不超时。 */
+  attachmentSaveTimeoutMs?: number
   workspacePath: string
   /** Max inbound file bytes fetched via QQ direct link / base64 (0 = no cap). */
   maxInboundFileBytes: number
@@ -378,11 +399,11 @@ export class ChatBridge {
       transcriber: deps.transcriber,
       steerTranscript: (chatId, text) => this.steerTranscript(chatId, text),
       tryHandleCommand: (chatId, text, userId, nickname) => this.tryHandleCommand(chatId, text, userId, nickname),
-      buildBody: (text, media, chatId) => this.buildBody(text, media, chatId),
+      buildBody: (text, media, chatId, images) => this.buildBody(text, media, chatId, images),
       expandQuote: messageId => this.expandQuote(messageId),
-      dispatchFollowup: (chatId, text, role, nickname) => this.dispatchFollowup(chatId, text, role, nickname),
+      dispatchFollowup: (chatId, text, role, nickname, images) => this.dispatchFollowup(chatId, text, role, nickname, images),
       deliverInboundImage: (path, chatId) => this.deliverInboundImage(path, chatId),
-      interceptBusyTurn: (chatId, text, role, nickname, plain) => this.interceptBusyTurn(chatId, text, role, nickname, plain),
+      interceptBusyTurn: (chatId, text, role, nickname, plain, images) => this.interceptBusyTurn(chatId, text, role, nickname, plain, images),
       sendToChat: (chatId, text) => this.sendToChat(chatId, text),
       log: (level, message) => this.deps.log(level, message),
       config: deps.config,
@@ -622,7 +643,7 @@ export class ChatBridge {
   /** Feed one user message into a chat's agent (create on demand). Records
    * the base text for /retry, queues the initiator's turn role, and applies
    * per-chat /goal + /plan prefixes. */
-  private async dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string): Promise<void> {
+  private async dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string, images: ImageAttachmentRef[] = []): Promise<void> {
     const final = this.prefixTurn(chatId, text)
     const fallback = this.chats.get(chatId)?.lastNickname ?? ''
     const chat = await this.ensureChat(chatId, nickname ?? fallback)
@@ -637,10 +658,10 @@ export class ChatBridge {
     // so the role cannot interleave with another dispatch.
     chat.pendingTurnRoles.push(role)
     this.deps.log('info', 'followup from ' + chatId + ': ' + final.slice(0, 120))
-    // T15：这条消息里已投递成功的图片按顺序跟在文本块后面（模型能看像素）。
-    // 取走即清空，避免同一批图被下一次 dispatch 重复投递。
-    const images = this.takePendingAttachments(chatId)
-    const content: UserMessageContent[] = [{ type: 'text', text: final }]
+    // T15：这条消息里已投递成功的图片按出现顺序跟在文本块后面（模型能看像素）。
+    // 引用由调用方随消息传入（inbound pipeline 的局部数组），**不再**从 per-chat
+    // settings 里取——那是共享可变状态，同 chat 并发入站会串图/丢图。
+    const content: InboundContentBlock[] = [{ type: 'text', text: final }]
     for (const attachment of images) content.push({ type: 'image', attachment })
     // Plugin-originated user message: the session log attributes QQ inbound
     // messages to this plugin's own producer-owned source kind, keeping them
@@ -794,6 +815,8 @@ export class ChatBridge {
           enabled: bridge.deps.config.attachInboundImages ?? true,
           maxImageBytes: bridge.deps.config.attachMaxImageBytes ?? 0,
           budgetBytes: bridge.deps.config.attachmentBudgetBytes ?? 0,
+          retentionMs: bridge.deps.config.attachmentRetentionMs ?? 0,
+          saveTimeoutMs: bridge.deps.config.attachmentSaveTimeoutMs ?? 0,
         }),
       )),
       // T4 (P3): export takes an optional trigger reference (file-name stamp).
@@ -814,8 +837,8 @@ export class ChatBridge {
    * Build the message body text: placeholders become annotated local paths
    * (images/voices/videos) and voice files are transcribed when enabled.
    */
-  private buildBody(text: string, media: MediaRef[], chatId: ChatId): Promise<string> {
-    return this.inbound.buildBody(text, media, chatId)
+  private buildBody(text: string, media: MediaRef[], chatId: ChatId, images?: ImageAttachmentRef[]): Promise<string> {
+    return this.inbound.buildBody(text, media, chatId, images)
   }
 
   /** Resolve one media ref to a text annotation with a local path. */
@@ -841,6 +864,8 @@ export class ChatBridge {
       enabled: this.deps.config.attachInboundImages ?? true,
       maxImageBytes: this.deps.config.attachMaxImageBytes ?? 0,
       budgetBytes: this.deps.config.attachmentBudgetBytes ?? 0,
+      retentionMs: this.deps.config.attachmentRetentionMs ?? 0,
+      saveTimeoutMs: this.deps.config.attachmentSaveTimeoutMs ?? 0,
     })
     const result = await deliverImage(host, path, policy, this.deps.config.mediaDir)
     if (result.ref !== undefined) {
@@ -853,22 +878,6 @@ export class ChatBridge {
       this.deps.log('debug', '入站图片未投递为图片块（' + result.skipped + '），退回路径文本: ' + path)
     }
     return undefined
-  }
-
-  /** T15：取走该聊天待投递的图片附件引用（取走即清空）。
-   *
-   * 清空是语义要求而非优化：同一条入站消息里的图片由 `buildBody` 逐个压入
-   * `pendingAttachments`，而 dispatch 只应消费一次——若保留，下一轮 dispatch
-   * （比如用户只发一句话）会把上一轮的图再投一遍，模型会莫名其妙地重新看图。
-   * @param chatId - 目标聊天。
-   * @returns 与消息内出现顺序一致的引用数组；无待投递时为空数组。
-   */
-  private takePendingAttachments(chatId: ChatId): ImageAttachmentRef[] {
-    const settings = this.registry.getSettings(chatId)
-    const queued = settings.pendingAttachments
-    if (queued === undefined || queued.length === 0) return []
-    settings.pendingAttachments = undefined
-    return queued
   }
 
   /** M3-D4c: steer a completed voice transcript into the chat's agent — the
@@ -915,7 +924,7 @@ export class ChatBridge {
    * authoritative signal /stop uses; chat.busy (turn/start..turn/end view)
    * can lag the host driver and is deliberately NOT consulted.
    */
-  private async interceptBusyTurn(chatId: ChatId, text: string, role: UserRole, nickname: string | undefined, plain: boolean): Promise<boolean> {
+  private async interceptBusyTurn(chatId: ChatId, text: string, role: UserRole, nickname: string | undefined, plain: boolean, images: ImageAttachmentRef[] = []): Promise<boolean> {
     const chat = this.chats.get(chatId)
     if (chat === undefined || chat.agent.status !== 'running') return false
     // The restricted-member soft limit ([受限用户:仅问答]) is never widened by
@@ -938,7 +947,7 @@ export class ChatBridge {
       })
       return true
     }
-    await this.dispatchFollowup(chatId, text, role, nickname)
+    await this.dispatchFollowup(chatId, text, role, nickname, images)
     currentTrace()?.emit('dispatch', { ok: true, reason: TRACE_REASONS.busyTurnQueued })
     if (!this.queueNoticeChats.has(chatId)) {
       this.queueNoticeChats.add(chatId)

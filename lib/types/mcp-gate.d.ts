@@ -33,7 +33,7 @@ export declare function isMcpToolName(name: string): boolean;
  * （`[A-Za-z0-9_-]{1,32}`），裸工具名也可能含 `__`。段数不足 2 说明不符合
  * 约定，返回 null 由调用方按 fail-closed 处理。
  *
- * 段数 > 2 时边界有歧义，`ambiguous` 置 true（见该字段说明）。
+ * 段数 > 2、或 tool 以 `_` 开头时边界有歧义，`ambiguous` 置 true（见该字段说明）。
  */
 export declare function parseMcpToolName(name: string): McpToolParts | null;
 /** 从 `mcp__<server>__<tool>` 取服务器名；不符约定时返回 ''。 */
@@ -53,14 +53,28 @@ export declare function mcpBareNameOf(name: string): string;
  * 歧义名（`ambiguous`）只认 `*` 与完整名精确命中，其它写法一律不命中。
  */
 export declare function matchMcpTool(name: string, allow: readonly string[]): boolean;
+/** 白名单单条的最大长度；超长条目在归一化时丢弃（收紧，不是放宽）。 */
+export declare const MCP_ALLOW_ITEM_MAX_LEN = 128;
+/** 白名单最多接受的条数；超出的尾巴在归一化时截断（收紧）。 */
+export declare const MCP_ALLOW_MAX_ENTRIES = 256;
 /**
- * 归一化配置里的白名单：去空白、丢空项、丢无法识别的通配、去重（保序）。
+ * 归一化配置里的白名单：去空白、丢空项、丢无法识别的通配、丢超长项、
+ * 截断超出条数上限的尾巴、去重（保序）。
  *
- * 丢弃不可识别的通配是**收紧**方向，不会放宽授权，所以是安全的；但它意味着
- * 写错的条目不会生效 —— 因此 `describeDroppedEntries` 供接线处记一条 warn。
+ * 这里承担**全部限幅**，而上游 Config schema 刻意不做 `max()` 校验 ——
+ * schemastery 的 `max()` 在解析期抛 ValidationError，会让整个插件置为
+ * INACTIVE（手改一条 129 字符的条目就会让 QQ 通道整条不启动）。限幅在此完成，
+ * 后果收敛到单个条目：被丢弃并记一条 warn。
+ *
+ * 丢弃与截断都是**收紧**方向，不会放宽授权，所以是安全的。
  */
 export declare function normalizeMcpToolAllow(raw: readonly string[] | undefined): string[];
-/** 列出被归一化丢弃的条目（供接线处记 warn，便于管理员发现写错的白名单）。 */
+/**
+ * 列出被归一化丢弃的条目（供接线处记 warn，便于管理员发现写错的白名单）。
+ *
+ * 只返回**原因分类计数**，不返回条目原文 —— 条目来自设置页文本框，可能误粘
+ * token；插件日志比 QQ 群更持久，也更容易被 /doctor 打包带走。
+ */
 export declare function describeDroppedEntries(raw: readonly string[] | undefined): string[];
 /**
  * 生成 guard 拒绝时给模型/群友看的一句话说明。

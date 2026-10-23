@@ -76,6 +76,15 @@ export function redactSnapshot(config: Record<string, unknown>): Record<string, 
       out[key] = typeof value === 'string' && value !== '' ? '已配置' : '未配置'
       continue
     }
+    // mcpToolAllow 的条目来自设置页文本框，可能误粘 token；而它的 key 名不含
+    // token/secret 等关键字，isSecretKey 兜不住，scrubSecrets 又依赖 bridge 传入
+    // 的 secrets（实际为空数组）。诊断包会被管理员导出、转发，这里按「只报条数」
+    // 折叠，与插件日志的处理保持一致。
+    if (key === 'mcpToolAllow') {
+      const count = Array.isArray(value) ? value.length : 0
+      out[key] = count > 0 ? `已配置 ${count} 条（内容不导出）` : '未配置'
+      continue
+    }
     if (Array.isArray(value)) {
       out[key] = value.map(item => (typeof item === 'object' && item !== null ? redactSnapshot(item as Record<string, unknown>) : item))
       continue

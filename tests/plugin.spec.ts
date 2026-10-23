@@ -142,9 +142,17 @@ describe('plugin entry', () => {
   })
 
   it('derives a sensible default media dir', () => {
-    const dir = defaultMediaDir()
-    // DSH_HOME 可配置（本机即 G:\dsh-home），不能硬编码成 '.dsh'。
-    expect(dir).toContain('media')
-    expect(dir).toContain('onebot')
+    const home = mkdtempSync(join(tmpdir(), 'onebot-home-'))
+    const saved = process.env.DSH_HOME
+    process.env.DSH_HOME = home
+    try {
+      // 只断言「含 media / 含 onebot」对任意 home 都恒成立，等于没测：把实现改成
+      // 返回 `<home>/media/onebot` 之外的任何路径（甚至返回 home 本身）也全绿。
+      // 这里钉住确切形状。
+      expect(defaultMediaDir()).toBe(join(home, 'media', 'onebot'))
+    } finally {
+      if (saved === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = saved
+    }
   })
 })

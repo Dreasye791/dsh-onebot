@@ -48,6 +48,17 @@ User(QQ) ←→ NapCat ←→ dsh-onebot plugin ←→ dsh Agent (one per chat)
 
 Last verified: 2026-10-12 (0.9.0 release batch W1–W3 five features: v4 command audit / verify health-check script / queue+steer with autoSteerPolicy / deferred delivery on timeout / diagnostic reference IDs — npx tsc --noEmit clean, 532/532 vitest green; M0 security semantics unchanged: reverse mode refuses an empty accessToken and defaults to 127.0.0.1, see the BREAKING note under the config table).
 
+### Behaviour changes when upgrading from 0.9.4
+
+These **change how an existing deployment behaves** — check them before upgrading:
+
+| Change | Detail |
+|---|---|
+| All MCP tools denied by default (T20) | New `mcpToolAllow`, **default `[]`**. Previously the QQ channel and the Web GUI inherited the same tool set, so group members could call every MCP server mounted on the profile (including database tools). Without configuring this, the bot has **no MCP tool at all** after upgrading; to keep the old behaviour set `*` (not recommended — that hands database access to group members). |
+| Wildcard narrowed for MCP names containing `__` (T20) | `mcp__<server>__*` covers **single-segment** tool names only. When the server name itself contains `__` (e.g. `dbx__prod`) or the tool name contains `__`, write `mcp__dbx__prod__*` or the exact tool name. A previously broad entry will **silently allow fewer tools** after the upgrade (the count appears in a startup warn). |
+| Host must provide `tools.guard` | If missing, the plugin **refuses to start** rather than skipping the gate. `@deepseek-ai/dsh-tools` has had this API since ≥ 0.1.5-rc.1; very old hosts need an upgrade first. |
+| Inbound images delivered as real image blocks (T15) | Previously the model only saw a `[图片:path]` text note and could not see the picture. Now they are delivered as real image blocks according to `attachInboundImages` (default `true`); set it to `false` to save tokens or when using a non-vision model. |
+
 ## Installation
 
 **Prerequisites**: dsh (≥0.1.5-rc.1) on PATH; NapCat or another OneBot 11 implementation running.

@@ -64,7 +64,15 @@ export function makeFakeAgents(
           // 供 spec 断言拒绝/放行语义。
           tools: {
             register: (t: { name: string }) => { captured.channelTools?.push(t.name); return () => undefined },
-            guard: (fn: (exec: { name?: unknown }) => string | undefined) => { captured.guards?.push(fn); return () => undefined },
+            // 用普通 function（不能用箭头函数）：生产代码是
+            // `guard.call(agentCtx.tools, makeMcpToolGuard(allow))`，宿主按 this
+            // 绑定判断调用方。箭头函数会吞掉 this，接线若把 `.call(...)` 丢了
+            // 也照样全绿。
+            guard(this: unknown, fn: (exec: { name?: unknown }) => string | undefined) {
+              captured.guardThis = this
+              captured.guards?.push(fn)
+              return () => undefined
+            },
           },
         }
         await options.setup(agentCtx)
@@ -111,10 +119,10 @@ export function makeFakeAgents(
 }
 
 /** Full bridge + WS harness: inbound via real WebSocket, outbound captured. */
-export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean; createDelayMs?: number; transcriber?: Transcriber; trace?: TraceSink; ignoreSelf?: boolean; recorder?: InboundRecorder; inject?: InjectChannel; newMessagePolicy?: 'queue' | 'steer'; deferredTimeoutMs?: number; log?: (level: string, message: string) => void }) {
+export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean; createDelayMs?: number; transcriber?: Transcriber; trace?: TraceSink; ignoreSelf?: boolean; recorder?: InboundRecorder; inject?: InjectChannel; newMessagePolicy?: 'queue' | 'steer'; deferredTimeoutMs?: number; mcpToolAllow?: string[]; log?: (level: string, message: string) => void }) {
   const ctx = new Context()
   const sessionIds: string[] = []
-  const captured = { followups: [] as Array<{ text: string; sessionId: string }>, steers: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[], guards: [] as Array<(exec: { name?: unknown }) => string | undefined> }
+  const captured = { followups: [] as Array<{ text: string; sessionId: string }>, steers: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[], guards: [] as Array<(exec: { name?: unknown }) => string | undefined>, guardThis: undefined as unknown }
   const agents = makeFakeAgents(sessionIds, captured, opts)
   const sessions = { flush: vi.fn(async () => undefined) }
   const mediaDir = opts?.mediaDir ?? mkdtempSync(join(tmpdir(), 'onebot-test-'))
@@ -142,6 +150,8 @@ export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: st
       ...(opts?.newMessagePolicy !== undefined ? { newMessagePolicy: opts.newMessagePolicy } : {}),
       // T3 (P2): deferred-delivery timeout override (absent = the 10min default).
       ...(opts?.deferredTimeoutMs !== undefined ? { deferredTimeoutMs: opts.deferredTimeoutMs } : {}),
+      // T20: MCP 工具白名单（absent = [] = fail-closed，禁用全部 MCP）。
+      mcpToolAllow: opts?.mcpToolAllow ?? [],
       // W1: optional decision-trace sink (absent = tracing off).
       trace: opts?.trace,
       // W1/T5: optional recorder / inject channel (absent = feature off).

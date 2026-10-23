@@ -1307,9 +1307,10 @@ export class ChatBridge {
     const dropped = describeDroppedEntries(allow)
     if (dropped.length > 0 && !this.mcpAllowWarned) {
       this.mcpAllowWarned = true
-      // 不打印条目原文：这些条目来自设置页的多行文本框，管理员可能误把 token
-      // 或带凭据的串粘进来，而插件日志比 QQ 群更持久、更容易被翻出来。
-      this.deps.log('warn', 'mcpToolAllow 有 ' + dropped.length + ' 条无法识别的写法已被忽略（仅支持 * 与 mcp__<server>__*，且单项不含 * 以外字符）；条目原文不打印，请在设置页「权限」组核对')
+      // dropped 只含「原因 + 计数」，不含条目原文：这些条目来自设置页的多行
+      // 文本框，管理员可能误把 token 或带凭据的串粘进来，而插件日志比 QQ 群
+      // 更持久、更容易被翻出来（还会进 /doctor 的诊断包）。
+      this.deps.log('warn', 'mcpToolAllow 有 ' + dropped.join('、') + ' 已被忽略。仅支持 * 与 mcp__<server>__* 两种通配，其它含 * 的写法会被忽略；条目原文不打印，请在设置页「权限」组核对')
     }
     guard.call(agentCtx.tools, makeMcpToolGuard(allow))
   }

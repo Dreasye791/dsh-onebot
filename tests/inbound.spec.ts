@@ -44,6 +44,10 @@ describe('inbound pipeline', () => {
     // 契约破裂时不静默放行。
     expect(typeof guard({})).toBe('string')
     expect(typeof guard({ name: '' })).toBe('string')
+    // 接线必须用 `guard.call(agentCtx.tools, ...)`：宿主按 this 判断调用方。
+    // 桩是普通 function，所以这里真的能看出接线有没有绑定 this。
+    expect(h.captured.guardThis).toBeDefined()
+    expect(h.captured.guardThis).not.toBe(globalThis)
     const sessionId = h.sessionIds[0]
 
     // 2. Assistant message → deferred one step; turn end settles it as the
@@ -62,6 +66,33 @@ describe('inbound pipeline', () => {
 
     // 3. Turn end → session flush + typing stop.
     await vi.waitFor(() => expect(h.sessions.flush).toHaveBeenCalled())
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  })
+
+  it('装上的是配置里那份白名单（非空名单既能放行也能拒绝）', async () => {
+    // 默认用例只覆盖 mcpToolAllow = [] 的拒绝路径。若接线时把 allow 传成常量
+    // 空数组（或漏传），拒绝路径依旧全绿，但管理员配的白名单永远不生效 ——
+    // 闸门变成「全禁」，机器人拿不到任何 MCP 工具，属静默失效。
+    const h = await makeHarness({ mcpToolAllow: ['mcp__akasha__*', 'mcp__dbx__dbx_execute_query'] })
+    h.sendText('你好')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+
+    expect(h.captured.guards).toHaveLength(1)
+    const guard = h.captured.guards![0]
+    // 通配命中该服务器的单段工具名。
+    expect(guard({ name: 'mcp__akasha__akasha_search' })).toBeUndefined()
+    expect(guard({ name: 'mcp__akasha__akasha_read' })).toBeUndefined()
+    // 完整名精确命中。
+    expect(guard({ name: 'mcp__dbx__dbx_execute_query' })).toBeUndefined()
+    // 同一服务器里的其它工具仍被拒（白名单不是按服务器整体放行）。
+    expect(typeof guard({ name: 'mcp__dbx__dbx_add_connection' })).toBe('string')
+    // 名单外的服务器全拒。
+    expect(typeof guard({ name: 'mcp__other__anything' })).toBe('string')
+    // 非 MCP 工具不受影响。
+    expect(guard({ name: 'qq_send_image' })).toBeUndefined()
 
     h.client.close()
     await h.bridge.stop()

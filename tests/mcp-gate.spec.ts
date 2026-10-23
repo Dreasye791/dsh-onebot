@@ -16,6 +16,8 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  MCP_ALLOW_ITEM_MAX_LEN,
+  MCP_ALLOW_MAX_ENTRIES,
   MCP_TOOL_PREFIX,
   describeDroppedEntries,
   describeMcpDenial,
@@ -56,6 +58,14 @@ describe('T20 工具名解析', () => {
     expect(parseMcpToolName('mcp__srv__a__b__c')).toEqual({
       server: 'srv',
       tool: 'a__b__c',
+      ambiguous: true,
+    })
+    // tool 以单下划线开头同样歧义：mcp__dbx___query 去掉前缀是 dbx___query，
+    // 按 __ 切得 server='dbx' / tool='_query'，但真实切分也可以是
+    // server='dbx_' + tool='query'（服务器名允许单下划线）。
+    expect(parseMcpToolName('mcp__dbx___query')).toEqual({
+      server: 'dbx',
+      tool: '_query',
       ambiguous: true,
     })
   })
@@ -101,6 +111,23 @@ describe('T20 白名单匹配', () => {
     // 完整名与 * 始终可用。
     expect(matchMcpTool('mcp__dbx__prod__query', ['mcp__dbx__prod__query'])).toBe(true)
     expect(matchMcpTool('mcp__dbx__prod__query', ['*'])).toBe(true)
+  })
+
+  it('服务器名以单个下划线结尾时也不会越权', () => {
+    // 与上一条同一类边界，只是从 `__` 缩到尾部单个 `_`：
+    // mcp__dbx___query 去掉前缀是 dbx___query，真实切分可以是
+    // server='dbx_' + tool='query'（mcp__ + dbx_ + __ + query），于是
+    // mcp__dbx__* 的前缀匹配会命中它、余段 '_query' 既非空又不含 '__'，
+    // 旧实现因此放行了一个属于 dbx_ 这个服务器的工具。
+    expect(matchMcpTool('mcp__dbx___query', ['mcp__dbx__*'])).toBe(false)
+    // 显式写全服务器名仍可整体授权（余段是单段 query）。
+    expect(matchMcpTool('mcp__dbx___query', ['mcp__dbx___*'])).toBe(true)
+    // 歧义名不能靠服务器名简写或裸工具名授权。
+    expect(matchMcpTool('mcp__dbx___query', ['dbx'])).toBe(false)
+    expect(matchMcpTool('mcp__dbx___query', ['_query'])).toBe(false)
+    // 完整名与 * 始终可用。
+    expect(matchMcpTool('mcp__dbx___query', ['mcp__dbx___query'])).toBe(true)
+    expect(matchMcpTool('mcp__dbx___query', ['*'])).toBe(true)
   })
 
   it('完整名只命中一个工具', () => {
@@ -151,11 +178,14 @@ describe('T20 未文档化通配被丢弃（收紧方向）', () => {
   })
 
   it('describeDroppedEntries 列出会被忽略的条目', () => {
-    expect(describeDroppedEntries(['akasha*', 'mcp__akasha__*', '', '  ', '*search*', 42])).toEqual([
-      'akasha*',
-      '*search*',
-      '42',
-    ])
+    // 只报原因与计数，**不回显条目原文**（条目可能误粘 token，而这条 warn 会
+    // 落进插件日志、还会被 /doctor 的诊断包带走）。
+    const dropped = describeDroppedEntries(['akasha*', 'mcp__akasha__*', '', '  ', '*search*', 42])
+    expect(dropped).toEqual(['3 条写法无法识别'])
+    for (const line of dropped) {
+      expect(line).not.toContain('akasha*')
+      expect(line).not.toContain('*search*')
+    }
   })
 })
 
@@ -269,14 +299,34 @@ describe('T20 lib 产物与 src 双写一致', () => {
     }
   })
 
-  it('lib 的 guard 与 src 对畸形 exec 的表现一致（含空串名字）', async () => {
+  it('lib 的 guard 与 src 表现一致（含放行样例与畸形 exec）', async () => {
     const lib = await import('../lib/mcp-gate.js')
-    const libGuard = lib.makeMcpToolGuard([])
-    const srcGuard = makeMcpToolGuard([])
-    for (const exec of [undefined, null, {}, { name: 42 }, { name: null }, { name: '' }, 'x', 0]) {
-      const a = typeof srcGuard(exec as never)
-      const b = typeof libGuard(exec as never)
-      expect(b, JSON.stringify(exec)).toBe(a)
+    // 必须带**非空白名单**：只有拒绝样例时，把 lib 的 guard 写成「一律拒绝」
+    // 也照样全绿，等于没测。这里同时比返回值本身（而非 typeof），放行与拒绝
+    // 两面都钉住。
+    for (const allow of [[], ['mcp__akasha__*'], ['*']]) {
+      const libGuard = lib.makeMcpToolGuard(allow)
+      const srcGuard = makeMcpToolGuard(allow)
+      const execs = [
+        undefined,
+        null,
+        {},
+        { name: 42 },
+        { name: null },
+        { name: '' },
+        'x',
+        0,
+        { name: 'read' },
+        { name: 'qq_send_image' },
+        { name: 'mcp__akasha__akasha_search' },
+        { name: 'mcp__dbx__dbx_execute_query' },
+        { name: 'mcp__dbx___query' },
+      ]
+      for (const exec of execs) {
+        const a = srcGuard(exec as never)
+        const b = libGuard(exec as never)
+        expect(b, JSON.stringify(exec) + ' / ' + JSON.stringify(allow)).toBe(a)
+      }
     }
   })
 
@@ -284,5 +334,24 @@ describe('T20 lib 产物与 src 双写一致', () => {
     const lib = await import('../lib/mcp-gate.js')
     expect(lib.parseMcpToolName('mcp__dbx__prod__query').ambiguous).toBe(true)
     expect(lib.parseMcpToolName('mcp__a__b').ambiguous).toBe(false)
+    // tool 以 `_` 开头同样歧义：真实切分可能是 server=`dbx_` + tool=`query`。
+    expect(lib.parseMcpToolName('mcp__dbx___query').ambiguous).toBe(true)
+  })
+
+  it('lib 的限幅与 src 一致（超长丢弃、超量截断、只报计数）', async () => {
+    const lib = await import('../lib/mcp-gate.js')
+    const long = 'x'.repeat(MCP_ALLOW_ITEM_MAX_LEN + 1)
+    expect(lib.normalizeMcpToolAllow([long])).toEqual(normalizeMcpToolAllow([long]))
+    const many = Array.from({ length: MCP_ALLOW_MAX_ENTRIES + 4 }, (_, i) => 's' + i)
+    const a = lib.normalizeMcpToolAllow(many)
+    expect(a).toEqual(normalizeMcpToolAllow(many))
+    expect(a).toHaveLength(MCP_ALLOW_MAX_ENTRIES)
+    // 只报原因与计数，不回显条目原文。
+    const dropped = lib.describeDroppedEntries(['', 'a', 'a', 'akasha*', long])
+    expect(dropped).toEqual(describeDroppedEntries(['', 'a', 'a', 'akasha*', long]))
+    for (const line of dropped) {
+      expect(line).not.toContain('akasha*')
+      expect(line).not.toContain(long)
+    }
   })
 })

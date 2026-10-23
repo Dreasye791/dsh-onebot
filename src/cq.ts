@@ -105,33 +105,43 @@ export function faceToEmoji(id: string): string {
 }
 
 const CQ_AT_RE = /\[CQ:at,qq=([^,\]]+)\]/g
-const CQ_REPLY_RE = /\[CQ:reply,id=([^,\]]+)\]/g
 
 /**
  * Detect whether the message mentions the bot. Prefers the segment array;
  * falls back to CQ-string scanning. @-detection stays fail-closed: with an
  * unknown bot id and no configured botQQ, group messages are never treated
- * as mentioning us. Reply segments count only when the replied-to user is
- * determinably the bot itself (M1-A8); an undeterminable target (segment
- * carries no qq) falls back to the previous always-mention behavior — a
- * deliberate fail-open so tightening the gate never breaks existing setups.
+ * as mentioning us.
+ *
+ * Reply segments are TARGET-AWARE and fail-CLOSED. The OneBot 11 spec's reply
+ * segment carries only `id` — no `qq` at all (some implementations, NapCat
+ * included, may add it as an extension). Treating a missing `qq` as "replied to
+ * the bot" made *every* quote-tap in a group wake the bot, so an absent or
+ * foreign target now counts as NOT a mention. The quoted target is resolved
+ * upstream (get_msg) when the segment itself cannot answer it; see
+ * `replyTargetIsBot`.
  * @param segments - segment array (may be undefined for CQ-only payloads).
  * @param raw - raw CQ string.
  * @param selfId - learned bot QQ id ('' when unknown).
  * @param botQQ - configured bot QQ id ('' when unset).
+ * @param replyTarget - resolved author of the quoted message, when the inbound
+ *   pipeline managed to fetch it. '' / undefined = unknown (not a mention).
  */
 export function detectMention(
   segments: OneBotSegment[] | undefined,
   raw: string,
   selfId: string,
   botQQ: string,
+  replyTarget?: string,
 ): boolean {
   const bot = selfId !== '' ? selfId : botQQ
   if (segments !== undefined) {
     for (const seg of segments) {
       if (seg.type === 'reply') {
+        // Prefer the segment's own target when present; fall back to the
+        // target resolved by the pipeline. Unknown target = not a mention.
         const qq = seg.data.qq ?? ''
-        if (qq === '' || qq === bot) return true
+        const target = qq !== '' ? qq : (replyTarget ?? '')
+        if (target !== '' && target === bot) return true
         continue
       }
       if (bot !== '' && seg.type === 'at' && (seg.data.qq === bot || seg.data.qq === 'all')) return true
@@ -143,8 +153,9 @@ export function detectMention(
   for (const m of raw.matchAll(CQ_AT_RE)) {
     if (m[1] === bot || m[1] === 'all') return true
   }
-  CQ_REPLY_RE.lastIndex = 0
-  return CQ_REPLY_RE.test(raw)
+  // A CQ-string reply carries no author either: only a resolved target counts.
+  if (replyTarget !== undefined && replyTarget !== '' && replyTarget === bot) return true
+  return false
 }
 
 /** Split a raw CQ string into segments; used only when no segment array exists. */

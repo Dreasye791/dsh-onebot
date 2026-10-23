@@ -846,4 +846,114 @@ describe('inbound message_id dedup (W2-②)', () => {
       post_type: 'meta_event', meta_event_type: 'heartbeat', self_id: 10002, message_id: 6,
     })).toBeNull()
   })
+
+  /**
+   * T14: OneBot 11's reply segment carries only `id` — no `qq`. Before the fix
+   * every quote-tap in a group was read as "@me", so a member replying to a
+   * third party woke the bot. The gate now resolves the quoted author via
+   * get_msg and only the bot's own id passes.
+   */
+  describe('T14 reply-target mention gate', () => {
+    const makeReplyHarness = (quotedAuthor: string) => {
+      const dispatched: string[] = []
+      const calls: string[] = []
+      const pipeline = new InboundPipeline({
+        call: async (action) => {
+          calls.push(action)
+          return {
+            message: [{ type: 'text', data: { text: '被引用的原话' } }],
+            raw_message: '被引用的原话',
+            sender: { user_id: Number(quotedAuthor), nickname: '某人' },
+          }
+        },
+        selfId: () => '10002',
+        policy: { dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [], adminUsers: [], allowAllUsers: true, requireMention: true },
+        getChat: () => ({ loopBuffer: [], loopPending: null, dispatchTimes: [], rateLimitNoticeAt: undefined }),
+        getSettings: () => ({}) as never,
+        sweepIdleChats: async () => undefined,
+        media: { cleanupExpired: async () => undefined } as never,
+        transcriber: { enabled: false, transcribe: async () => '' } as never,
+        steerTranscript: () => undefined,
+        tryHandleCommand: async () => false,
+        buildBody: async (text: string) => text,
+        expandQuote: async () => '',
+        dispatchFollowup: async (_chatId, text) => { dispatched.push(text) },
+        sendToChat: async () => [],
+        log: () => undefined,
+        config: {
+          botQQ: '10002', ignoreSelf: false, requireMention: true, rateLimitPerMinute: 0,
+          restrictedMemberPrefix: false, maxInboundFileBytes: 0,
+        },
+      })
+      return { pipeline, dispatched, calls }
+    }
+
+    const groupReply = (messageId: number): NormalizedInbound => normalizeOneBot11({
+      post_type: 'message', message_type: 'group', user_id: 10001, group_id: 888, self_id: 10002,
+      message_id: messageId,
+      message: [
+        { type: 'reply', data: { id: '777' } },
+        { type: 'text', data: { text: '你觉得呢' } },
+      ],
+      raw_message: '[CQ:reply,id=777] 你觉得呢',
+      sender: { user_id: 10001, nickname: '小明' },
+    })!
+
+    it('drops a group reply whose quoted author is NOT the bot', async () => {
+      const { pipeline, dispatched, calls } = makeReplyHarness('999')
+      await pipeline.processInbound(groupReply(5001))
+      // Exactly one get_msg: the gate's author lookup. No dispatch.
+      expect(calls).toEqual(['get_msg'])
+      expect(dispatched).toHaveLength(0)
+    })
+
+    it('lets a group reply through when the quoted author IS the bot', async () => {
+      const { pipeline, dispatched } = makeReplyHarness('10002')
+      await pipeline.processInbound(groupReply(5002))
+      expect(dispatched).toHaveLength(1)
+    })
+
+    it('fails closed when get_msg cannot resolve the author', async () => {
+      const dispatched: string[] = []
+      const pipeline = new InboundPipeline({
+        call: async () => { throw new Error('get_msg unavailable') },
+        selfId: () => '10002',
+        policy: { dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [], adminUsers: [], allowAllUsers: true, requireMention: true },
+        getChat: () => ({ loopBuffer: [], loopPending: null, dispatchTimes: [], rateLimitNoticeAt: undefined }),
+        getSettings: () => ({}) as never,
+        sweepIdleChats: async () => undefined,
+        media: { cleanupExpired: async () => undefined } as never,
+        transcriber: { enabled: false, transcribe: async () => '' } as never,
+        steerTranscript: () => undefined,
+        tryHandleCommand: async () => false,
+        buildBody: async (text: string) => text,
+        expandQuote: async () => '',
+        dispatchFollowup: async (_chatId, text) => { dispatched.push(text) },
+        sendToChat: async () => [],
+        log: () => undefined,
+        config: {
+          botQQ: '10002', ignoreSelf: false, requireMention: true, rateLimitPerMinute: 0,
+          restrictedMemberPrefix: false, maxInboundFileBytes: 0,
+        },
+      })
+      await pipeline.processInbound(groupReply(5003))
+      expect(dispatched).toHaveLength(0)
+    })
+
+    it('an explicit @mention still passes without paying for get_msg', async () => {
+      const { pipeline, dispatched, calls } = makeReplyHarness('999')
+      await pipeline.processInbound(normalizeOneBot11({
+        post_type: 'message', message_type: 'group', user_id: 10001, group_id: 888, self_id: 10002,
+        message_id: 5004,
+        message: [
+          { type: 'at', data: { qq: '10002' } },
+          { type: 'text', data: { text: '在吗' } },
+        ],
+        raw_message: '[CQ:at,qq=10002] 在吗',
+        sender: { user_id: 10001, nickname: '小明' },
+      })!)
+      expect(calls).toEqual([])
+      expect(dispatched).toHaveLength(1)
+    })
+  })
 })

@@ -5,6 +5,7 @@ import type { OneBotSegment, MediaRef } from './cq.js';
 import type { AccessPolicyConfig, ChatId, UserRole } from './chat.js';
 import type { BridgeConfig } from './bridge.js';
 import type { ChatSettings } from './registry.js';
+import type { ImageAttachmentRef } from './attach.js';
 /**
  * The neutral shape normalizeOneBot11 extracts from one OneBot 11 message
  * event: exactly the fields the inbound pipeline consumes, with the event
@@ -104,6 +105,10 @@ export interface InboundContext {
     expandQuote(messageId: string): Promise<string>;
     /** Turn dispatch — bridge-owned orchestration (ensureChat + per-turn prefixes). */
     dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string): Promise<void>;
+    /** T15: 把一张已落盘的入站图片投递给宿主附件库，换回一个不变量引用（用于
+     * content 里的 image 块）。返回 undefined = 未投递（未启用/超限/宿主不支持），
+     * 调用方退回 `[图片:<路径>]` 文本注解。可选：测试装配可省略（等于关闭投递）。 */
+    deliverInboundImage?(path: string, chatId: ChatId): Promise<ImageAttachmentRef | undefined>;
     /** T2 (P1): busy-turn policy seam — invoked for every non-command message
      * after ALL gates (dedup/policy/mention/media/rate-limit), right before the
      * turn dispatch, so queue/steer can never bypass an existing gate. Returns
@@ -132,6 +137,8 @@ export declare const DEFAULT_DEDUP_WINDOW_SECONDS = 300;
 /** W2-②: max entries kept in the dedup window map (LRU-evicted beyond this)
  * so a flood of distinct message_ids cannot grow memory unbounded. */
 export declare const DEDUP_MAX_ENTRIES = 4096;
+/** Cap on the get_msg quote memo (text + author per quoted id); same LRU reasoning as DEDUP_MAX_ENTRIES. */
+export declare const QUOTE_MEMO_MAX_ENTRIES = 512;
 /** Constructor tuning knobs for the inbound pipeline (tests inject a fake
  * clock / a small LRU cap; production uses the defaults). */
 export interface InboundPipelineOptions {
@@ -178,12 +185,26 @@ export declare class InboundPipeline {
      * (images/voices/videos) and voice files are transcribed when enabled.
      */
     buildBody(text: string, media: MediaRef[], chatId: ChatId): Promise<string>;
-    /** Resolve one media ref to a text annotation with a local path. */
-    resolveMediaRef(ref: MediaRef, chatId: ChatId): Promise<string>;
+    /** Resolve one media ref to a text annotation with a local path.
+     *
+     * `attach` (T15): 图片走真图片块投递——成功时把引用压入
+     * `settings.pendingAttachments`、注解降级为 `[图片]`（像素已随 image 块送达，
+     * 再重复一遍路径只会浪费 token）；未投递则保持 `[图片:<路径>]` 原样。命令
+     * 路由（/ocr 等）取注解时传 false，只关心路径、不必付附件投递的代价。 */
+    resolveMediaRef(ref: MediaRef, chatId: ChatId, attach?: boolean): Promise<string>;
     /** M3-D4c: transcribe in the background and deliver the labeled transcript
      * into the chat's turn (steer at the running turn's nearest step boundary,
      * or a new turn when the agent is idle). Failure keeps [语音] as final. */
     private transcribeLater;
+    /** Memo shared by the mention gate (needs the author) and the quote
+     * expansion (needs the text) so one reply costs a single get_msg. */
+    private readonly quoteMemo;
+    /** Fetch a quoted message once: flattened [引用] text + the author's QQ. */
+    private fetchQuote;
+    /** Author QQ of the quoted message ('' when unknown or the fetch failed).
+     * The mention gate uses this because OneBot's reply segment only carries an
+     * id — an unknown author must never be mistaken for the bot itself. */
+    resolveReplyTarget(messageId: string): Promise<string>;
     /** Expand a quoted (reply) message into [引用] text via get_msg. */
     expandQuote(messageId: string): Promise<string>;
     /**

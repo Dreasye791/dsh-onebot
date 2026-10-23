@@ -54,7 +54,13 @@ export declare function faceToEmoji(id: string): string;
  * @param selfId - learned bot QQ id ('' when unknown).
  * @param botQQ - configured bot QQ id ('' when unset).
  */
-export declare function detectMention(segments: OneBotSegment[] | undefined, raw: string, selfId: string, botQQ: string): boolean;
+/**
+ * Detect whether the message mentions the bot. Reply segments are target-aware
+ * and fail-closed: OneBot 11's reply carries only `id`, so an absent or foreign
+ * quoted author is NOT a mention. `replyTarget` is the author resolved upstream
+ * via get_msg ('' / undefined = unknown).
+ */
+export declare function detectMention(segments: OneBotSegment[] | undefined, raw: string, selfId: string, botQQ: string, replyTarget?: string): boolean;
 /** Split a raw CQ string into segments; used only when no segment array exists. */
 export declare function parseCqString(raw: string): OneBotSegment[];
 /**

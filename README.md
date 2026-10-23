@@ -157,7 +157,7 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `accessToken` | 空 | OneBot token；**reverse 模式必填**，留空插件拒绝启动（fail-closed）；forward 可为空 |
 | `botQQ` | 空 | 机器人 QQ（空=自动学习） |
 | `ignoreSelf` | `true` | 忽略机器人自己发出的消息（防自循环） |
-| `requireMention` | `true` | 群聊需 @ 或回复机器人的消息才响应（回复他人消息不触发；被回复消息无法判定时回落视为提及，fail-open） |
+| `requireMention` | `true` | 群聊需 @ 或回复机器人的消息才响应（回复他人消息不触发）。回复判定走一次 `get_msg` 取被回复消息的作者 QQ 来比对（OneBot 的 reply 段只带 message_id、不带 qq）；被回复消息已撤回/查不到/机器人 QQ 未知时一律视为**未提及**（fail-closed，宁可不答也不误答）。`botQQ` 为空时会被动从 meta 事件学习 |
 | `rateLimitPerMinute` | `30` | 每会话每分钟普通消息上限（60s 滑动窗口）：超限跳过处理并限流提示（每窗口至多一条），命令不受限；`0` = 禁用 |
 | `dedupWindowSeconds` | `300` | 入站消息去重窗口（秒，W2-②）：同一会话内相同 message_id 在该窗口内重投（断线重连重放等）只处理第一条，后续静默跳过并记 debug；仅对会触发回复处理的消息事件生效（notice/meta 类不经过此闸）；`0` = 禁用去重 |
 | `actionRatePerMinute` | `20` | 主动写操作每分钟全桥合计上限（W2-③）：约束 qq_send_image/voice/video/file/segments 与 qq_send_forward 等工具发起的主动发送（回合内的被动回复/interim/通知不受此闸，由 rateLimitPerMinute 与离线队列上限约束）；超限拒发并记 warn 与审计；`0` = 禁用分钟限额 |
@@ -390,7 +390,7 @@ chat 回退到下一条消息新建会话，不会卡死。损坏（碰撞/恢�
 要点（来自移植源 DEVLOG 的教训）：
 
 - **CQ 反转义**：NapCat 会把 URL 里的 `&` 转成 `&amp;`，下载前必须反转义（CDN 403 的根因）。
-- **@ 检测 fail-closed**：不知道机器人 QQ 时，群消息一律视为未 @，不自动回复。
+- **@ / 回复检测 fail-closed**：不知道机器人 QQ 时，群消息一律视为未提及，不自动回复；回复他人消息时被回复者身份查不到（已撤回/`get_msg` 失败）同样按未提及处理——宁可漏答也不错答。
 - **断线即失败 pending**：WS 断开时立即 reject 所有未完成 action，避免 10-30s 干等与泄漏。
 - **重连去重**：并发断线只允许一个重连任务，防止双 WS 连接。
 - **int(target) 兜底**：chat_id 解析进 try/catch，坏目标不能炸掉宿主。

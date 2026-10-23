@@ -79,8 +79,14 @@ describe('detectMention', () => {
     expect(detectMention([{ type: 'at', data: { qq: '10001' } }], '', '10001', '')).toBe(true)
     expect(detectMention([{ type: 'at', data: { qq: '999' } }], '', '10001', '')).toBe(false)
   })
-  it('detects reply as mention', () => {
-    expect(detectMention([{ type: 'reply', data: { id: '1' } }], '', '10001', '')).toBe(true)
+  it('T14: a bare reply (no qq in the segment) is NOT a mention — OneBot 11 reply carries only id', () => {
+    // Regression: this used to be `true`, which made every quote-tap in a group
+    // wake the bot even when the quoted author was somebody else entirely.
+    expect(detectMention([{ type: 'reply', data: { id: '1' } }], '', '10001', '')).toBe(false)
+    // Resolved upstream via get_msg: the quoted author decides.
+    expect(detectMention([{ type: 'reply', data: { id: '1' } }], '', '10001', '', '10001')).toBe(true)
+    expect(detectMention([{ type: 'reply', data: { id: '1' } }], '', '10001', '', '999')).toBe(false)
+    expect(detectMention([{ type: 'reply', data: { id: '1' } }], '', '10001', '', '')).toBe(false)
   })
   it('A8: reply mentions only when it determinably replies to the bot itself', () => {
     // Replied-to user qq == learned selfId → mention.
@@ -93,6 +99,12 @@ describe('detectMention', () => {
   it('falls back to CQ strings', () => {
     expect(detectMention(undefined, '[CQ:at,qq=10001] hi', '10001', '')).toBe(true)
     expect(detectMention(undefined, 'hi', '10001', '')).toBe(false)
+  })
+  it('T14: a CQ-string reply is not a mention unless the resolved author is the bot', () => {
+    const raw = '[CQ:reply,id=42] 你好'
+    expect(detectMention(undefined, raw, '10001', '')).toBe(false)
+    expect(detectMention(undefined, raw, '10001', '', '10001')).toBe(true)
+    expect(detectMention(undefined, raw, '10001', '', '999')).toBe(false)
   })
   it('fails closed when bot id unknown', () => {
     expect(detectMention([{ type: 'at', data: { qq: '10001' } }], '', '', '')).toBe(false)

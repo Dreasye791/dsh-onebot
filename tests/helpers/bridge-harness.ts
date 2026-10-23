@@ -25,7 +25,7 @@ import { InjectChannel } from '../../src/inject.js'
 /** A fake agent handle for the bridge. */
 export function makeFakeAgents(
   sessionIds: string[],
-  captured: { followups: Array<{ text: string; sessionId: string }>; steers?: Array<{ text: string; sessionId: string }>; createdMeta?: Array<{ cwd?: string; agentPreset?: string }> },
+  captured: { followups: Array<{ text: string; sessionId: string }>; steers?: Array<{ text: string; sessionId: string }>; createdMeta?: Array<{ cwd?: string; agentPreset?: string }>; channelTools?: string[]; channelSections?: string[]; guards?: Array<(exec: { name?: unknown }) => string | undefined> },
   opts?: { failCreateFor?: string; resumeOk?: boolean; createDelayMs?: number },
 ) {
   const disposed: string[] = []
@@ -59,7 +59,13 @@ export function makeFakeAgents(
         const agentCtx = {
           on: () => () => undefined,
           systemPrompt: { section: (s: { name: string }) => { captured.channelSections?.push(s.name); return () => undefined } },
-          tools: { register: (t: { name: string }) => { captured.channelTools?.push(t.name); return () => undefined } },
+          // T20: installChannelScope 会调用 tools.guard 装 MCP 白名单闸门；桩里必须
+          // 有该方法，否则 agent 创建即抛 TypeError。guard 收到的函数收进 captured，
+          // 供 spec 断言拒绝/放行语义。
+          tools: {
+            register: (t: { name: string }) => { captured.channelTools?.push(t.name); return () => undefined },
+            guard: (fn: (exec: { name?: unknown }) => string | undefined) => { captured.guards?.push(fn); return () => undefined },
+          },
         }
         await options.setup(agentCtx)
       }
@@ -84,7 +90,12 @@ export function makeFakeAgents(
         whenIdle: async () => undefined,
       }
       if (typeof options.setup === 'function') {
-        await options.setup({ on: () => () => undefined, systemPrompt: { section: () => () => undefined }, tools: { register: () => () => undefined } })
+        await options.setup({
+          on: () => () => undefined,
+          systemPrompt: { section: () => () => undefined },
+          // T20: resume 路径同样要走 installChannelScope，guard 桩不能缺。
+          tools: { register: () => () => undefined, guard: () => () => undefined },
+        })
       }
       return { agent, dispose: async () => undefined }
     }),

@@ -178,6 +178,11 @@ const STRING_KEYS: readonly string[] = ['host', 'url', 'accessToken', 'botQQ', '
  *  未列出的字符串键不设上限（保持 T1 既有行为）。 */
 const STRING_MAX_LEN: Readonly<Record<string, number>> = { persona: 20000 }
 const STRING_ARRAY_KEYS: readonly string[] = ['adminUsers', 'allowFrom', 'groupAllowFrom', 'mcpToolAllow']
+/** 字符串数组键的单项长度上限（T20：与 client patchSchema `vString(0, 128)` 同宽）。
+ *  未列出的数组键不设上限（保持 T1 既有行为）。 */
+const STRING_ARRAY_ITEM_MAX_LEN: Readonly<Record<string, number>> = { mcpToolAllow: 128 }
+/** 字符串数组键的条目数上限（T20：防止 patch 里塞进无界的白名单）。 */
+const STRING_ARRAY_MAX_ITEMS: Readonly<Record<string, number>> = { mcpToolAllow: 256 }
 /** 全部 38 键（校验与快照的唯一键集；7 枚举 + 8 数字 + 12 布尔 + 7 字符串 + 4 字符串数组）。 */
 export const ALL_KEYS: readonly string[] = [
   ...Object.keys(ENUM_KEYS), ...NUMBER_KEYS, ...BOOLEAN_KEYS, ...STRING_KEYS, ...STRING_ARRAY_KEYS,
@@ -481,8 +486,20 @@ export function validatePatch(patch: unknown): Record<string, unknown> {
       else if (maxLen !== undefined && value.length > maxLen) issues.push(`${key} 长度不得超过 ${maxLen} 字符（当前 ${value.length}）`)
       else clean[key] = value
     } else if (STRING_ARRAY_KEYS.includes(key)) {
-      if (Array.isArray(value) && value.every((item) => typeof item === 'string')) clean[key] = value
-      else issues.push(`${key} 必须是字符串数组`)
+      if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) {
+        issues.push(`${key} 必须是字符串数组`)
+      } else {
+        const maxItems = STRING_ARRAY_MAX_ITEMS[key]
+        const itemMax = STRING_ARRAY_ITEM_MAX_LEN[key]
+        const overLong = itemMax === undefined ? [] : value.filter((item) => (item as string).length > itemMax)
+        if (maxItems !== undefined && value.length > maxItems) {
+          issues.push(`${key} 最多 ${maxItems} 条（当前 ${value.length}）`)
+        } else if (overLong.length > 0) {
+          issues.push(`${key} 的单条长度不得超过 ${itemMax} 字符（超限 ${overLong.length} 条）`)
+        } else {
+          clean[key] = value
+        }
+      }
     } else {
       issues.push(`未知设置键 "${key}"（仅支持 ${ALL_KEYS.length} 键：${ALL_KEYS.join(', ')}）`)
     }

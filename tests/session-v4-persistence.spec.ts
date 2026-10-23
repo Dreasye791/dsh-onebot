@@ -63,7 +63,7 @@ function makeRecordingAgents() {
       const fresh = makeAgent(sessionId)
       Object.assign(agent, fresh)
       if (typeof options.setup === 'function') {
-        await options.setup({ on: () => () => undefined, systemPrompt: { section: () => () => undefined }, tools: { register: () => () => undefined } })
+        await options.setup({ on: () => () => undefined, systemPrompt: { section: () => () => undefined }, tools: { register: () => () => undefined, guard: () => () => undefined } })
       }
       return { agent, dispose: vi.fn(async () => undefined) }
     }),

@@ -242,7 +242,7 @@ describe('T4 客户端 bundle — 渲染函数模块级可测（renderGroup 纯�
     const selects = elements.filter((element) => element.type === 'select')
     const textareas = elements.filter((element) => element.type === 'textarea')
     expect(selects).toHaveLength(7) // 5 原有枚举（mode/dmPolicy/groupPolicy/unknownCommand/newMessagePolicy）+ T9 autoSteerPolicy + T10 reasoningEffort
-    expect(textareas).toHaveLength(5) // allowFrom/groupAllowFrom（stringArray）+ inject 说明 + T11 persona + T20 mcpToolAllow
+    expect(textareas).toHaveLength(5) // 4 个 stringArray（adminUsers/allowFrom/groupAllowFrom/mcpToolAllow）+ T11 persona
     expect(inputs.filter((input) => input.props.type === 'checkbox')).toHaveLength(12 + 1) // 12 布尔（5 原有 + 6 W6 + T15 attachInboundImages）+ secret 清除勾选
     expect(inputs.filter((input) => input.props.type === 'text')).toHaveLength(13) // 5 字符串（host/url/botQQ/workspacePath/memeDir）+ 全部 8 个 number（port/interimRecallMs/rateLimitPerMinute/deferredTimeoutMs/attachMaxImageMB/attachmentBudgetMB/T18 attachmentRetentionHours/attachmentSaveTimeoutMs）；accessToken 是 secret 单列
     expect(inputs.filter((input) => input.props.type === 'password')).toHaveLength(1)

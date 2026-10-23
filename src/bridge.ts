@@ -26,7 +26,7 @@ import { buildChatId, classifyUserRole, splitChatId } from './chat.js'
 import type { AccessPolicyConfig } from './chat.js'
 import { buildPlatformPrompt } from './prompt.js'
 import { registerTools } from './tools.js'
-import { makeMcpToolGuard } from './mcp-gate.js'
+import { makeMcpToolGuard, describeDroppedEntries } from './mcp-gate.js'
 import { tryHandleCommand as routeCommand, STEER_ACCEPTED_NOTICE, type CommandContext } from './commands.js'
 import { relayHostCards as relayCards, type CardRelayContext } from './card-relay.js'
 import { OutboundPipeline } from './outbound.js'
@@ -1292,7 +1292,20 @@ export class ChatBridge {
     // 继承工具、要求工具名调用时已存在（MCP 异步连接，启动期写死会抛 unknown
     // tool），且拒绝空 filter（无法表达「空名单=全禁」），所以用调用期 guard：
     // 只接管 mcp__ 前缀，白名单外的调用一律拒绝并回可读原因。
-    agentCtx.tools.guard(makeMcpToolGuard(this.deps.config.mcpToolAllow))
+    //
+    // guard 缺失时显式抛错而不是跳过：跳过等于把 profile 里所有 MCP 工具原样
+    // 交给群友，权限闸门静默失效比通道不可用危险得多。显式抛错能立刻暴露契约
+    // 破裂（宿主升级改名、或测试桩漏实现）。
+    const guard = agentCtx.tools.guard
+    if (typeof guard !== 'function') {
+      throw new Error('T20：agentCtx.tools.guard 不可用，无法安装 QQ 通道的 MCP 白名单闸门（拒绝降级为全开）')
+    }
+    const allow = this.deps.config.mcpToolAllow
+    const dropped = describeDroppedEntries(allow)
+    if (dropped.length > 0) {
+      this.deps.log('warn', 'mcpToolAllow 有 ' + dropped.length + ' 条无法识别的写法已被忽略：' + dropped.join('、'))
+    }
+    guard.call(agentCtx.tools, makeMcpToolGuard(allow))
   }
 
   // ------------------------------------------------------------ typing

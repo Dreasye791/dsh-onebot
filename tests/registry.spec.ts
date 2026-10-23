@@ -358,7 +358,8 @@ describe('ChatRegistry', () => {
           await options.setup({
             on: () => () => undefined,
             systemPrompt: { section: () => () => undefined },
-            tools: { register: () => () => undefined },
+            // T20: installChannelScope 会装 MCP 白名单闸门，桩里必须有 guard。
+            tools: { register: () => () => undefined, guard: () => () => undefined },
           })
         }
         return {
@@ -846,7 +847,7 @@ describe('ChatRegistry', () => {
 
     const resume = vi.fn(async (options: { resumeSessionId: string; agentOptions?: { provider?: string; model?: string }; setup?: (agentCtx: unknown) => unknown }) => {
       if (typeof options.setup === 'function') {
-        await options.setup({ on: () => () => undefined, systemPrompt: { section: () => () => undefined }, tools: { register: () => () => undefined } })
+        await options.setup({ on: () => () => undefined, systemPrompt: { section: () => () => undefined }, tools: { register: () => () => undefined, guard: () => () => undefined } })
       }
       return {
         agent: { session: { id: String(options.resumeSessionId), seq: 1, header: { cwd: h.mediaDir } }, status: 'idle', cancel: () => undefined, followup: () => undefined, whenIdle: async () => undefined },

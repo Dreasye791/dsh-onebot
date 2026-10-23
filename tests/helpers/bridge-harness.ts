@@ -94,7 +94,14 @@ export function makeFakeAgents(
           on: () => () => undefined,
           systemPrompt: { section: () => () => undefined },
           // T20: resume 路径同样要走 installChannelScope，guard 桩不能缺。
-          tools: { register: () => () => undefined, guard: () => () => undefined },
+          // 这里也收进 captured，否则 resume 路径的接线改动（例如漏装闸门）测不出来。
+          tools: {
+            register: () => () => undefined,
+            guard: (fn: (exec: { name?: unknown }) => string | undefined) => {
+              captured.guards?.push(fn)
+              return () => undefined
+            },
+          },
         })
       }
       return { agent, dispose: async () => undefined }
@@ -107,7 +114,7 @@ export function makeFakeAgents(
 export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean; createDelayMs?: number; transcriber?: Transcriber; trace?: TraceSink; ignoreSelf?: boolean; recorder?: InboundRecorder; inject?: InjectChannel; newMessagePolicy?: 'queue' | 'steer'; deferredTimeoutMs?: number; log?: (level: string, message: string) => void }) {
   const ctx = new Context()
   const sessionIds: string[] = []
-  const captured = { followups: [] as Array<{ text: string; sessionId: string }>, steers: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[] }
+  const captured = { followups: [] as Array<{ text: string; sessionId: string }>, steers: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[], guards: [] as Array<(exec: { name?: unknown }) => string | undefined> }
   const agents = makeFakeAgents(sessionIds, captured, opts)
   const sessions = { flush: vi.fn(async () => undefined) }
   const mediaDir = opts?.mediaDir ?? mkdtempSync(join(tmpdir(), 'onebot-test-'))

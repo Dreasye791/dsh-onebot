@@ -30,6 +30,20 @@ describe('inbound pipeline', () => {
       'qq_send_forward', 'qq_napcat_api', 'qq_group_history',
     ]))
     expect(h.captured.channelSections).toContain('channel:dsh-onebot')
+
+    // T20 接线：installChannelScope 必须把 MCP 白名单闸门装到 agent 自己的 scope 上。
+    // 只测 mcp-gate 的判定语义不够 —— 这条接线被删掉时判定逻辑仍全绿，权限闸门
+    // 却已静默失效。所以这里断言「装了 1 个 guard」且它的判定真的在起作用。
+    expect(h.captured.guards).toHaveLength(1)
+    const guard = h.captured.guards![0]
+    // 默认 mcpToolAllow = []（fail-closed）：任何 MCP 工具都被拒。
+    expect(typeof guard({ name: 'mcp__dbx__dbx_execute_query' })).toBe('string')
+    // 非 MCP 工具不受闸门影响。
+    expect(guard({ name: 'qq_send_image' })).toBeUndefined()
+    expect(guard({ name: 'read' })).toBeUndefined()
+    // 契约破裂时不静默放行。
+    expect(typeof guard({})).toBe('string')
+    expect(typeof guard({ name: '' })).toBe('string')
     const sessionId = h.sessionIds[0]
 
     // 2. Assistant message → deferred one step; turn end settles it as the

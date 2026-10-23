@@ -58,6 +58,12 @@ export interface BridgeConfig {
     fontFiles: readonly string[];
     fontFamilies: readonly string[];
     agentPreset: string;
+    /** T15：入站图片是否投递为真图片块（默认 true）；false = 只给路径文本。 */
+    attachInboundImages?: boolean;
+    /** T15：单张入站图片投递上限（字节）；0 = 不限。 */
+    attachMaxImageBytes?: number;
+    /** T15：附件库软上限（字节）；0 = 不限。 */
+    attachmentBudgetBytes?: number;
     workspacePath: string;
     /** Max inbound file bytes fetched via QQ direct link / base64 (0 = no cap). */
     maxInboundFileBytes: number;
@@ -231,6 +237,11 @@ export interface BridgeDeps {
      * replaced by 已配置/未配置 — see health.redactSnapshot). Absent = the
      * /healthcheck diagnostics export renders without a config section. */
     configSnapshot?: (() => Record<string, unknown>) | undefined;
+    /** T15: 附件库根（宿主所有，`<dshHome>/attachments/v1`）；仅用于容量统计。 */
+    attachmentsDir?: string | undefined;
+    /** T15: 宿主附件服务的**实时**取值器（`ctx.attachments`）。用函数而非快照：
+     * 服务可能在插件挂载之后才就绪。缺省 = 视作宿主不支持，入站图片退回路径文本。 */
+    attachments?: (() => unknown) | undefined;
     /** Log line callback (level, message). */
     log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void;
 }
@@ -404,6 +415,12 @@ export declare class ChatBridge {
     private buildBody;
     /** Resolve one media ref to a text annotation with a local path. */
     private resolveMediaRef;
+    /** T15：把一张入站图片投递成宿主附件引用（inbound ctx.deliverInboundImage）。
+     * 三道闸门（单图大小 / 总预算 / 宿主能力）在 attach.deliverImage 里，这里只
+     * 接线「运行时取到的服务」与「配置解析出的策略」；异常一律吞掉记 debug。 */
+    private deliverInboundImage;
+    /** T15：取走该聊天待投递的图片附件引用（取走即清空，避免跨轮重复投递）。 */
+    private takePendingAttachments;
     /** M3-D4c: steer a completed voice transcript into the chat's agent — the
      * running turn consumes it at its nearest step boundary; an idle agent
      * opens a turn. No live chat (dispatch dropped/never happened) drops it. */

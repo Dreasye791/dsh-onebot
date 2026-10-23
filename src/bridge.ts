@@ -48,6 +48,8 @@ import type { HealthDeps } from './health.js'
 import { FailureRefRegistry, failureRefSuffix } from './ref.js'
 import type { FailureRefKind } from './ref.js'
 import type { TraceStage } from './trace.js'
+import type { ImageAttachmentRef } from './attach.js'
+import { deliverImage, resolveAttachPolicy, formatStorageStats, storageStats } from './attach.js'
 /** T2 (P1): the queue notice sent to a chat when a message arrives while its
  * task is running under the default 'queue' policy — at most ONE per running
  * turn (the flag resets at turn/end) so a burst of queued messages never
@@ -97,6 +99,12 @@ export interface BridgeConfig {
    *  空串/缺省 = 不注册 qq_send_meme；非空则本通道 agent 多一个只读该目录的
    *  发图工具。目录必须在 mediaDir 之内才能通过出站围栏。 */
   memeDir?: string
+  /** T15：入站图片是否投递为真图片块（默认 true）；false = 只给路径文本。 */
+  attachInboundImages?: boolean
+  /** T15：单张入站图片投递上限（字节）；0 = 不限。 */
+  attachMaxImageBytes?: number
+  /** T15：附件库软上限（字节）；0 = 不限。 */
+  attachmentBudgetBytes?: number
   workspacePath: string
   /** Max inbound file bytes fetched via QQ direct link / base64 (0 = no cap). */
   maxInboundFileBytes: number
@@ -258,6 +266,11 @@ export interface BridgeDeps {
    * replaced by 已配置/未配置 — see health.redactSnapshot). Absent = the
    * /healthcheck diagnostics export renders without a config section. */
   configSnapshot?: (() => Record<string, unknown>) | undefined
+  /** T15: 附件库根（宿主所有，`<dshHome>/attachments/v1`）；仅用于容量统计。 */
+  attachmentsDir?: string | undefined
+  /** T15: 宿主附件服务的**实时**取值器（`ctx.attachments`）。用函数而非快照：
+   * 服务可能在插件挂载之后才就绪。缺省 = 视作宿主不支持，入站图片退回路径文本。 */
+  attachments?: (() => unknown) | undefined
   /** Log line callback (level, message). */
   log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void
 }
@@ -368,6 +381,7 @@ export class ChatBridge {
       buildBody: (text, media, chatId) => this.buildBody(text, media, chatId),
       expandQuote: messageId => this.expandQuote(messageId),
       dispatchFollowup: (chatId, text, role, nickname) => this.dispatchFollowup(chatId, text, role, nickname),
+      deliverInboundImage: (path, chatId) => this.deliverInboundImage(path, chatId),
       interceptBusyTurn: (chatId, text, role, nickname, plain) => this.interceptBusyTurn(chatId, text, role, nickname, plain),
       sendToChat: (chatId, text) => this.sendToChat(chatId, text),
       log: (level, message) => this.deps.log(level, message),
@@ -623,11 +637,16 @@ export class ChatBridge {
     // so the role cannot interleave with another dispatch.
     chat.pendingTurnRoles.push(role)
     this.deps.log('info', 'followup from ' + chatId + ': ' + final.slice(0, 120))
+    // T15：这条消息里已投递成功的图片按顺序跟在文本块后面（模型能看像素）。
+    // 取走即清空，避免同一批图被下一次 dispatch 重复投递。
+    const images = this.takePendingAttachments(chatId)
+    const content: UserMessageContent[] = [{ type: 'text', text: final }]
+    for (const attachment of images) content.push({ type: 'image', attachment })
     // Plugin-originated user message: the session log attributes QQ inbound
     // messages to this plugin's own producer-owned source kind, keeping them
     // distinguishable from host/web UI inputs.
     chat.agent.followup(createUserMessage({
-      content: [{ type: 'text', text: final }],
+      content,
       source: { kind: 'plugin:dsh-onebot' },
     }))
     // W1 cross-stream join: the turn's session events arrive on a different
@@ -766,6 +785,17 @@ export class ChatBridge {
       dshHome: bridge.deps.dshHome,
       // W1/T5: the healthcheck command renders/packs through the bridge.
       healthReport: () => bridge.buildHealthReport(),
+      // T15: /storage renders the media/attachment snapshot through the bridge
+      // (attach owns the fs walk; the command layer only forwards the text).
+      storageReport: () => formatStorageStats(storageStats(
+        bridge.deps.config.mediaDir,
+        bridge.deps.attachmentsDir ?? '',
+        resolveAttachPolicy({
+          enabled: bridge.deps.config.attachInboundImages ?? true,
+          maxImageBytes: bridge.deps.config.attachMaxImageBytes ?? 0,
+          budgetBytes: bridge.deps.config.attachmentBudgetBytes ?? 0,
+        }),
+      )),
       // T4 (P3): export takes an optional trigger reference (file-name stamp).
       exportDiagnostics: triggerRef => bridge.exportDiagnosticsPackage(triggerRef),
       // T4 (P3): command-plane failures (/retry) mint an MF- reference through
@@ -791,6 +821,54 @@ export class ChatBridge {
   /** Resolve one media ref to a text annotation with a local path. */
   private resolveMediaRef(ref: MediaRef, chatId: ChatId): Promise<string> {
     return this.inbound.resolveMediaRef(ref, chatId)
+  }
+
+  /** T15：把一张入站图片投递成宿主附件引用（inbound ctx.deliverInboundImage）。
+   *
+   * 三道闸门（单图大小 / 总预算 / 宿主能力）都在 `attach.deliverImage` 里，
+   * 这里只负责把「运行时取到的服务」与「配置解析出的策略」接线过去。任何
+   * 异常都吞掉并记 debug：视觉增强失败绝不能影响消息本身可达。 */
+  private async deliverInboundImage(path: string, chatId: ChatId): Promise<ImageAttachmentRef | undefined> {
+    const attachment = this.deps.attachments
+    if (attachment === undefined) return undefined
+    let host: unknown
+    try {
+      host = attachment()
+    } catch {
+      return undefined
+    }
+    const policy = resolveAttachPolicy({
+      enabled: this.deps.config.attachInboundImages ?? true,
+      maxImageBytes: this.deps.config.attachMaxImageBytes ?? 0,
+      budgetBytes: this.deps.config.attachmentBudgetBytes ?? 0,
+    })
+    const result = await deliverImage(host, path, policy, this.deps.config.mediaDir)
+    if (result.ref !== undefined) {
+      if (result.dedupHit === true) {
+        this.deps.log('debug', '入站图片命中去重（未重复占用空间）: ' + chatId)
+      }
+      return result.ref
+    }
+    if (result.skipped !== undefined && result.skipped !== 'disabled') {
+      this.deps.log('debug', '入站图片未投递为图片块（' + result.skipped + '），退回路径文本: ' + path)
+    }
+    return undefined
+  }
+
+  /** T15：取走该聊天待投递的图片附件引用（取走即清空）。
+   *
+   * 清空是语义要求而非优化：同一条入站消息里的图片由 `buildBody` 逐个压入
+   * `pendingAttachments`，而 dispatch 只应消费一次——若保留，下一轮 dispatch
+   * （比如用户只发一句话）会把上一轮的图再投一遍，模型会莫名其妙地重新看图。
+   * @param chatId - 目标聊天。
+   * @returns 与消息内出现顺序一致的引用数组；无待投递时为空数组。
+   */
+  private takePendingAttachments(chatId: ChatId): ImageAttachmentRef[] {
+    const settings = this.registry.getSettings(chatId)
+    const queued = settings.pendingAttachments
+    if (queued === undefined || queued.length === 0) return []
+    settings.pendingAttachments = undefined
+    return queued
   }
 
   /** M3-D4c: steer a completed voice transcript into the chat's agent — the

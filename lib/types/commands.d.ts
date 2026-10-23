@@ -100,6 +100,11 @@ export interface CommandContext {
     /** W1/T5 /healthcheck: render the health summary (absent = the bridge has
      * no health wiring — the command replies with a hint instead). */
     healthReport?: (() => Promise<string>) | undefined;
+    /** T15 /storage: render the media/attachment storage snapshot (absent = the
+     * bridge has no attach wiring — the command replies with a hint instead).
+     * Returns ready-to-send text: the command layer stays free of fs/attach
+     * dependencies and only forwards the rendered report. */
+    storageReport?: (() => string) | undefined;
     /** W1/T5 /healthcheck export: pack the redacted diagnostics archive,
      * returning its path. T4 (P3): the optional trigger reference is stamped
      * into the archive file name (absent = the bridge's latest fault reference,

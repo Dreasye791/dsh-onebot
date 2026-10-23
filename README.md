@@ -26,11 +26,11 @@
 | 类别 | 能力 |
 |---|---|
 | 连接 | 反向 WS（NapCat ws-reverse 拨入，默认端口 8643）或正向 WS（拨出，默认 ws://127.0.0.1:3001）；断线自动重连（2s→60s 退避） |
-| 入站 | 私聊/群聊、段数组优先解析（CQ 字符串回退）、CQ 反转义、@/回复触发检测（fail-closed；回复仅认机器人自己的消息）、图片四路解析（url/base64/file/hash）、大图自动压缩（长边 ≤`inboundImageMaxPx`，GIF 不压）、文件段双通道接收（CDN 直链 get_private_file_url + get_file base64/url 回退）、表情 id→emoji/卡片/戳一戳段类型、引用消息自动取原文（get_msg）、合并转发自动展开（get_forward_msg） |
+| 入站 | 私聊/群聊、段数组优先解析（CQ 字符串回退）、CQ 反转义、@/回复触发检测（fail-closed；回复仅认机器人自己的消息）、图片四路解析（url/base64/file/hash）、**图片投递给模型**（T15：落盘后交给宿主附件库，作为 `image` 块进入消息 content，模型能真正「看见」图；未投递时退回 `[图片:<路径>]` 文本，详见「图片与容量管理」）、大图自动压缩（长边 ≤`inboundImageMaxPx`，GIF 不压）、文件段双通道接收（CDN 直链 get_private_file_url + get_file base64/url 回退）、表情 id→emoji/卡片/戳一戳段类型、引用消息自动取原文（get_msg）、合并转发自动展开（get_forward_msg） |
 | 语音 | ffmpeg 转 16kHz WAV + whisper 转写（openai-whisper / whisper.cpp / 自定义命令）；**非阻塞**：语音消息先以 [语音] 占位进入回合（不阻塞回复），转写完成后以「（语音转写：…）」补递（默认超时 60s）；转写失败/超时保留 [语音] 占位 |
 | 文字图 | t2i 卡片渲染器（@napi-rs/canvas）：标题/粗斜体/删除线/引用/列表/代码块/表格/行内 code 胶囊/彩色 emoji/中文标点禁则；与 Hermes 原版同款数值（800px/26px/禁则集合/右缘 790） |
 | 出站 | 正文 ≤ `textImageThreshold`（默认 150）字符单条发送、**超过阈值渲染 t2i 文字图卡片**（AstrBot 风格：标题/引用/列表/表格/代码块/彩色 emoji；渲染失败、PNG 超 `outboundImageMaxBytes` 或 `<=0` 禁用卡片时回退单条纯文本）、Markdown 剥离为 QQ 纯文本、[[qq_forward]] 合并转发（群/私聊）、**实时中间消息**（interimMessages：每条中间文本立即发出、实时可见；各自在 `interimRecallMs`（默认 90s）后自动单独撤回；回合结束时先把整轮中间消息渲染成一张 **t2i 小结卡**、立即撤回仍在屏幕上的原文、再发送最终回复——不用回合末合并转发，避免长回合「原文超 2 分钟撤不回+转发卡重复」；`interimRecall: false` 时降级为只发不撤（无小结卡、不撤回））、**宿主「计划书/提问卡」自动中继**（模型调用 exit_plan_mode / ask_user_question 时把计划全文/问题选项发到 QQ）、正在输入提示（set_input_status，仅私聊） |
-| 命令 | 斜杠命令（仅管理员）：`/new` 开新会话、`/stop` 停止生成、`/steer <补充内容>` 向运行中的任务补充指令（无运行任务时回用法提示；详见下方命令表与 `newMessagePolicy` 配置）、`/model` 查看或切换当前会话模型（`--default` 修改部署默认；无参输出两级序号列表，回复序号选 provider → 再回复序号选模型）、`/workspace` 查看或切换工作区（无参编号列表，回复序号即选）、`/preset` 查看或切换 agent 预设（无参编号列表，回复序号即选）、`/session` 查看可切回历史会话并按序号切回（`/new`、`/workspace`、`/preset` 切换下来的旧会话进列表，可来回切，历史上下文恢复）、`/status` 会话全景、`/doctor [export [参考号]]`（别名 `/healthcheck`）运行体检（export [参考号] 导出脱敏诊断包 qq-diagnostics-*.zip，文件名含触发参考号）、`/retry` 重跑上一条、`/id` 会话标识、`/ver` 版本、`/ocr` 识别最近图片、`/mode` 切换出站模式（跨重启持久化）、`/plan` 计划模式、`/permission` 切换宿主权限预设（QQ 别名 `w`=工作区可写+需审批、`f`=全权+免审批；完整预设名照传，未知名由宿主报错并回显可用列表；无参查看当前与可用列表，序号按 available 顺序）、`/goal` 目标记录（跨重启持久化）、`/help` 帮助；未知斜杠命令默认拦截并提示相近命令（`unknownCommand: passthrough` 改为透传给模型） |
+| 命令 | 斜杠命令（仅管理员）：`/new` 开新会话、`/stop` 停止生成、`/steer <补充内容>` 向运行中的任务补充指令（无运行任务时回用法提示；详见下方命令表与 `newMessagePolicy` 配置）、`/model` 查看或切换当前会话模型（`--default` 修改部署默认；无参输出两级序号列表，回复序号选 provider → 再回复序号选模型）、`/workspace` 查看或切换工作区（无参编号列表，回复序号即选）、`/preset` 查看或切换 agent 预设（无参编号列表，回复序号即选）、`/session` 查看可切回历史会话并按序号切回（`/new`、`/workspace`、`/preset` 切换下来的旧会话进列表，可来回切，历史上下文恢复）、`/status` 会话全景、`/storage` 存储占用（媒体目录 / 附件库 / 本插件贡献 / 软上限）、`/doctor [export [参考号]]`（别名 `/healthcheck`）运行体检（export [参考号] 导出脱敏诊断包 qq-diagnostics-*.zip，文件名含触发参考号）、`/retry` 重跑上一条、`/id` 会话标识、`/ver` 版本、`/ocr` 识别最近图片、`/mode` 切换出站模式（跨重启持久化）、`/plan` 计划模式、`/permission` 切换宿主权限预设（QQ 别名 `w`=工作区可写+需审批、`f`=全权+免审批；完整预设名照传，未知名由宿主报错并回显可用列表；无参查看当前与可用列表，序号按 available 顺序）、`/goal` 目标记录（跨重启持久化）、`/help` 帮助；未知斜杠命令默认拦截并提示相近命令（`unknownCommand: passthrough` 改为透传给模型） |
 | 工具 | `qq_send_image`（≤9 张，路径或 URL）、`qq_send_voice`、`qq_send_video`、`qq_send_file`、`qq_send_forward`、`qq_send_meme`（配 `memeDir` 后出现，按情绪/关键词抽预置表情包）、`qq_napcat_api`（14 个白名单 action）、`qq_group_history`（文件编辑工具 `code_safe_edit` 等已拆至独立插件 dsh-safe-edit，见下文「安全编辑」） |
 | 权限 | 管理员白名单（`ONEBOT_ALLOWED_USERS`）、dm/group 策略（open/allowlist/disabled）、群聊 @提及 gating、受限用户 [受限用户:仅问答] 软限制、出站敏感内容审计 |
 | 会话 | 每个 QQ 会话一个持久 Agent（session id 稳定派生），重启后自动 resume；按 `agentPreset`/`workspacePath` 挂载到 preset 与工作区；每轮结束 flush 落盘 |
@@ -199,6 +199,9 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `mediaDir` | `<dsh-home>/media/onebot` | 入站媒体/映射文件目录 |
 | `tempTtlHours` | `6` | 入站临时媒体文件保留时长（小时），到期自动清理 |
 | `inboundImageMaxPx` | `2048` | 入站图片长边上限（px）：超过则等比压缩后交给视觉模型（透明 PNG 保留、GIF 不压）；`<=0` 禁用（旧名 `imageMaxSize` deprecated，本版兼容读取） |
+| `attachInboundImages` | `true` | 入站图片投递（T15）：把落盘的入站图片交给宿主附件库，作为真正的 `image` 块进入消息 content，模型能直接看图；`false` = 退回旧行为（只在文本里给 `[图片:<路径>]`，模型得自己读文件）。投递受宿主附件服务可用性与下方两个上限约束，任一环节不满足就自动回退成文本，不影响回复 |
+| `attachMaxImageMB` | `10` | 单张图片投递上限（MB，T15）：超过该大小的图不投递给模型，退回 `[图片:<路径>]` 文本注解（模型仍可自行读文件），避免一张巨图吃掉配额；`0` = 不限 |
+| `attachmentBudgetMB` | `500` | 附件库软上限（MB，T15）：本插件账本累计占用达到该值后，**新的入站图片不再投递**（退回路径文本），`/storage` 以该值为分母给百分比并标出「已达上限」；**不自动删除**附件（附件库由宿主统一管理、跨插件共享，插件不擅自清理别人的东西）。`0` = 不限（只统计） |
 | `outboundImageMaxBytes` | `8388608` | 出站图片大小上限（字节）：t2i 小结卡等出站图片超限时自动回退纯文本（旧名 `maxImageBytes` deprecated，本版兼容读取） |
 | `maxVoiceBytes` | `15728640` | 出站语音大小上限（字节） |
 | `maxFileBytes` | `20971520` | 出站视频/文件大小上限（字节） |
@@ -222,16 +225,34 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | 体检+诊断包 | 无需开关 | QQ 里发 `/doctor`（仅管理员，等价别名 `/healthcheck`）：连接态/重试与自愈/去重与写闸门计数/trace·inbox·audit 文件大小/最近 5 条 ok:false 事件/最近故障参考号；`/doctor export [参考号]` 打包 trace+inbox+actions log+脱敏配置快照为 `mediaDir/qq-diagnostics-<ts>[-<参考号>].zip`（参考号省略时自动用最近一次故障的参考号；token/accessToken 强制脱敏，含最终字节扫描 fail-closed） |
 | 诊断参考号 | 无需开关 | 连接/桥类故障发 `QQ-CONN-<时间戳><随机>`、消息类故障发 `MF-<时间戳><随机>` 参考号（仅故障事件生成，正常流量零发号；参考号本身不含任何用户消息内容）。同一参考号贯穿四处：⚠️ 错误提示尾部、宿主日志「故障参考号 …」行、trace 事件 `data.ref`、`/doctor` 报告「最近故障参考号」节；诊断包导出文件名含触发参考号 |
 
+## 图片与容量管理（T15）
+
+入站图片落盘后可以**投递给模型**，让视觉模型真正「看见」图（此前只给文本路径，模型得自己读文件）。
+
+| 环节 | 行为 |
+|---|---|
+| 什么时候投递 | 仅入站**图片**段（png/jpg/jpeg/webp/gif）；表情、卡片、文件段不走这条 |
+| 怎么投递 | 先把图落进 `mediaDir`（既有逻辑不变：四路解析、大图按 `inboundImageMaxPx` 压缩、GIF 不压），再把**同一份字节**交给宿主附件服务 `ctx.attachments`，拿回 content-addressed 引用，拼成 `{ type: 'image', attachment }` 块放进消息 content |
+| 三道闸门（都不抛错） | ① 单图超 `attachMaxImageMB` → `too-large`；② 本插件账本累计已达 `attachmentBudgetMB` → `budget`；③ 宿主附件服务不可用 / 类型不支持 / 写入失败 → `host-unavailable`、`unsupported-type`、`save-failed` |
+| 闸门不过怎么办 | 掉回旧行为：content 里给 `[图片:<路径>]`，消息照常可达（模型仍可自行 `read` 该文件）。**视觉增强失败绝不影响消息本身** |
+| 去重 | 账本按 `attachmentId` 记 `hits`；同一张图重复进来命中宿主内容寻址去重，**不占新空间**，仅 `hits+1` |
+| 账本位置 | `<mediaDir>/attach-ledger.json`（本插件自己写的贡献记录，用于统计「我占了多少」，不碰宿主附件库里的其它对象） |
+| 容量统计 | QQ 里发 `/storage`（仅管理员）：`mediaDir` 总占用与文件数、宿主附件库总量、本插件贡献（对象数/字节/去重命中次数）、`attachmentBudgetMB` 软上限与已用百分比 |
+
+**为什么不自动清理附件库**：附件库由宿主统一管理、跨插件共享，插件看不出哪些对象是别人还在用的。所以 `attachmentBudgetMB` 只做统计口径与降级闸门——达到上限后**新图片自动降级为文本路径**，`/storage` 会标出「已达上限」；**不删任何东西**。真正想回收空间时，找宿主侧清理，或把 `attachmentBudgetMB` 设小以提前降级。投递被闸门拦下的具体原因（`too-large` / `budget` / `host-unavailable` / `unsupported-type` / `save-failed`）走 `logLevel=debug` 日志，不刷 warn——因为预算长期超限时每张图都会触发一条，warn 级会淹没真故障。
+
+`mediaDir` 本身的临时文件仍由既有 `tempTtlHours`（默认 6 小时）定期清理。
+
 ## 设置页
 
 dsh Web GUI 的设置页提供本插件的可视化配置（host-plane Remote `onebotSettings`，写入 profile 层
 `cordis.patch.yml` 中 `dsh-onebot` 条目的 config 覆盖行——与手改 patch、宿主原生设置页是同一个持久层）。
 
-### 四组 32 键
+### 四组 35 键
 
 | 组 | 键 |
 |---|---|
-| connection（连接） | `mode`、`host`、`port`、`url`、`accessToken`、`botQQ`、`workspacePath`、`memeDir` |
+| connection（连接） | `mode`、`host`、`port`、`url`、`accessToken`、`botQQ`、`workspacePath`、`memeDir`、`attachInboundImages`、`attachMaxImageMB`、`attachmentBudgetMB` |
 | permissions（权限） | `requireMention`、`adminUsers`、`dmPolicy`、`groupPolicy`、`allowAllUsers`、`allowFrom`、`groupAllowFrom` |
 | behavior（行为） | `interimMessages`、`interimRecall`、`interimRecallMs`、`sendErrorNotice`、`unknownCommand`、`rateLimitPerMinute`、`newMessagePolicy`、`autoSteerPolicy`、`deferredTimeoutMs`、`reasoningEffort`、`persona` |
 | diagnostics（诊断） | `actionAuditEnabled`、`traceEnabled`、`recordInbound`、`inboxRedact`、`injectEnabled`、`injectDryRun` |
@@ -241,7 +262,7 @@ dsh Web GUI 的设置页提供本插件的可视化配置（host-plane Remote `o
 ### 与 patch config 的优先级
 
 **schema 默认值 ← bundle/底层 patch（继承层） ← profile 覆盖行（设置页写这里）**；同一层内后写的 patch
-条目胜出。设置页键与手改 patch 是同一层的同一行，不存在两套优先级。四组 32 键之外的键
+条目胜出。设置页键与手改 patch 是同一层的同一行，不存在两套优先级。四组 35 键之外的键
 （media/STT/性能/`agentPreset` 等低频键）不设 UI，仍在同一行 config 手改 patch。
 
 ### 生效方式
@@ -281,6 +302,7 @@ dsh Web GUI 的设置页提供本插件的可视化配置（host-plane Remote `o
 | `/preset [id\|序号]` | 查看当前/可用预设（无参编号列表，回复序号即选），或切换 preset（重建会话，新会话 header 记录） |
 | `/session [序号]` | 查看本会话可切回的历史会话（无参编号列表，每项含内容预览、建立时间与退休时间，id 截短显示；日志不可读的项显示「（内容不可读）」且不影响其余项），回复序号切回：当前会话退休进列表、目标会话恢复其历史上下文（含 per-chat 设置），支持来回切换；列表跨重启保留（switchable-sessions.json，每 chat 上限 20 条） |
 | `/status` | 会话全景：chat/session/preset/model/cwd/出站模式/agent/可切回数 状态 |
+| `/storage` | 存储占用：`mediaDir` 总占用与文件数、本插件在宿主附件库里的贡献（`/storage` 会实时遍历附件库按本插件的写入路径统计）、`attachmentBudgetMB` 软上限与百分比 |
 | `/retry` | 重跑上一条用户消息（上一轮出错后重试） |
 | `/id` | 只看 chat/session/cwd（排查用） |
 | `/ver` | 插件版本 + git commit |

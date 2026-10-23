@@ -56,10 +56,10 @@ import type { WorkspaceRegistryLike } from './bridge.js'
 export const ENTRY_ID = 'dsh-onebot'
 /** Typert Remote 命名空间 = cordis 服务键（T1 §4）。 */
 export const NAMESPACE = 'onebotSettings'
-/** 快照固定值：32 键均为插件级热重启生效（T1 §5；W1/W2 新增 6 布尔键同粒度）。 */
+/** 快照固定值：35 键均为插件级热重启生效（T1 §5；W1/W2 新增 6 布尔键同粒度）。 */
 export const REMOTE_EFFECT = 'restart'
 
-/** 设置页 UI 四组 32 键（T1 §4 + T9 autoSteerPolicy + T3 deferredTimeoutMs + T10 reasoningEffort + T11 persona；与 src/index.ts Config schema 一一对应）。
+/** 设置页 UI 四组 35 键（T1 §4 + T9 autoSteerPolicy + T3 deferredTimeoutMs + T10 reasoningEffort + T11 persona；与 src/index.ts Config schema 一一对应）。
  *  W6：permissions/behavior 三组 19 键保持不动，W1/W2 的 6 个布尔键独立成
  *  「diagnostics（诊断）」组——它们全部默认关（除 actionAuditEnabled 默认开）、
  *  属观测/调试面，与连接权限行为组的使用频率与风险等级都不同，独立分组让
@@ -67,9 +67,11 @@ export const REMOTE_EFFECT = 'restart'
  *  W7：connection 组追加 workspacePath（会话默认工作区；schema 已有该键
  *  src/index.ts:287，本批次起入面板白名单，键序追加在组尾）。
  *  T12：connection 组追加 memeDir（表情包目录；schema 已有该键 src/index.ts:318，
- *  本批次起入面板白名单，键序追加在组尾。留空 = 不注册 qq_send_meme 工具）。 */
+ *  本批次起入面板白名单，键序追加在组尾。留空 = 不注册 qq_send_meme 工具）。
+ *  T15：connection 组追加 attachInboundImages / attachMaxImageMB / attachmentBudgetMB
+ *  三键（入站图片投递与附件库容量）。面板里 MB 是**展示单位**，schema 侧换算成字节。 */
 export const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>> = {
-  connection: ['mode', 'host', 'port', 'url', 'accessToken', 'botQQ', 'workspacePath', 'memeDir'],
+  connection: ['mode', 'host', 'port', 'url', 'accessToken', 'botQQ', 'workspacePath', 'memeDir', 'attachInboundImages', 'attachMaxImageMB', 'attachmentBudgetMB'],
   permissions: ['requireMention', 'adminUsers', 'dmPolicy', 'groupPolicy', 'allowAllUsers', 'allowFrom', 'groupAllowFrom'],
   behavior: ['interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'reasoningEffort', 'persona'],
   diagnostics: ['actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun'],
@@ -87,6 +89,10 @@ export const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>> = {
   workspacePath: '',
   // T12：表情包目录（schema 默认 ''，src/index.ts:318——留空 = 不注册 qq_send_meme）。
   memeDir: '',
+  // T15：入站图片投递（schema 默认 true / 10 / 500，src/index.ts T15 三键）。
+  attachInboundImages: true,
+  attachMaxImageMB: 10,
+  attachmentBudgetMB: 500,
   requireMention: true,
   adminUsers: [],
   dmPolicy: 'open',
@@ -134,20 +140,23 @@ const ENUM_KEYS: Readonly<Record<string, readonly string[]>> = {
   // 思考强度覆盖：''=继承宿主 agent-default-model（默认）；其余档位只影响 QQ 通道。
     reasoningEffort: ['', 'none', 'low', 'medium', 'high', 'xhigh', 'max'],
 }
-const NUMBER_KEYS: readonly string[] = ['port', 'interimRecallMs', 'rateLimitPerMinute', 'deferredTimeoutMs']
+const NUMBER_KEYS: readonly string[] = ['port', 'interimRecallMs', 'rateLimitPerMinute', 'deferredTimeoutMs', 'attachMaxImageMB', 'attachmentBudgetMB']
 /** 数字键取值范围（评审 B4：port 1–65535、时长/频控 ≥0；越界在 Remote 层拒绝，不再只依赖宿主回滚兜底）。 */
 const NUMBER_RANGE: Readonly<Record<string, readonly [number, number | undefined]>> = {
   port: [1, 65535],
   interimRecallMs: [0, undefined],
   rateLimitPerMinute: [0, undefined],
   deferredTimeoutMs: [0, undefined],
+  // T15：MB 单位上限；0 表示「不限」，因此下限是 0 而不是 1。
+  attachMaxImageMB: [0, 1024],
+  attachmentBudgetMB: [0, 1024 * 1024],
 }
 /** 布尔键白名单（T1 §4 + W6 扩展：W1/W2 观测/调试 6 键入列；顺序与
  *  SETTINGS_GROUPS.diagnostics 一致。数值键 dedupWindowSeconds/actionRatePerMinute/
  *  actionRatePerDay/injectIntervalMs 与枚举键 traceLevel 本期不入 UI 白名单——
  *  面板仅布尔开关与既有 19 键，调优键仍走 patch config 手改，取舍见 DEVLOG W6）。 */
 const BOOLEAN_KEYS: readonly string[] = [
-  'requireMention', 'allowAllUsers', 'interimMessages', 'interimRecall', 'sendErrorNotice',
+  'requireMention', 'allowAllUsers', 'interimMessages', 'interimRecall', 'sendErrorNotice', 'attachInboundImages',
   'actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun',
 ]
 const STRING_KEYS: readonly string[] = ['host', 'url', 'accessToken', 'botQQ', 'workspacePath', 'persona', 'memeDir']
@@ -156,7 +165,7 @@ const STRING_KEYS: readonly string[] = ['host', 'url', 'accessToken', 'botQQ', '
  *  未列出的字符串键不设上限（保持 T1 既有行为）。 */
 const STRING_MAX_LEN: Readonly<Record<string, number>> = { persona: 20000 }
 const STRING_ARRAY_KEYS: readonly string[] = ['adminUsers', 'allowFrom', 'groupAllowFrom']
-/** 全部 32 键（校验与快照的唯一键集；7 枚举 + 4 数字 + 11 布尔 + 7 字符串 + 3 字符串数组）。 */
+/** 全部 35 键（校验与快照的唯一键集；7 枚举 + 6 数字 + 12 布尔 + 7 字符串 + 3 字符串数组）。 */
 export const ALL_KEYS: readonly string[] = [
   ...Object.keys(ENUM_KEYS), ...NUMBER_KEYS, ...BOOLEAN_KEYS, ...STRING_KEYS, ...STRING_ARRAY_KEYS,
 ]
@@ -167,7 +176,7 @@ export interface OnebotSettingsSnapshot {
   revision: number
   /** dsh-onebot 条目 fiber 是否 active（fiber.state === 2，同 configEditor.edit 的活性判据）。 */
   entryActive: boolean
-  /** 32 键生效值；accessToken 脱敏为 ''。 */
+  /** 35 键生效值；accessToken 脱敏为 ''。 */
   config: Record<string, unknown>
   /** 脱敏键标记：明文是否已配置。 */
   secrets: Array<{ path: string[]; set: boolean }>
@@ -317,7 +326,7 @@ function resolveWorkspaceRegistry(ctx: { get(key: string): unknown } | undefined
   return registry !== undefined && registry !== null && typeof registry.list === 'function' ? registry : undefined
 }
 
-/** 32 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
+/** 35 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
 export function effectiveConfig(raw: Record<string, unknown>): Record<string, unknown> {
   const effective: Record<string, unknown> = {}
   for (const key of ALL_KEYS) {

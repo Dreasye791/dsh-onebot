@@ -108,6 +108,11 @@ export interface CommandContext {
   /** W1/T5 /healthcheck: render the health summary (absent = the bridge has
    * no health wiring — the command replies with a hint instead). */
   healthReport?: (() => Promise<string>) | undefined
+  /** T15 /storage: render the media/attachment storage snapshot (absent = the
+   * bridge has no attach wiring — the command replies with a hint instead).
+   * Returns ready-to-send text: the command layer stays free of fs/attach
+   * dependencies and only forwards the rendered report. */
+  storageReport?: (() => string) | undefined
   /** W1/T5 /healthcheck export: pack the redacted diagnostics archive,
    * returning its path. T4 (P3): the optional trigger reference is stamped
    * into the archive file name (absent = the bridge's latest fault reference,
@@ -167,6 +172,7 @@ export const COMMANDS: CommandDefinition[] = [
   { name: 'preset', adminOnly: true, group: '会话', help: '[id|序号] 查看/切换 agent 预设', handler: (ctx, chatId, arg) => handlePresetCommand(ctx, chatId, arg) },
   { name: 'session', adminOnly: true, group: '会话', help: '[序号] 查看/切回历史会话', handler: (ctx, chatId, arg) => handleSessionCommand(ctx, chatId, arg) },
   { name: 'status', adminOnly: true, group: '查询', help: '会话全景', handler: (ctx, chatId) => handleStatusCommand(ctx, chatId) },
+  { name: 'storage', adminOnly: true, group: '查询', help: '存储占用（媒体目录 / 附件库 / 本插件贡献 / 软上限）', handler: (ctx, chatId) => handleStorageCommand(ctx, chatId) },
   { name: 'doctor', aliases: ['healthcheck'], adminOnly: true, group: '查询', help: '[export [参考号]] 运行体检（export [参考号] 导出脱敏诊断包，文件名含参考号）', handler: (ctx, chatId, arg) => handleHealthcheckCommand(ctx, chatId, arg) },
   { name: 'retry', adminOnly: true, group: '操作', help: '重跑上一条', handler: (ctx, chatId) => handleRetryCommand(ctx, chatId) },
   { name: 'id', adminOnly: true, group: '查询', help: '会话标识（session/chat）', handler: (ctx, chatId) => handleIdCommand(ctx, chatId) },
@@ -658,6 +664,22 @@ async function handleStatusCommand(ctx: CommandContext, chatId: ChatId): Promise
 /** W1/T5 /healthcheck: render the health summary, or pack the redacted
  * diagnostics archive with the `export` argument. Failures are reported to
  * the chat as a ⚠️ line, never thrown past the router. */
+async function handleStorageCommand(ctx: CommandContext, chatId: ChatId): Promise<void> {
+  if (ctx.storageReport === undefined) {
+    await ctx.sendToChat(chatId, '⚠️ 存储统计未启用（attach 模块未接线）。')
+    return
+  }
+  let text: string
+  try {
+    text = ctx.storageReport()
+  } catch (error) {
+    // 统计是旁路：读目录失败不该让命令静默吞掉，明确回一条失败原因。
+    await ctx.sendToChat(chatId, '⚠️ 存储统计失败：' + describeError(error))
+    return
+  }
+  await ctx.sendToChat(chatId, '💾 存储占用\n' + text)
+}
+
 async function handleHealthcheckCommand(ctx: CommandContext, chatId: ChatId, arg: string): Promise<void> {
   const trimmed = arg.trim()
   // T4 (P3): `export [参考号]` — an explicit reference is validated against

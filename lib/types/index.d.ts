@@ -153,6 +153,19 @@ export interface Config {
     fontFiles: string[];
     fontFamilies: string[];
     agentPreset: string;
+    /** QQ 通道的思考强度覆盖：''/缺省 = 继承宿主 agent-default-model（0.9.4 及
+     * 以前的行为）；非空 = 本通道 agent 的 reasoningEffort，Web/GUI 会话不受影响。 */
+    reasoningEffort?: string;
+    /** T11：QQ 通道角色设定（人设）文本；'' = 不注入（0.9.4 行为）。 */
+    persona?: string;
+    /** T12：表情包目录；'' = 不注册 qq_send_meme。须位于 mediaDir 之内。 */
+    memeDir?: string;
+    /** T15：入站图片是否投递为真图片块（默认 true）；false = 只给路径文本。 */
+    attachInboundImages?: boolean;
+    /** T15：单张入站图片投递上限（MB）；超过则只给路径文本。0 = 不限。 */
+    attachMaxImageMB?: number;
+    /** T15：附件库软上限（MB），按本插件贡献的字节数计；0 = 不限。 */
+    attachmentBudgetMB?: number;
     workspacePath: string;
     inboundFileMaxBytes: number;
     /** @deprecated D4a alias of inboundFileMaxBytes; honored for one release. */

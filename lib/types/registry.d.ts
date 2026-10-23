@@ -15,6 +15,7 @@ import type { Agent, AgentRegistry, ModelSelection, ModelSelectionRef } from '@d
 import type { SessionId, SessionStore } from '@deepseek-ai/dsh-session';
 import type { Context } from '@deepseek-ai/cordis';
 import type { MediaRef } from './cq.js';
+import type { ImageAttachmentRef } from './attach.js';
 import type { ChatId, UserRole } from './chat.js';
 import type { AgentPresetsLike, BridgeConfig, SessionPersistenceLike, WorkspaceRegistryLike } from './bridge.js';
 /** One switchable (retired-but-intact) session of a chat: /new, /workspace and
@@ -75,6 +76,11 @@ export interface ChatSettings {
     /** C6a: most recent inbound image ref, registered before command routing
      * so /ocr can resolve it lazily when the message carried a command. */
     pendingImageRef?: MediaRef;
+    /** T15: 本条消息里已成功投递到宿主附件库的图片引用（按出现顺序排队）；
+     * dispatchFollowup 把它们组进 content 的 image 块后清空。留而不立即消费，
+     * 是因为 buildBody 可能被调两次（直发图 + 转发内嵌图），而命令路由也可能
+     * 先于投递发生。 */
+    pendingAttachments?: ImageAttachmentRef[];
     /** R2: pending serial-number selection snapshot (see PendingSelection);
      * ephemeral UI state — survives /new like every field here but never
      * persisted, and bounded by the lazy 5-minute TTL instead. */

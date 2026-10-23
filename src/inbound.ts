@@ -26,6 +26,7 @@ import {
   RESTRICTED_PREFIX, sanitizeNickname, wrapUserMessage,
 } from './chat.js'
 import type { BridgeConfig } from './bridge.js'
+import type { ImageAttachmentRef } from './attach.js'
 import type { ChatSettings } from './registry.js'
 import { describeError } from './errors.js'
 import { currentTrace, TRACE_REASONS } from './trace.js'
@@ -162,6 +163,10 @@ export interface InboundContext {
   expandQuote(messageId: string): Promise<string>
   /** Turn dispatch — bridge-owned orchestration (ensureChat + per-turn prefixes). */
   dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string): Promise<void>
+  /** T15: 把一张已落盘的入站图片投递给宿主附件库，换回一个不变量引用（用于
+   * content 里的 image 块）。返回 undefined = 未投递（未启用/超限/宿主不支持），
+   * 调用方退回 `[图片:<路径>]` 文本注解。可选：测试装配可省略（等于关闭投递）。 */
+  deliverInboundImage?(path: string, chatId: ChatId): Promise<ImageAttachmentRef | undefined>
   /** T2 (P1): busy-turn policy seam — invoked for every non-command message
    * after ALL gates (dedup/policy/mention/media/rate-limit), right before the
    * turn dispatch, so queue/steer can never bypass an existing gate. Returns
@@ -442,7 +447,7 @@ export class InboundPipeline {
     for (const ref of media) {
       const placeholder = placeholderFor(ref)
       const idx = out.indexOf(placeholder)
-      const annotation = await this.resolveMediaRef(ref, chatId)
+      const annotation = await this.resolveMediaRef(ref, chatId, true)
       if (idx >= 0 && annotation !== '') {
         out = out.slice(0, idx) + annotation + out.slice(idx + placeholder.length)
       } else if (idx >= 0) {
@@ -455,8 +460,13 @@ export class InboundPipeline {
     return out
   }
 
-  /** Resolve one media ref to a text annotation with a local path. */
-  async resolveMediaRef(ref: MediaRef, chatId: ChatId): Promise<string> {
+  /** Resolve one media ref to a text annotation with a local path.
+   *
+   * `attach` (T15): 图片走真图片块投递——成功时把引用压入
+   * `settings.pendingAttachments`、注解降级为 `[图片]`（像素已随 image 块送达，
+   * 再重复一遍路径只会浪费 token）；未投递则保持 `[图片:<路径>]` 原样。命令
+   * 路由（/ocr 等）取注解时传 false，只关心路径、不必付附件投递的代价。 */
+  async resolveMediaRef(ref: MediaRef, chatId: ChatId, attach = false): Promise<string> {
     if (ref.kind === 'file') {
       return await this.resolveNasFile(ref)
     }
@@ -473,13 +483,29 @@ export class InboundPipeline {
     })
     if (resolved === undefined) return ''
     switch (resolved.kind) {
-      case 'image':
+      case 'image': {
         // Remember the most recent inbound image for /ocr (survives /new);
         // consume the pre-routing pending ref so /ocr never re-resolves it.
         const settings = this.ctx.getSettings(chatId)
         settings.lastImagePath = resolved.path
         settings.pendingImageRef = undefined
+        if (attach && this.ctx.deliverInboundImage !== undefined) {
+          let delivered: ImageAttachmentRef | undefined
+          try {
+            delivered = await this.ctx.deliverInboundImage(resolved.path, chatId)
+          } catch (error) {
+            // 投递是增强手段，任何异常都不得中断消息本身的可达性。
+            this.ctx.log('debug', '入站图片投递附件库失败: ' + describeError(error))
+            currentTrace()?.emit('media', { ok: false, reason: '附件投递异常: ' + describeError(error) })
+          }
+          if (delivered !== undefined) {
+            const queued = settings.pendingAttachments ?? (settings.pendingAttachments = [])
+            queued.push(delivered)
+            return '[图片]'
+          }
+        }
         return '[图片:' + resolved.path + ']'
+      }
       case 'voice': {
         // M3-D4c: dispatch must not wait on STT — the [语音] placeholder ships
         // now and the transcript steers into the turn when it completes. A

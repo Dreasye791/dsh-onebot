@@ -16,7 +16,7 @@
  * @module dsh-onebot/attach
  */
 
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 /** 附件投递策略：来自配置，决定「什么图值得进附件库」。 */
@@ -109,7 +109,11 @@ export function dirUsage(dir: string): { bytes: number; files: number } {
   return { bytes, files }
 }
 
-/** 读账本；文件缺失/损坏都返回空账本（统计是旁路，不因坏文件而抛）。 */
+/** 读账本；文件缺失/损坏都返回空账本（统计是旁路，不因坏文件而抛）。
+ *
+ * 逐条校验条目形状：`ledgerBytes` 会直接读 `entry.bytes`，一条 `null` 条目
+ * 就能让预算判定抛 TypeError 并静默关掉整条投递链。非法条目直接丢弃，
+ * 让坏账本退化为「少记」而不是「全崩」。 */
 export function readLedger(mediaDir: string): AttachLedger {
   const file = join(mediaDir, LEDGER_FILE)
   try {
@@ -118,18 +122,45 @@ export function readLedger(mediaDir: string): AttachLedger {
     if (parsed === null || typeof parsed !== 'object' || parsed.entries === null || typeof parsed.entries !== 'object') {
       return { version: 1, entries: {} }
     }
-    return { version: 1, entries: parsed.entries }
+    const entries: Record<string, LedgerEntry> = {}
+    for (const [id, raw] of Object.entries(parsed.entries)) {
+      if (raw === null || typeof raw !== 'object') continue
+      const entry = raw as LedgerEntry
+      if (typeof entry.attachmentId !== 'string' || entry.attachmentId === '') continue
+      if (typeof entry.bytes !== 'number' || !Number.isFinite(entry.bytes) || entry.bytes < 0) continue
+      entries[id] = {
+        attachmentId: entry.attachmentId,
+        bytes: entry.bytes,
+        firstSeenAt: typeof entry.firstSeenAt === 'number' ? entry.firstSeenAt : 0,
+        lastSeenAt: typeof entry.lastSeenAt === 'number' ? entry.lastSeenAt : 0,
+        hits: typeof entry.hits === 'number' && entry.hits > 0 ? entry.hits : 1,
+      }
+    }
+    return { version: 1, entries }
   } catch {
     return { version: 1, entries: {} }
   }
 }
 
-/** 写账本；失败仅返回 false（调用方降级为 warn，不影响图片投递）。 */
+/** 写账本；失败仅返回 false（调用方降级为 warn，不影响图片投递）。
+ *
+ * 原子写：先写 `*.tmp` 再 rename 覆盖。直接覆写目标文件时，进程中断或
+ * 并发写会留下截断的 JSON，而 `readLedger` 对坏文件一律返回空账本 ——
+ * 预算会从 0 重算，等于把软上限抹掉。rename 在同一文件系统内是原子的，
+ * 读方要么看到旧账本、要么看到新账本，不会看到半截内容。 */
 export function writeLedger(mediaDir: string, ledger: AttachLedger): boolean {
+  const target = join(mediaDir, LEDGER_FILE)
+  const tmp = target + '.tmp'
   try {
-    writeFileSync(join(mediaDir, LEDGER_FILE), JSON.stringify(ledger, null, 2), 'utf8')
+    writeFileSync(tmp, JSON.stringify(ledger, null, 2), 'utf8')
+    renameSync(tmp, target)
     return true
   } catch {
+    try {
+      if (existsSync(tmp)) unlinkSync(tmp)
+    } catch {
+      // 清理失败不改变语义：目标账本要么是旧的、要么是新的，都不会是半截。
+    }
     return false
   }
 }
@@ -220,7 +251,16 @@ export interface AttachResult {
   dedupHit?: boolean
 }
 
-/** 宿主内建支持的图片 MIME（dsh-attachment-local 的 mediaTypes 默认集合）。 */
+/** 宿主内建支持的图片 MIME（dsh-attachment-local 的 mediaTypes 默认集合）。
+ *
+ * **必须与宿主实际能力一致**：已从 asar 内的
+ * `@deepseek-ai/dsh-attachment-local/lib/index.js` 核对其 `imageLimits.mediaTypes`
+ * 为 `['image/png','image/jpeg','image/webp','image/gif']` —— **不含 bmp**。
+ *
+ * 因此 `media.ts` 的 `sniffImageExt` 即使能嗅出 `.bmp`，也不能在这里加映射：
+ * 加了会在宿主 `saveImages` 阶段被拒（`unsupported-type`），反而把这个格式
+ * 从"退回路径文本"变成"投递失败"。BMP 的现状是**保留原扩展名走文本路径**，
+ * 这是有意为之，不是遗漏。 */
 const HOST_MEDIA_TYPES: Record<string, string> = {
   png: 'image/png',
   jpg: 'image/jpeg',
@@ -315,33 +355,77 @@ export async function deliverImage(
   if (host === undefined || host === null || typeof host.saveImages !== 'function') {
     return { skipped: 'host-unavailable' }
   }
-  const ledger = readLedger(mediaDir)
-  if (!withinBudget(ledger, policy)) return { skipped: 'budget' }
   let data: Buffer
   try {
     data = readFileSync(path)
   } catch {
     return { skipped: 'save-failed' }
   }
-  let refs: ImageAttachmentRef[]
-  try {
-    refs = await host.saveImages([{
-      data: new Uint8Array(data),
-      mediaType,
-      name: path.slice(Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/')) + 1),
-    }])
-  } catch {
-    return { skipped: 'save-failed' }
-  }
-  const ref = Array.isArray(refs) ? refs[0] : undefined
-  if (ref === undefined || ref === null || typeof ref !== 'object'
-    || typeof ref.attachmentId !== 'string' || ref.attachmentId === '') {
-    return { skipped: 'save-failed' }
-  }
-  const dedupHit = recordContribution(ledger, ref, Date.now())
-  writeLedger(mediaDir, ledger)
-  return { ref, dedupHit }
+  // 「读账本 → 判预算 → 落盘 → 记账」必须作为一个不可分割的临界区。
+  // 入站是并发的（index.ts 的 onMessage 是 fire-and-forget），若两条消息同时
+  // 读到同一份旧账本，会各自通过预算判定 → 实际占用超支，且后写覆盖先写使
+  // 账本永久少记对象。串行化后每张图看到的都是前一张已记账后的账本。
+  return await withLedgerLock(mediaDir, async () => {
+    const ledger = readLedger(mediaDir)
+    if (!withinBudget(ledger, policy)) return { skipped: 'budget' }
+    let refs: ImageAttachmentRef[]
+    try {
+      refs = await host.saveImages([{
+        data: new Uint8Array(data),
+        mediaType,
+        name: path.slice(Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/')) + 1),
+      }])
+    } catch {
+      return { skipped: 'save-failed' }
+    }
+    const ref = Array.isArray(refs) ? refs[0] : undefined
+    if (ref === undefined || ref === null || typeof ref !== 'object'
+      || typeof ref.attachmentId !== 'string' || ref.attachmentId === '') {
+      return { skipped: 'save-failed' }
+    }
+    // 宿主不一定回传 `bytes`（契约里是可选的）：缺失时用本地实测的 size
+    // 兜底，否则账本会恒记 0 字节、预算闸形同不存在。
+    const dedupHit = recordContribution(ledger, { attachmentId: ref.attachmentId, bytes: ref.bytes ?? size }, Date.now())
+    writeLedger(mediaDir, ledger)
+    return { ref, dedupHit }
+  })
 }
+
+/**
+ * 账本临界区：把「读 → 判 → 写 → 记账」串起来的进程内互斥队列。
+ *
+ * 为什么需要：入站消息是并发到达的（`index.ts` 的 `onMessage` 是
+ * fire-and-forget），而预算判定与记账是典型的 read-modify-write。没有互斥时
+ * 两条同时在途的消息会各自读到同一份旧账本、都通过预算判定（实际占用可超出
+ * 软上限 ≈ 并发数 × 单图上限），并且后写覆盖先写，账本永久少记对象。
+ *
+ * 为什么是「按 mediaDir 排队」而不是全局一把锁：账本文件本身就是按目录区分
+ * 的，不同 mediaDir 之间没有共享状态，没必要互相阻塞。队列在微任务里顺序
+ * 执行，不引入定时器也没有轮询。
+ *
+ * 为什么不做跨进程锁：本插件的投递入口只有一处（bridge 的 deliverInboundImage），
+ * 单进程内串行即可覆盖全部真实并发面；跨进程锁会引入 .lock 文件的陈旧锁
+ * 清理问题，代价远大于收益。
+ * @param mediaDir - 账本所在目录（队列键）。
+ * @param task - 需要在临界区内执行的异步任务。
+ * @returns `task` 的返回值；`task` 抛错时原样上抛，队列继续为后续任务服务。
+ */
+async function withLedgerLock<T>(mediaDir: string, task: () => Promise<T>): Promise<T> {
+  const previous = ledgerLocks.get(mediaDir) ?? Promise.resolve()
+  // 用 then(task, task) 保证前一个任务即使失败也不会卡死整条队列。
+  const run = previous.then(task, task)
+  // 队列尾只关心「这一轮结束了」，不关心成败，否则会把拒因传播给后续任务。
+  ledgerLocks.set(mediaDir, run.then(() => undefined, () => undefined))
+  try {
+    return await run
+  } finally {
+    // 尾任务结束且没有新任务接上时回收键，避免 mediaDir 无界增长。
+    if (ledgerLocks.get(mediaDir) === undefined) ledgerLocks.delete(mediaDir)
+  }
+}
+
+/** 每个 mediaDir 一条串行链；值恒为「已 settle」的 Promise。 */
+const ledgerLocks = new Map<string, Promise<void>>()
 
 /** 人类可读字节数（与 health.ts 的 formatBytes 同口径，避免跨模块耦合重复导入）。 */
 export function humanBytes(size: number): string {

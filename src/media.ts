@@ -141,14 +141,15 @@ export class MediaStore {
       }
       const file = ref.file ?? ''
       if (file.startsWith('base64://')) {
-        const path = this.freshPath(extForKind(ref.kind))
-        await writeFile(path, Buffer.from(file.slice('base64://'.length), 'base64'))
+        const body = Buffer.from(file.slice('base64://'.length), 'base64')
+        const path = reconcileExt(this.freshPath(extForKind(ref.kind)), body)
+        await writeFile(path, body)
         return { path, kind: ref.kind }
       }
       if (file.startsWith('file://')) {
         const source = file.slice('file://'.length)
-        const path = this.freshPath(extForKind(ref.kind))
         try {
+          const path = reconcileExt(this.freshPath(extForKind(ref.kind)), await readFile(source))
           await copyFile(source, path)
           return { path, kind: ref.kind }
         } catch {
@@ -165,7 +166,7 @@ export class MediaStore {
         }
         if (resolved.file !== undefined && resolved.file.startsWith('file://')) {
           const source = resolved.file.slice('file://'.length)
-          const path = this.freshPath(extForKind(ref.kind))
+          const path = reconcileExt(this.freshPath(extForKind(ref.kind)), await readFile(source))
           await copyFile(source, path)
           return { path, kind: ref.kind }
         }
@@ -226,8 +227,13 @@ export class MediaStore {
           chunks.push(value)
         }
       }
-      await writeFile(path, Buffer.concat(chunks))
-      return path
+      // The server's URL is only a guess; the bytes decide the real format
+      // (QQ serves GIF/PNG under `.jpg` URLs). Rename before the file lands
+      // so no mismatched name ever exists on disk.
+      const body = Buffer.concat(chunks)
+      const finalPath = reconcileExt(path, body)
+      await writeFile(finalPath, body)
+      return finalPath
     }
   }
 }
@@ -347,6 +353,40 @@ export function extForKind(kind: 'image' | 'voice' | 'video' | 'file'): string {
     case 'video': return '.mp4'
     default: return '.bin'
   }
+}
+
+/**
+ * Identify an image container from its magic bytes.
+ * @param data - file bytes (only the head is inspected).
+ * @returns the canonical extension ('.png' / '.jpg' / '.gif' / '.webp' /
+ *   '.bmp'), or undefined when the bytes are not a recognised image.
+ */
+export function sniffImageExt(data: Buffer): string | undefined {
+  if (data.length >= 8 && data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47) return '.png'
+  if (data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return '.jpg'
+  if (data.length >= 6 && (data.toString('latin1', 0, 6) === 'GIF87a' || data.toString('latin1', 0, 6) === 'GIF89a')) return '.gif'
+  if (data.length >= 12 && data.toString('latin1', 0, 4) === 'RIFF' && data.toString('latin1', 8, 12) === 'WEBP') return '.webp'
+  if (data.length >= 2 && data[0] === 0x42 && data[1] === 0x4d) return '.bmp'
+  return undefined
+}
+
+/**
+ * Replace a scratch path's extension with the one its bytes actually carry.
+ * The bytes win: QQ (and other OneBot implementations) routinely serve a
+ * GIF or PNG under a `.jpg` URL, and a mismatch makes the downstream
+ * sniffer refuse to treat the file as an image at all.
+ * @param path - scratch path minted from the guessed extension.
+ * @param data - the file bytes.
+ * @returns `path` itself when the guess was right or the bytes are not a
+ *   recognised image, otherwise the same name with the real extension.
+ */
+export function reconcileExt(path: string, data: Buffer): string {
+  const actual = sniffImageExt(data)
+  if (actual === undefined) return path
+  const dot = path.lastIndexOf('.')
+  const current = dot >= 0 ? path.slice(dot).toLowerCase() : ''
+  if (current === actual || (actual === '.jpg' && current === '.jpeg')) return path
+  return (dot >= 0 ? path.slice(0, dot) : path) + actual
 }
 
 /**

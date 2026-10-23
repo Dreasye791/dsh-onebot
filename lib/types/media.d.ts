@@ -92,6 +92,24 @@ export declare function extForInboundName(name: string): string;
 /** Default extension per media kind. */
 export declare function extForKind(kind: 'image' | 'voice' | 'video' | 'file'): string;
 /**
+ * Identify an image container from its magic bytes.
+ * @param data - file bytes (only the head is inspected).
+ * @returns the canonical extension ('.png' / '.jpg' / '.gif' / '.webp' /
+ *   '.bmp'), or undefined when the bytes are not a recognised image.
+ */
+export declare function sniffImageExt(data: Buffer): string | undefined;
+/**
+ * Replace a scratch path's extension with the one its bytes actually carry.
+ * The bytes win: QQ (and other OneBot implementations) routinely serve a
+ * GIF or PNG under a `.jpg` URL, and a mismatch makes the downstream
+ * sniffer refuse to treat the file as an image at all.
+ * @param path - scratch path minted from the guessed extension.
+ * @param data - the file bytes.
+ * @returns `path` itself when the guess was right or the bytes are not a
+ *   recognised image, otherwise the same name with the real extension.
+ */
+export declare function reconcileExt(path: string, data: Buffer): string;
+/**
  * Resolve `target` through symlinks and require it to live under one of
  * `allowedRoots`: separator-boundary prefix match on both sides' realpaths,
  * so root /foo/bar does not contain /foo/baz. A symlink escaping every root

@@ -45,20 +45,21 @@ export declare function faceToEmoji(id: string): string;
  * Detect whether the message mentions the bot. Prefers the segment array;
  * falls back to CQ-string scanning. @-detection stays fail-closed: with an
  * unknown bot id and no configured botQQ, group messages are never treated
- * as mentioning us. Reply segments count only when the replied-to user is
- * determinably the bot itself (M1-A8); an undeterminable target (segment
- * carries no qq) falls back to the previous always-mention behavior — a
- * deliberate fail-open so tightening the gate never breaks existing setups.
+ * as mentioning us.
+ *
+ * Reply segments are TARGET-AWARE and fail-CLOSED. The OneBot 11 spec's reply
+ * segment carries only `id` — no `qq` at all (some implementations, NapCat
+ * included, may add it as an extension). Treating a missing `qq` as "replied to
+ * the bot" made *every* quote-tap in a group wake the bot, so an absent or
+ * foreign target now counts as NOT a mention. The quoted target is resolved
+ * upstream (get_msg) when the segment itself cannot answer it; see
+ * `replyTargetIsBot`.
  * @param segments - segment array (may be undefined for CQ-only payloads).
  * @param raw - raw CQ string.
  * @param selfId - learned bot QQ id ('' when unknown).
  * @param botQQ - configured bot QQ id ('' when unset).
- */
-/**
- * Detect whether the message mentions the bot. Reply segments are target-aware
- * and fail-closed: OneBot 11's reply carries only `id`, so an absent or foreign
- * quoted author is NOT a mention. `replyTarget` is the author resolved upstream
- * via get_msg ('' / undefined = unknown).
+ * @param replyTarget - resolved author of the quoted message, when the inbound
+ *   pipeline managed to fetch it. '' / undefined = unknown (not a mention).
  */
 export declare function detectMention(segments: OneBotSegment[] | undefined, raw: string, selfId: string, botQQ: string, replyTarget?: string): boolean;
 /** Split a raw CQ string into segments; used only when no segment array exists. */

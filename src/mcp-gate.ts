@@ -34,6 +34,15 @@ export interface McpToolParts {
   server: string
   /** 裸工具名（第三段起，允许自身含 `__`）。 */
   tool: string
+  /**
+   * 服务器段与工具段之间的边界是否存在歧义。
+   *
+   * 宿主 serverName 的字符集允许单下划线（`[A-Za-z0-9_-]{1,32}`），所以
+   * `mcp__dbx__prod__query` 既可能是 server=`dbx` + tool=`prod__query`，也可能是
+   * server=`dbx__prod` + tool=`query` —— **仅凭字符串无法判定**。
+   * 段数 > 2 时置 true，所有按段匹配的判定都必须放弃（见 matchMcpTool）。
+   */
+  ambiguous: boolean
 }
 
 /** 工具名是否属于 MCP（按宿主命名约定判前缀）。 */
@@ -48,6 +57,12 @@ export function isMcpToolName(name: string): boolean {
  * （`[A-Za-z0-9_-]{1,32}`），裸工具名也可能含 `__`。约定是「第 2 段是服务器，
  * 其余全部归工具」，因此按段切分才是稳定口径；段数不足 3 说明不符合约定，
  * 返回 null 由调用方按 fail-closed 处理。
+ *
+ * **段数 > 2 时边界有歧义**（无法区分 server 含 `__` 还是 tool 含 `__`），
+ * 此时 `server`/`tool` 是按「server 取第一段」的口径给出的**最佳猜测**，
+ * 只可用于展示与完整名精确比较；凡是按段放宽的判定（通配、服务器名简写、
+ * 裸工具名）都必须看 `ambiguous` 并放弃 —— 否则 `mcp__dbx__*` 会连带放行
+ * 真实服务器名为 `dbx__prod` 的全部工具，等于越权。
  */
 export function parseMcpToolName(name: string): McpToolParts | null {
   if (!isMcpToolName(name)) return null
@@ -56,7 +71,7 @@ export function parseMcpToolName(name: string): McpToolParts | null {
   const server = parts[0] ?? ''
   const tool = parts.slice(1).join('__')
   if (server === '' || tool === '') return null
-  return { server, tool }
+  return { server, tool, ambiguous: parts.length > 2 }
 }
 
 /** 从 `mcp__<server>__<tool>` 取服务器名；不符约定时返回 ''。 */
@@ -81,9 +96,10 @@ export function mcpBareNameOf(name: string): string {
  *
  * 之所以要收紧：早期实现把任何含 `*` 的条目都编译成正则，并对「完整名 /
  * 裸工具名 / 服务器名」三个面同时 test，于是 `akasha*`、`*search*` 这类未
- * 文档化的写法会静默放大授权范围 —— 管理员写成 `mcp__dbx__*` 想只放 dbx
- * 时，若服务器名本身含 `__`（如 `dbx__prod`），正则会把 `dbx__prod__query`
- * 一并吃掉。改成按组件比较后，通配只作用于**它自己那一段**。
+ * 文档化的写法会静默放大授权范围。
+ *
+ * 注意：只靠归类收不干净 `mcp__dbx__*` 连带放行 `mcp__dbx__prod__query` 的问题
+ * —— 那条要靠 matchMcpTool 对 `ambiguous` 的判定（见该函数）。
  */
 type AllowEntry =
   | { kind: 'all' }
@@ -115,6 +131,15 @@ function classifyEntry(raw: string): AllowEntry | null {
  * - `akasha_search`：裸工具名，命中**任意**服务器下的同名工具。
  *
  * 服务器名与裸工具名的比较都是**整段全等**，不做子串/前缀匹配。
+ *
+ * **通配的边界判定**：`mcp__<S>__*` 命中的条件是「去掉 `mcp__<S>__` 前缀后余下
+ * 的部分非空且不含 `__`」，也就是通配只覆盖**单段**工具名。这条规则让
+ * `mcp__dbx__*` 不会连带放行真实服务器 `dbx__prod` 的工具
+ * （余段是 `prod__query`，含 `__` ⇒ 不命中），而含 `__` 的服务器仍可被显式授权
+ * （写 `mcp__dbx__prod__*`，余段 `query` 单段 ⇒ 命中）。
+ *
+ * 服务器名简写与裸工具名依赖段边界，歧义名（`ambiguous`）一律不命中，只能用
+ * `*`、完整名或显式通配授权 —— 宁可多写一个字，也不静默放大权限。
  */
 export function matchMcpTool(name: string, allow: readonly string[]): boolean {
   const parsed = parseMcpToolName(name)
@@ -124,11 +149,17 @@ export function matchMcpTool(name: string, allow: readonly string[]): boolean {
     const entry = classifyEntry(raw)
     if (entry === null) continue
     if (entry.kind === 'all') return true
+    // 完整名精确命中在任何情况下都成立（它是唯一无歧义的判定）。
+    if (entry.kind === 'literal' && entry.value === name) return true
     if (entry.kind === 'serverWildcard') {
-      if (entry.server === parsed.server) return true
+      const prefix = MCP_TOOL_PREFIX + entry.server + '__'
+      if (!name.startsWith(prefix)) continue
+      const rest = name.slice(prefix.length)
+      if (rest !== '' && !rest.includes('__')) return true
       continue
     }
-    if (entry.value === name) return true
+    // 以下两条依赖「第 2 段就是服务器、其余就是工具」，故歧义名放弃。
+    if (parsed.ambiguous) continue
     if (entry.value === parsed.server) return true
     if (entry.value === parsed.tool) return true
   }
@@ -200,6 +231,10 @@ export function makeMcpToolGuard(rawAllow: readonly string[] | undefined): ToolG
       return describeMcpDenial('')
     }
     const name = exec.name
+    // 空名字与「取不到名字」同义：它是契约破裂的结果，不是「非 MCP 工具」的证据。
+    // 若在这里走 isMcpToolName('') === false 放行，上面的专用文案就成了死分支，
+    // 且「取不到工具名即拒绝」的承诺被自己的实现推翻。
+    if (name === '') return describeMcpDenial('')
     if (!isMcpToolName(name)) return undefined
     if (matchMcpTool(name, allow)) return undefined
     return describeMcpDenial(name)

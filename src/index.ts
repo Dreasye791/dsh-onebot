@@ -285,8 +285,8 @@ export const Config: Z<Config> = z.object({
     .description('groupPolicy=allowlist 时允许的群号'),
   adminUsers: z.array(z.string()).default([])
     .description('管理员 QQ 号（也可用环境变量 ONEBOT_ALLOWED_USERS 逗号分隔指定）'),
-  mcpToolAllow: z.array(z.string()).default([])
-    .description('QQ 通道可调用的 MCP 工具白名单（默认空 = 禁用全部 MCP）。写法：* 表示全部；mcp__akasha__akasha_search 完整名；mcp__akasha__* 或 akasha 表示整台服务器；akasha_search 表示任意服务器下的同名工具。非 MCP 工具（qq_* 与宿主内置）不受影响'),
+  mcpToolAllow: z.array(z.string().max(128)).max(256).default([])
+    .description('QQ 通道可调用的 MCP 工具白名单（默认空 = 禁用全部 MCP）。写法：* 表示全部；mcp__akasha__akasha_search 完整名；mcp__akasha__* 或 akasha 表示整台服务器；akasha_search 表示任意服务器下的同名工具。单项 ≤128 字符、最多 256 条（与设置页一致）。非 MCP 工具（qq_* 与宿主内置）不受影响'),
   allowAllUsers: z.boolean().default(false)
     .description('放行所有用户（仅开发用；也可用 ONEBOT_ALLOW_ALL_USERS=true）'),
   ignoreSelf: z.boolean().default(true)
@@ -462,6 +462,20 @@ export function apply(ctx: Context, config: Config): void {
     if (level === 'error') console.error(prefix + message)
     else if (level === 'warn') console.warn(prefix + message)
     else console.log(prefix + message)
+  }
+  // T20：MCP 白名单闸门依赖宿主的 tools.guard。若宿主没有这个能力，QQ 通道
+  // 就没有任何 MCP 权限隔离（profile 根作用域上的全部 MCP 工具会原样交给群友）。
+  // 这里在**启动期探测一次**并直接停用通道：
+  //   - 不探测的话，失败发生在每个会话的 create 里，会被 registry 的
+  //     「retire 后用新 sessionId 重建」循环反复放大约 2 倍，且每条消息都新增
+  //     一条 retired id；
+  //   - 降级成「跳过闸门继续跑」等于权限闸门静默失效，比通道不可用更危险。
+  const toolsPort = (ctx as unknown as { tools?: { guard?: unknown } }).tools
+  if (typeof toolsPort?.guard !== 'function') {
+    log('error', 'T20：宿主未提供 tools.guard，无法安装 QQ 通道的 MCP 工具白名单闸门。'
+      + '为避免把 profile 里全部 MCP 工具（含数据库工具）直接暴露给群友，'
+      + '本插件已停止启动。请升级宿主或改用带 guard 能力的版本。')
+    return
   }
   // T3 方案 B: the host exposes no queryable default workspace —
   // WorkspaceRegistry has no default getter and the session controller's

@@ -42,15 +42,22 @@ describe('T20 工具名解析', () => {
     expect(parseMcpToolName('mcp__akasha__akasha_search')).toEqual({
       server: 'akasha',
       tool: 'akasha_search',
+      ambiguous: false,
     })
-    // 关键回归：旧实现用 indexOf('__') 取第一个分隔符，mcp__dbx__prod__query
-    // 会被解析成 server='dbx' 之外的错位结果，导致 mcp__dbx__* 连带放行
-    // dbx__prod 的全部工具。
+    // 段数 > 2 时边界有歧义：mcp__dbx__prod__query 既可能是 server='dbx' +
+    // tool='prod__query'，也可能是 server='dbx__prod' + tool='query'。这里给出
+    // 的是「server 取第一段」的口径，ambiguous=true 提醒调用方按段放宽的判定
+    // 必须放弃（见后续 matchMcpTool 的用例）。
     expect(parseMcpToolName('mcp__dbx__prod__query')).toEqual({
       server: 'dbx',
       tool: 'prod__query',
+      ambiguous: true,
     })
-    expect(parseMcpToolName('mcp__srv__a__b__c')).toEqual({ server: 'srv', tool: 'a__b__c' })
+    expect(parseMcpToolName('mcp__srv__a__b__c')).toEqual({
+      server: 'srv',
+      tool: 'a__b__c',
+      ambiguous: true,
+    })
   })
 
   it('缺段或空段一律 null', () => {
@@ -70,13 +77,30 @@ describe('T20 工具名解析', () => {
 })
 
 describe('T20 白名单匹配', () => {
-  it('mcp__<server>__* 只放行该服务器', () => {
+  it('mcp__<server>__* 只放行该服务器的单段工具名', () => {
     const allow = ['mcp__akasha__*']
     expect(matchMcpTool('mcp__akasha__akasha_read', allow)).toBe(true)
-    expect(matchMcpTool('mcp__akasha__nested__tool', allow)).toBe(true)
+    // 通配只覆盖单段工具名：mcp__akasha__nested__tool 的余段含 __，边界歧义，
+    // 不能用服务器通配放行（否则真实服务器 akasha__nested 会被连带授权）。
+    expect(matchMcpTool('mcp__akasha__nested__tool', allow)).toBe(false)
     expect(matchMcpTool('mcp__dbx__dbx_execute_query', allow)).toBe(false)
     expect(matchMcpTool('mcp__dbx__prod__query', allow)).toBe(false)
     expect(matchMcpTool('mcp__akasha2__x', allow)).toBe(false)
+  })
+
+  it('服务器名含 __ 时不会越权，且可用显式通配授权', () => {
+    // 关键回归：这条曾以为已修但实际没修 —— 旧实现按 parts[0] 比 server，
+    // 于是 mcp__dbx__* 会把真实服务器 dbx__prod 的工具一并放行。
+    expect(matchMcpTool('mcp__dbx__prod__query', ['mcp__dbx__*'])).toBe(false)
+    // 显式写全服务器名仍可整体授权（余段 query 是单段）。
+    expect(matchMcpTool('mcp__dbx__prod__query', ['mcp__dbx__prod__*'])).toBe(true)
+    // 歧义名不能靠服务器名简写或裸工具名授权（段边界不可判定）。
+    expect(matchMcpTool('mcp__dbx__prod__query', ['dbx'])).toBe(false)
+    expect(matchMcpTool('mcp__dbx__prod__query', ['query'])).toBe(false)
+    expect(matchMcpTool('mcp__dbx__prod__query', ['prod__query'])).toBe(false)
+    // 完整名与 * 始终可用。
+    expect(matchMcpTool('mcp__dbx__prod__query', ['mcp__dbx__prod__query'])).toBe(true)
+    expect(matchMcpTool('mcp__dbx__prod__query', ['*'])).toBe(true)
   })
 
   it('完整名只命中一个工具', () => {
@@ -167,6 +191,15 @@ describe('T20 guard 语义（fail-closed）', () => {
     }
   })
 
+  it('空字符串工具名同样拒绝（与「取不到名字」同义）', () => {
+    // 曾漏掉这一条：空串能过 typeof === 'string' 检查，随后 isMcpToolName('') 为
+    // false 而被当成「非 MCP 工具」放行，使 describeMcpDenial('') 的专用文案成为
+    // 生产路径不可达的死分支。
+    const verdict = empty({ name: '' })
+    expect(typeof verdict).toBe('string')
+    expect(verdict).toContain('无法确定')
+  })
+
   it('undefined 配置等价空名单', () => {
     const guard = makeMcpToolGuard(undefined)
     expect(typeof guard({ name: 'mcp__a__b' })).toBe('string')
@@ -204,5 +237,52 @@ describe('T20 拒绝文案', () => {
 
   it('有名字时点名被拒工具', () => {
     expect(describeMcpDenial('mcp__dbx__x')).toContain('mcp__dbx__x')
+  })
+})
+
+/**
+ * 运行时加载的是 `lib/`（`package.json` 的 `main: lib/index.js`，且 `lib/bridge.js`
+ * 里 import 的是 `./mcp-gate.js`），而上面的用例全部指向 `../src/mcp-gate.js`。
+ * 也就是说：src 与 lib 是手工双写的两份实现，只测 src 时 lib 漂了也全绿 —— 闸门在
+ * 生产里可能压根不生效。这一组直接加载 lib 产物，并对两侧做同输入对比。
+ */
+describe('T20 lib 产物与 src 双写一致', () => {
+  it('lib 产物的判定语义与 src 完全一致', async () => {
+    const lib = await import('../lib/mcp-gate.js')
+    const cases: Array<[string, string[]]> = [
+      ['mcp__akasha__akasha_search', ['mcp__akasha__*']],
+      ['mcp__akasha__akasha_search', ['akasha']],
+      ['mcp__akasha__akasha_search', ['akasha_search']],
+      ['mcp__akasha__akasha_search', ['mcp__dbx__*']],
+      ['mcp__dbx__prod__query', ['mcp__dbx__*']],
+      ['mcp__dbx__prod__query', ['mcp__dbx__prod__*']],
+      ['mcp__dbx__prod__query', ['mcp__dbx__prod__query']],
+      ['mcp__dbx__prod__query', ['*']],
+      ['mcp__akasha__nested__tool', ['mcp__akasha__*']],
+      ['qq_send_image', ['*']],
+      ['mcp__a__b', []],
+    ]
+    for (const [name, allow] of cases) {
+      expect(lib.matchMcpTool(name, allow), name + ' / ' + JSON.stringify(allow)).toBe(
+        matchMcpTool(name, allow),
+      )
+    }
+  })
+
+  it('lib 的 guard 与 src 对畸形 exec 的表现一致（含空串名字）', async () => {
+    const lib = await import('../lib/mcp-gate.js')
+    const libGuard = lib.makeMcpToolGuard([])
+    const srcGuard = makeMcpToolGuard([])
+    for (const exec of [undefined, null, {}, { name: 42 }, { name: null }, { name: '' }, 'x', 0]) {
+      const a = typeof srcGuard(exec as never)
+      const b = typeof libGuard(exec as never)
+      expect(b, JSON.stringify(exec)).toBe(a)
+    }
+  })
+
+  it('lib 的 parse 也带 ambiguous 标记', async () => {
+    const lib = await import('../lib/mcp-gate.js')
+    expect(lib.parseMcpToolName('mcp__dbx__prod__query').ambiguous).toBe(true)
+    expect(lib.parseMcpToolName('mcp__a__b').ambiguous).toBe(false)
   })
 })

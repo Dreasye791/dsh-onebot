@@ -21,6 +21,9 @@ function makeCtx() {
         if (idx >= 0) tools.splice(idx, 1)
       }
     },
+    // T20：apply() 在启动期探测宿主是否提供 tools.guard（MCP 白名单闸门依赖它），
+    // 桩里必须有该方法，否则插件会认为宿主能力缺失而拒绝启动。
+    guard: () => () => undefined,
   } as never)
   ctx.provide('systemPrompt' as never, {
     section: (section: { name: string; order?: number; text?: string }) => {
@@ -115,8 +118,33 @@ describe('plugin entry', () => {
     }
   })
 
+  it('宿主缺少 tools.guard 时启动期就停用通道（不进入每会话抛错循环）', () => {
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-plugin-'))
+    // 只提供 register，不提供 guard —— 模拟旧版/裁剪过的宿主。
+    const bare = new Context()
+    bare.provide('tools' as never, { register: () => () => undefined } as never)
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const effect = vi.spyOn(bare as { effect: (cb: () => unknown, label?: string) => unknown }, 'effect')
+    try {
+      apply(bare as never, Config({ mediaDir, port: 0, accessToken: 'test-token', botQQ: '10002', sttEnabled: false, sensitivePatterns: [] }))
+      // 一次可读的 error 说明原因，而不是把失败推迟到每个会话的 create 里
+      // （那样会被 registry 的 retire + 重建循环放大约 2 倍，且每条消息都新增
+      //   一条 retired id）。
+      expect(error).toHaveBeenCalled()
+      const line = String(error.mock.calls[0]?.[0])
+      expect(line).toContain('tools.guard')
+      expect(line).toContain('已停止启动')
+      // 提前返回：不注册任何生命周期，通道完全不启动。
+      expect(effect).not.toHaveBeenCalled()
+    } finally {
+      error.mockRestore()
+    }
+  })
+
   it('derives a sensible default media dir', () => {
     const dir = defaultMediaDir()
-    expect(dir).toContain('.dsh')
+    // DSH_HOME 可配置（本机即 G:\dsh-home），不能硬编码成 '.dsh'。
+    expect(dir).toContain('media')
+    expect(dir).toContain('onebot')
   })
 })

@@ -14,6 +14,15 @@ export interface McpToolParts {
     server: string;
     /** 裸工具名（第三段起，允许自身含 `__`）。 */
     tool: string;
+    /**
+     * 服务器段与工具段之间的边界是否存在歧义。
+     *
+     * 段数 > 2 时为 true（如 `mcp__dbx__prod__query` 既可能是 server=`dbx` +
+     * tool=`prod__query`，也可能是 server=`dbx__prod` + tool=`query`）。
+     * 此时 `server`/`tool` 只是最佳猜测，凡按段放宽的判定（通配、服务器名简写、
+     * 裸工具名）都必须放弃，否则会越权放行。
+     */
+    ambiguous: boolean;
 }
 /** 工具名是否属于 MCP（按宿主命名约定判前缀）。 */
 export declare function isMcpToolName(name: string): boolean;
@@ -23,6 +32,8 @@ export declare function isMcpToolName(name: string): boolean;
  * 用 `split('__')` 而不是 `indexOf('__')`：服务器名的字符集允许单下划线
  * （`[A-Za-z0-9_-]{1,32}`），裸工具名也可能含 `__`。段数不足 2 说明不符合
  * 约定，返回 null 由调用方按 fail-closed 处理。
+ *
+ * 段数 > 2 时边界有歧义，`ambiguous` 置 true（见该字段说明）。
  */
 export declare function parseMcpToolName(name: string): McpToolParts | null;
 /** 从 `mcp__<server>__<tool>` 取服务器名；不符约定时返回 ''。 */
@@ -39,6 +50,7 @@ export declare function mcpBareNameOf(name: string): string;
  * - `akasha_search`：裸工具名，命中**任意**服务器下的同名工具。
  *
  * 服务器名与裸工具名的比较都是**整段全等**，不做子串/前缀匹配。
+ * 歧义名（`ambiguous`）只认 `*` 与完整名精确命中，其它写法一律不命中。
  */
 export declare function matchMcpTool(name: string, allow: readonly string[]): boolean;
 /**

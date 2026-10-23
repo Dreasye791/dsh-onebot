@@ -85,7 +85,7 @@ describe('mapping-file settings persistence (M3-D4b)', () => {
     await h.connection.stop()
 
     // A fresh bridge over the same mediaDir restores the settings on resume.
-    const captured2 = { followups: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[] }
+    const captured2 = { followups: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[], guards: [] as Array<(exec: { name?: unknown }) => string | undefined> }
     const bridge2 = new ChatBridge({
       ctx: new Context(),
       connection: new OneBotConnection({ mode: 'reverse', host: '127.0.0.1', port: 0, url: 'ws://127.0.0.1:3002', accessToken: 'test-token', callTimeoutMs: 3_000 }),

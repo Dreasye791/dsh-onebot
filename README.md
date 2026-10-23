@@ -31,7 +31,7 @@
 | 文字图 | t2i 卡片渲染器（@napi-rs/canvas）：标题/粗斜体/删除线/引用/列表/代码块/表格/行内 code 胶囊/彩色 emoji/中文标点禁则；与 Hermes 原版同款数值（800px/26px/禁则集合/右缘 790） |
 | 出站 | 正文 ≤ `textImageThreshold`（默认 150）字符单条发送、**超过阈值渲染 t2i 文字图卡片**（AstrBot 风格：标题/引用/列表/表格/代码块/彩色 emoji；渲染失败、PNG 超 `outboundImageMaxBytes` 或 `<=0` 禁用卡片时回退单条纯文本）、Markdown 剥离为 QQ 纯文本、[[qq_forward]] 合并转发（群/私聊）、**实时中间消息**（interimMessages：每条中间文本立即发出、实时可见；各自在 `interimRecallMs`（默认 90s）后自动单独撤回；回合结束时先把整轮中间消息渲染成一张 **t2i 小结卡**、立即撤回仍在屏幕上的原文、再发送最终回复——不用回合末合并转发，避免长回合「原文超 2 分钟撤不回+转发卡重复」；`interimRecall: false` 时降级为只发不撤（无小结卡、不撤回））、**宿主「计划书/提问卡」自动中继**（模型调用 exit_plan_mode / ask_user_question 时把计划全文/问题选项发到 QQ）、正在输入提示（set_input_status，仅私聊） |
 | 命令 | 斜杠命令（仅管理员）：`/new` 开新会话、`/stop` 停止生成、`/steer <补充内容>` 向运行中的任务补充指令（无运行任务时回用法提示；详见下方命令表与 `newMessagePolicy` 配置）、`/model` 查看或切换当前会话模型（`--default` 修改部署默认；无参输出两级序号列表，回复序号选 provider → 再回复序号选模型）、`/workspace` 查看或切换工作区（无参编号列表，回复序号即选）、`/preset` 查看或切换 agent 预设（无参编号列表，回复序号即选）、`/session` 查看可切回历史会话并按序号切回（`/new`、`/workspace`、`/preset` 切换下来的旧会话进列表，可来回切，历史上下文恢复）、`/status` 会话全景、`/doctor [export [参考号]]`（别名 `/healthcheck`）运行体检（export [参考号] 导出脱敏诊断包 qq-diagnostics-*.zip，文件名含触发参考号）、`/retry` 重跑上一条、`/id` 会话标识、`/ver` 版本、`/ocr` 识别最近图片、`/mode` 切换出站模式（跨重启持久化）、`/plan` 计划模式、`/permission` 切换宿主权限预设（QQ 别名 `w`=工作区可写+需审批、`f`=全权+免审批；完整预设名照传，未知名由宿主报错并回显可用列表；无参查看当前与可用列表，序号按 available 顺序）、`/goal` 目标记录（跨重启持久化）、`/help` 帮助；未知斜杠命令默认拦截并提示相近命令（`unknownCommand: passthrough` 改为透传给模型） |
-| 工具 | `qq_send_image`（≤9 张，路径或 URL）、`qq_send_voice`、`qq_send_video`、`qq_send_file`、`qq_send_forward`、`qq_napcat_api`（14 个白名单 action）、`qq_group_history`（文件编辑工具 `code_safe_edit` 等已拆至独立插件 dsh-safe-edit，见下文「安全编辑」） |
+| 工具 | `qq_send_image`（≤9 张，路径或 URL）、`qq_send_voice`、`qq_send_video`、`qq_send_file`、`qq_send_forward`、`qq_send_meme`（配 `memeDir` 后出现，按情绪/关键词抽预置表情包）、`qq_napcat_api`（14 个白名单 action）、`qq_group_history`（文件编辑工具 `code_safe_edit` 等已拆至独立插件 dsh-safe-edit，见下文「安全编辑」） |
 | 权限 | 管理员白名单（`ONEBOT_ALLOWED_USERS`）、dm/group 策略（open/allowlist/disabled）、群聊 @提及 gating、受限用户 [受限用户:仅问答] 软限制、出站敏感内容审计 |
 | 会话 | 每个 QQ 会话一个持久 Agent（session id 稳定派生），重启后自动 resume；按 `agentPreset`/`workspacePath` 挂载到 preset 与工作区；每轮结束 flush 落盘 |
 | 运维 | 热加载：profile 层 patch 的 **config 覆盖**与 **insert 新增/删除**均热生效——插件 fiber 秒级原地重启（宿主进程不重启；代价：QQ 桥一次秒级重连、在途回合中断）；touch/内容未变不触发任何动作；bundle 自带 patch、仓库模板、部署副本的 patch 文件与根配置 `cordis.yml` 的改动**不**热生效；临时媒体 TTL 过期清理 |
@@ -176,6 +176,8 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `autoSteerPolicy` | `admin` | steer 模式下自动插话的发送者资格（T9，用户裁决 2026-10-12）：`admin`（默认）=仅管理员可自动插话；`all`=所有非受限发送者均可。不具备资格的消息按排队处理（入队+排队提示）；`/steer` 命令始终仅管理员、不受本项影响；`queue` 模式行为完全不变。设置页 behavior 组可改，热重启生效 |
 | `deferredTimeoutMs` | `600000` | 等待模型回复超时阈值（毫秒，T3/P2 超时补发）：回合超过该时长没有任何模型输出时，向聊天回复一条超时提醒并把回合登记进补发注册表（继续运行、不放弃）；回合完成后向原聊天补发最终文字（带「（超时补发）」前缀，走既有出站分段/t2i 规则），只补最终文字与终态通知——不重放审批/提问卡/文件工具调用/图片；发送明确失败最多尝试 3 次（退避 2s/10s），发送结果不确定（动作超时/非网关错误，消息可能已到达）时保留记录并停止自动重试防重复；注册表逐行 JSONL 落盘 `mediaDir/deferred-delivery.jsonl`（原子写、逐行损坏降级、缺失=全新），插件重启后自动恢复未完结条目的跟踪；`/stop` 只终止当前聊天提交的回合并显式终止该聊天的补发跟踪（其他聊天不受影响）；正常完成（未超时）零注册表写入、零补发。设置页 behavior 组可改，热重启生效；`0`=关闭 |
 | `reasoningEffort` | `''` | QQ 通道思考强度覆盖（T10）：留空（默认）=继承宿主 `agent-default-model` 的 `reasoningEffort`，即 0.9.4 及以前的行为；填 `none` / `low` / `medium` / `high` / `xhigh` / `max` 则本通道创建或恢复的每个会话都使用该值，**只影响 QQ 通道，Web / GUI 会话不受影响**。`none` = 关闭思考（上游对「不支持关闭」的模型会返回报错，此时请退到 `low`）。宿主的全局默认通常是 `high`，QQ 侧常因等待思考而显得慢，降到 `low` 通常明显更快且质量损失很小。保存后由插件级热重启生效。 |
+| `persona` | `''` | QQ 通道角色设定（T11）：纯文本注入本通道 system prompt **最前段**，用来定语气与说话方式（你是谁、怎么说话、有什么偏好）。留空（默认）=不注入人设层，行为与 0.9.4 完全一致；非空时在平台规则之前加一段「## 角色设定」，并声明与下方规则冲突时以规则为准（人设只调语气，不解除任何安全/平台约束）。**只影响 QQ 通道，Web / GUI 会话不受影响**。上限 20000 字符，首尾空白自动 trim。设置页 behavior 组（多行文本框，14 行）可改，保存后对新回合生效。 |
+| `memeDir` | `''` | 表情包目录（T12）：按 `<目录>/<情绪标签>/<图片>` 组织的图库，与 dsh-meme 图库同构，可直接把它的 pack 目录拷进来。配置后本通道 agent 多一个 `qq_send_meme` 工具——按情绪标签随机抽一张，或按关键词（文件名/标签子串，空格分隔多词、整词不中自动拆词）搜一张发到 QQ。留空（默认）=不注册该工具，模型看不到它。**只影响 QQ 通道**。目录必须位于 `mediaDir` 之内，否则出站围栏拒发（同 `qq_send_image` 的既有规则）。可在设置面板「连接」组配置，也可在 patch config 手改。 |
 | `dmPolicy` | `open` | 私聊策略：`open`(仅管理员)/`allowlist`(白名单)/`disabled` |
 | `groupPolicy` | `open` | 群聊策略：`open`(所有人)/`allowlist`/`disabled` |
 | `restrictedMemberPrefix` | `true` | 群聊非管理员消息注入 `[受限用户:仅问答]` 前缀（软限制） |
@@ -225,20 +227,21 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 dsh Web GUI 的设置页提供本插件的可视化配置（host-plane Remote `onebotSettings`，写入 profile 层
 `cordis.patch.yml` 中 `dsh-onebot` 条目的 config 覆盖行——与手改 patch、宿主原生设置页是同一个持久层）。
 
-### 三组 19 键
+### 四组 32 键
 
 | 组 | 键 |
 |---|---|
-| connection（连接） | `mode`、`host`、`port`、`url`、`accessToken`、`botQQ` |
+| connection（连接） | `mode`、`host`、`port`、`url`、`accessToken`、`botQQ`、`workspacePath`、`memeDir` |
 | permissions（权限） | `requireMention`、`adminUsers`、`dmPolicy`、`groupPolicy`、`allowAllUsers`、`allowFrom`、`groupAllowFrom` |
-| behavior（行为） | `interimMessages`、`interimRecall`、`interimRecallMs`、`sendErrorNotice`、`unknownCommand`、`rateLimitPerMinute`、`newMessagePolicy`、`autoSteerPolicy`、`deferredTimeoutMs`、`reasoningEffort` |
+| behavior（行为） | `interimMessages`、`interimRecall`、`interimRecallMs`、`sendErrorNotice`、`unknownCommand`、`rateLimitPerMinute`、`newMessagePolicy`、`autoSteerPolicy`、`deferredTimeoutMs`、`reasoningEffort`、`persona` |
+| diagnostics（诊断） | `actionAuditEnabled`、`traceEnabled`、`recordInbound`、`inboxRedact`、`injectEnabled`、`injectDryRun` |
 
 `accessToken` 在设置页做密码型输入，快照返回侧脱敏（不回显明文）；写入侧仍在 patch 文件明文落盘。
 
 ### 与 patch config 的优先级
 
 **schema 默认值 ← bundle/底层 patch（继承层） ← profile 覆盖行（设置页写这里）**；同一层内后写的 patch
-条目胜出。设置页键与手改 patch 是同一层的同一行，不存在两套优先级。三组 19 键之外的键
+条目胜出。设置页键与手改 patch 是同一层的同一行，不存在两套优先级。四组 32 键之外的键
 （media/STT/性能/`agentPreset` 等低频键）不设 UI，仍在同一行 config 手改 patch。
 
 ### 生效方式

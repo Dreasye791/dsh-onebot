@@ -90,6 +90,13 @@ export interface BridgeConfig {
   /** QQ 通道的思考强度覆盖：''/缺省 = 继承宿主 agent-default-model（0.9.4 及
    * 以前的行为）；非空 = 本通道 agent 的 reasoningEffort，Web/GUI 会话不受影响。 */
   reasoningEffort?: string
+  /** T11：QQ 通道的角色设定（人设）文本；空串/缺省 = 不注入人设层，行为与
+   *  0.9.4 一致。仅影响本通道的 system prompt，Web/GUI 会话不受影响。 */
+  persona?: string
+  /** T12：表情包目录（`<memeDir>/<tag>/<file>.jpg`，与 dsh-meme 图库同构）。
+   *  空串/缺省 = 不注册 qq_send_meme；非空则本通道 agent 多一个只读该目录的
+   *  发图工具。目录必须在 mediaDir 之内才能通过出站围栏。 */
+  memeDir?: string
   workspacePath: string
   /** Max inbound file bytes fetched via QQ direct link / base64 (0 = no cap). */
   maxInboundFileBytes: number
@@ -1179,13 +1186,13 @@ export class ChatBridge {
     agentCtx.systemPrompt.section({
       name: 'channel:dsh-onebot',
       order: 90,
-      text: buildPlatformPrompt(this.deps.config.restrictedMemberPrefix),
+      text: buildPlatformPrompt(this.deps.config.restrictedMemberPrefix, this.deps.config.persona),
     })
     registerTools(agentCtx, this, this.deps.connection, {
       maxImageBytes: this.deps.config.maxImageBytes,
       maxVoiceBytes: this.deps.config.maxVoiceBytes,
       maxFileBytes: this.deps.config.maxFileBytes,
-    })
+    }, { memeDir: this.deps.config.memeDir })
   }
 
   // ------------------------------------------------------------ typing

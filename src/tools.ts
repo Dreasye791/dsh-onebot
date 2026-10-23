@@ -5,6 +5,10 @@
  * @module dsh-onebot/tools
  */
 
+import { existsSync } from 'node:fs'
+import { readdir } from 'node:fs/promises'
+import { join } from 'node:path'
+
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
@@ -85,6 +89,73 @@ async function fencedMediaFile(path: string, maxBytes: number, allowedRoots: str
   }
 }
 
+/** Image extensions a meme pack may contain. */
+const MEME_IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
+
+/** One meme candidate: its pack (tag) and absolute path. */
+interface MemeEntry {
+  tag: string
+  name: string
+  path: string
+}
+
+/**
+ * Scan a meme directory laid out as `<memeDir>/<tag>/<file>.jpg` — the same
+ * shape dsh-meme packs use, so a pack can be copied in as-is. Subdirectories
+ * are the emotion tags; a flat directory (files directly under memeDir) is
+ * read as one implicit `all` tag. Missing/unreadable directories yield an
+ * empty list so the tool degrades to a clear "no memes" error instead of
+ * throwing at registration time.
+ */
+async function scanMemes(memeDir: string): Promise<MemeEntry[]> {
+  const out: MemeEntry[] = []
+  let top: Array<{ name: string; isDir: boolean }>
+  try {
+    top = await readdir(memeDir, { withFileTypes: true }).then((list) =>
+      list.map((d) => ({ name: d.name, isDir: d.isDirectory() })),
+    )
+  } catch {
+    return out
+  }
+  const isImage = (name: string): boolean => MEME_IMAGE_EXTS.includes(name.slice(name.lastIndexOf('.')).toLowerCase())
+  for (const item of top) {
+    if (item.isDir) {
+      const dir = join(memeDir, item.name)
+      try {
+        for (const file of await readdir(dir, { withFileTypes: true })) {
+          if (file.isFile() && isImage(file.name)) out.push({ tag: item.name, name: file.name, path: join(dir, file.name) })
+        }
+      } catch {
+        // unreadable pack: skip, keep the rest usable
+      }
+    } else if (isImage(item.name)) {
+      out.push({ tag: 'all', name: item.name, path: join(memeDir, item.name) })
+    }
+  }
+  return out
+}
+
+/** Pick one meme by tag/query; returns the match plus the tags that exist. */
+function pickMeme(memes: MemeEntry[], tag: string, query: string): { hit?: MemeEntry; tags: string[] } {
+  const tags = [...new Set(memes.map((m) => m.tag))].sort()
+  let pool = memes
+  const wanted = tag.trim().toLowerCase()
+  if (wanted !== '') pool = pool.filter((m) => m.tag.toLowerCase() === wanted)
+  const q = query.trim().toLowerCase()
+  if (q !== '') {
+    // Keyword search runs over the file name and the tag; unmatched words are
+    // retried individually so "猫 比心" still hits "bixin.jpg".
+    const words = q.split(/\s+/).filter((w) => w !== '')
+    const match = (m: MemeEntry, w: string): boolean =>
+      m.name.toLowerCase().includes(w) || m.tag.toLowerCase().includes(w)
+    let hits = pool.filter((m) => words.every((w) => match(m, w)))
+    if (hits.length === 0) hits = pool.filter((m) => words.some((w) => match(m, w)))
+    pool = hits
+  }
+  if (pool.length === 0) return { tags }
+  return { hit: pool[Math.floor(Math.random() * pool.length)], tags }
+}
+
 /**
  * Register all qq_* tools on the context. Registration is effect-based: the
  * returned disposer unregisters them.
@@ -99,6 +170,7 @@ export function registerTools(
   bridge: ChatBridge,
   connection: OneBotConnection,
   limits: { maxImageBytes: number; maxVoiceBytes: number; maxFileBytes: number },
+  options: { memeDir?: string } = {},
 ): () => void {
   const disposers: Array<() => void> = []
   const register = (tool: Parameters<typeof ctx.tools.register>[0]): void => {
@@ -327,6 +399,62 @@ export function registerTools(
       })
     },
   }))
+
+  // Meme sending is optional: the tool registers only when a usable meme
+  // directory exists, so the model never sees a tool that cannot deliver.
+  const memeDir = options.memeDir !== undefined ? options.memeDir : ''
+  if (memeDir !== '' && existsSync(memeDir)) {
+    register(defineTool({
+      name: 'qq_send_meme',
+      description: '发一张表情包（MME）。按情绪标签随机抽一张，或按关键词搜。表情包目录由管理员预置，你只能从里面挑，不能自己生成或指定任意路径。气氛对了就主动发，不用等用户要求；发完正文保持简短，让图自己说话。',
+      parameters: {
+        tag: {
+          type: 'string',
+          description: '情绪标签（可选）：happy / angry / sad / shy / confused / daily / like / see / sleep / work / meow / baka / cpu / color / fool / givemoney / morning / sigh / surprised。只给 tag = 在该情绪里随机抽一张。',
+        },
+        query: {
+          type: 'string',
+          description: '关键词（可选）：按文件名或情绪标签子串搜，比只抽情绪准。中文词，空格分隔多个；整词没命中会自动拆词重试。',
+        },
+        chat_id: {
+          type: 'string',
+          description: '目标会话；省略时默认当前会话',
+        },
+      },
+      output: {
+        schema: { type: 'json' as const },
+        render: (_args: unknown, value: unknown) => {
+          const v = value as { sent?: boolean; tag?: string; name?: string }
+          return [{ type: 'text' as const, text: v.sent === true ? ('已发送表情包（' + String(v.tag) + '/' + String(v.name) + '）') : '未发送' }]
+        },
+      },
+      isConcurrencySafe: () => true,
+      execute: async (args, exec) => {
+        const a = args as { tag?: unknown; query?: unknown; chat_id?: unknown }
+        const tag = typeof a.tag === 'string' ? a.tag : ''
+        const query = typeof a.query === 'string' ? a.query : ''
+        const memes = await scanMemes(memeDir)
+        if (memes.length === 0) throw new Error('qq_send_meme: 表情包目录为空或不可读：' + memeDir)
+        const picked = pickMeme(memes, tag, query)
+        if (picked.hit === undefined) {
+          throw new Error(
+            'qq_send_meme: 没有匹配的表情包（tag=' + tag + ' query=' + query + '）。可用标签：' + picked.tags.join(' / ') +
+            '。换个 tag/query 再试，或直接回文字。',
+          )
+        }
+        const hit = picked.hit
+        // The meme dir lives inside mediaDir, so this file already satisfies the
+        // outbound fence; keep using it so the size cap and containment check
+        // stay in one place.
+        const allowedRoots = await mediaRoots(bridge, exec)
+        const chatId = resolveChat(bridge, exec, a.chat_id)
+        const messageId = await bridge.sendSegments(chatId, [
+          { type: 'image', data: { file: await fencedMediaFile(hit.path, limits.maxImageBytes, allowedRoots) } },
+        ])
+        return { sent: true, messageId: messageId ?? null, tag: hit.tag, name: hit.name }
+      },
+    }))
+  }
 
   return () => {
     for (const dispose of disposers) dispose()

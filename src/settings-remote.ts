@@ -56,20 +56,22 @@ import type { WorkspaceRegistryLike } from './bridge.js'
 export const ENTRY_ID = 'dsh-onebot'
 /** Typert Remote 命名空间 = cordis 服务键（T1 §4）。 */
 export const NAMESPACE = 'onebotSettings'
-/** 快照固定值：30 键均为插件级热重启生效（T1 §5；W1/W2 新增 6 布尔键同粒度）。 */
+/** 快照固定值：32 键均为插件级热重启生效（T1 §5；W1/W2 新增 6 布尔键同粒度）。 */
 export const REMOTE_EFFECT = 'restart'
 
-/** 设置页 UI 四组 30 键（T1 §4 + T9 autoSteerPolicy + T3 deferredTimeoutMs + T10 reasoningEffort；与 src/index.ts Config schema 一一对应）。
+/** 设置页 UI 四组 32 键（T1 §4 + T9 autoSteerPolicy + T3 deferredTimeoutMs + T10 reasoningEffort + T11 persona；与 src/index.ts Config schema 一一对应）。
  *  W6：permissions/behavior 三组 19 键保持不动，W1/W2 的 6 个布尔键独立成
  *  「diagnostics（诊断）」组——它们全部默认关（除 actionAuditEnabled 默认开）、
  *  属观测/调试面，与连接权限行为组的使用频率与风险等级都不同，独立分组让
  *  「默认全关的调试开关」一眼可辨（对齐竞品 v0.6.0 面板的开关分组话术）。
  *  W7：connection 组追加 workspacePath（会话默认工作区；schema 已有该键
- *  src/index.ts:287，本批次起入面板白名单，键序追加在组尾）。 */
+ *  src/index.ts:287，本批次起入面板白名单，键序追加在组尾）。
+ *  T12：connection 组追加 memeDir（表情包目录；schema 已有该键 src/index.ts:318，
+ *  本批次起入面板白名单，键序追加在组尾。留空 = 不注册 qq_send_meme 工具）。 */
 export const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>> = {
-  connection: ['mode', 'host', 'port', 'url', 'accessToken', 'botQQ', 'workspacePath'],
+  connection: ['mode', 'host', 'port', 'url', 'accessToken', 'botQQ', 'workspacePath', 'memeDir'],
   permissions: ['requireMention', 'adminUsers', 'dmPolicy', 'groupPolicy', 'allowAllUsers', 'allowFrom', 'groupAllowFrom'],
-  behavior: ['interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'reasoningEffort'],
+  behavior: ['interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'reasoningEffort', 'persona'],
   diagnostics: ['actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun'],
 }
 
@@ -83,6 +85,8 @@ export const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>> = {
   botQQ: '',
   // W7：会话默认工作区路径（schema 默认 ''，src/index.ts:287——留空 = 宿主进程 cwd）。
   workspacePath: '',
+  // T12：表情包目录（schema 默认 ''，src/index.ts:318——留空 = 不注册 qq_send_meme）。
+  memeDir: '',
   requireMention: true,
   adminUsers: [],
   dmPolicy: 'open',
@@ -104,6 +108,8 @@ export const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>> = {
   deferredTimeoutMs: 600_000,
   // 思考强度覆盖（src/index.ts:310 默认 ''=继承宿主 agent-default-model）。
   reasoningEffort: '',
+  // T11：角色设定（人设）文本（src/index.ts default '' = 不注入人设层）。
+  persona: '',
   // W6：W1/W2 可观测/调试布尔键（schema 默认值摘自 src/index.ts:297-317）。
   actionAuditEnabled: true,
   traceEnabled: false,
@@ -126,7 +132,7 @@ const ENUM_KEYS: Readonly<Record<string, readonly string[]>> = {
   // T9-B (用户裁决 2026-10-12)：admin=仅管理员（默认）；all=不限。
   autoSteerPolicy: ['admin', 'all'],
   // 思考强度覆盖：''=继承宿主 agent-default-model（默认）；其余档位只影响 QQ 通道。
-  reasoningEffort: ['', 'none', 'low', 'medium', 'high', 'xhigh', 'max'],
+    reasoningEffort: ['', 'none', 'low', 'medium', 'high', 'xhigh', 'max'],
 }
 const NUMBER_KEYS: readonly string[] = ['port', 'interimRecallMs', 'rateLimitPerMinute', 'deferredTimeoutMs']
 /** 数字键取值范围（评审 B4：port 1–65535、时长/频控 ≥0；越界在 Remote 层拒绝，不再只依赖宿主回滚兜底）。 */
@@ -144,9 +150,13 @@ const BOOLEAN_KEYS: readonly string[] = [
   'requireMention', 'allowAllUsers', 'interimMessages', 'interimRecall', 'sendErrorNotice',
   'actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun',
 ]
-const STRING_KEYS: readonly string[] = ['host', 'url', 'accessToken', 'botQQ', 'workspacePath']
+const STRING_KEYS: readonly string[] = ['host', 'url', 'accessToken', 'botQQ', 'workspacePath', 'persona', 'memeDir']
+/** 字符串键长度上限（T11：与 client patchSchema `vString(0, 20000)` 同宽，
+ *  防止仅经 Remote 直连的调用方绕过面板写入无界大文本进 patch）。
+ *  未列出的字符串键不设上限（保持 T1 既有行为）。 */
+const STRING_MAX_LEN: Readonly<Record<string, number>> = { persona: 20000 }
 const STRING_ARRAY_KEYS: readonly string[] = ['adminUsers', 'allowFrom', 'groupAllowFrom']
-/** 全部 30 键（校验与快照的唯一键集；7 枚举 + 4 数字 + 11 布尔 + 5 字符串 + 3 字符串数组）。 */
+/** 全部 32 键（校验与快照的唯一键集；7 枚举 + 4 数字 + 11 布尔 + 7 字符串 + 3 字符串数组）。 */
 export const ALL_KEYS: readonly string[] = [
   ...Object.keys(ENUM_KEYS), ...NUMBER_KEYS, ...BOOLEAN_KEYS, ...STRING_KEYS, ...STRING_ARRAY_KEYS,
 ]
@@ -157,7 +167,7 @@ export interface OnebotSettingsSnapshot {
   revision: number
   /** dsh-onebot 条目 fiber 是否 active（fiber.state === 2，同 configEditor.edit 的活性判据）。 */
   entryActive: boolean
-  /** 28 键生效值；accessToken 脱敏为 ''。 */
+  /** 32 键生效值；accessToken 脱敏为 ''。 */
   config: Record<string, unknown>
   /** 脱敏键标记：明文是否已配置。 */
   secrets: Array<{ path: string[]; set: boolean }>
@@ -307,7 +317,7 @@ function resolveWorkspaceRegistry(ctx: { get(key: string): unknown } | undefined
   return registry !== undefined && registry !== null && typeof registry.list === 'function' ? registry : undefined
 }
 
-/** 28 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
+/** 32 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
 export function effectiveConfig(raw: Record<string, unknown>): Record<string, unknown> {
   const effective: Record<string, unknown> = {}
   for (const key of ALL_KEYS) {
@@ -336,7 +346,7 @@ function buildSnapshot(entry: ConfigEditorEntry, state: RevisionState): OnebotSe
   }
 }
 
-/** updateSettings 入参校验（T1 §4：28 键的任意子集，扁平 JSON）。未知键整单
+/** updateSettings 入参校验（T1 §4：32 键的任意子集，扁平 JSON）。未知键整单
  *  拒绝（不静默丢弃）；类型/枚举不符拒绝；具体取值合法性交由宿主 schemastery
  *  校验 + reconcile 失败自动回滚兜底（T1 §5）。 */
 export function validatePatch(patch: unknown): Record<string, unknown> {
@@ -360,8 +370,10 @@ export function validatePatch(patch: unknown): Record<string, unknown> {
       if (typeof value === 'boolean') clean[key] = value
       else issues.push(`${key} 必须是布尔值`)
     } else if (STRING_KEYS.includes(key)) {
-      if (typeof value === 'string') clean[key] = value
-      else issues.push(`${key} 必须是字符串`)
+      const maxLen = STRING_MAX_LEN[key]
+      if (typeof value !== 'string') issues.push(`${key} 必须是字符串`)
+      else if (maxLen !== undefined && value.length > maxLen) issues.push(`${key} 长度不得超过 ${maxLen} 字符（当前 ${value.length}）`)
+      else clean[key] = value
     } else if (STRING_ARRAY_KEYS.includes(key)) {
       if (Array.isArray(value) && value.every((item) => typeof item === 'string')) clean[key] = value
       else issues.push(`${key} 必须是字符串数组`)

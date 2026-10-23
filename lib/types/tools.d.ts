@@ -14,10 +14,13 @@ import type { OneBotConnection } from './connection.js';
  * @param bridge - the chat bridge.
  * @param connection - the OneBot connection.
  * @param limits - media size caps.
+ * @param options - optional feature switches; `memeDir` enables `qq_send_meme`.
  * @returns the disposer.
  */
 export declare function registerTools(ctx: Context, bridge: ChatBridge, connection: OneBotConnection, limits: {
     maxImageBytes: number;
     maxVoiceBytes: number;
     maxFileBytes: number;
+}, options?: {
+    memeDir?: string;
 }): () => void;

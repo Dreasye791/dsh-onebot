@@ -1270,7 +1270,7 @@ export class ChatBridge {
       maxImageBytes: this.deps.config.maxImageBytes,
       maxVoiceBytes: this.deps.config.maxVoiceBytes,
       maxFileBytes: this.deps.config.maxFileBytes,
-    }, { memeDir: this.deps.config.memeDir })
+    }, { memeDir: this.deps.config.memeDir, mediaDir: this.deps.config.mediaDir })
   }
 
   // ------------------------------------------------------------ typing

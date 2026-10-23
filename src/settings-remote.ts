@@ -67,7 +67,8 @@ export const REMOTE_EFFECT = 'restart'
  *  W7：connection 组追加 workspacePath（会话默认工作区；schema 已有该键
  *  src/index.ts:287，本批次起入面板白名单，键序追加在组尾）。
  *  T12：connection 组追加 memeDir（表情包目录；schema 已有该键 src/index.ts:318，
- *  本批次起入面板白名单，键序追加在组尾。留空 = 不注册 qq_send_meme 工具）。
+ *  本批次起入面板白名单，键序追加在组尾。留空 = 不注册 qq_send_meme 工具；
+ *  T16 起要求它位于 mediaDir 之内且不等于 mediaDir，否则注册期即跳过）。
  *  T15：connection 组追加 attachInboundImages / attachMaxImageMB / attachmentBudgetMB
  *  三键（入站图片投递与附件库容量）。面板里 MB 是**展示单位**，schema 侧换算成字节。 */
 export const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>> = {
@@ -138,7 +139,8 @@ const ENUM_KEYS: Readonly<Record<string, readonly string[]>> = {
   // T9-B (用户裁决 2026-10-12)：admin=仅管理员（默认）；all=不限。
   autoSteerPolicy: ['admin', 'all'],
   // 思考强度覆盖：''=继承宿主 agent-default-model（默认）；其余档位只影响 QQ 通道。
-    reasoningEffort: ['', 'none', 'low', 'medium', 'high', 'xhigh', 'max'],
+  // 值是 pi-ai 的档位名，关闭思考写作 off（不是 none——none 只是上游 wire 拼写）。
+  reasoningEffort: ['', 'off', 'low', 'medium', 'high', 'xhigh', 'max'],
 }
 const NUMBER_KEYS: readonly string[] = ['port', 'interimRecallMs', 'rateLimitPerMinute', 'deferredTimeoutMs', 'attachMaxImageMB', 'attachmentBudgetMB']
 /** 数字键取值范围（评审 B4：port 1–65535、时长/频控 ≥0；越界在 Remote 层拒绝，不再只依赖宿主回滚兜底）。 */

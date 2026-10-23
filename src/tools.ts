@@ -5,9 +5,9 @@
  * @module dsh-onebot/tools
  */
 
-import { existsSync } from 'node:fs'
+import { realpathSync } from 'node:fs'
 import { readdir } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -92,6 +92,44 @@ async function fencedMediaFile(path: string, maxBytes: number, allowedRoots: str
 /** Image extensions a meme pack may contain. */
 const MEME_IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
 
+/**
+ * Resolve the meme pack directory, or `undefined` when the tool must not
+ * register. Registration is skipped (not deferred to a send-time failure)
+ * whenever the directory is missing or escapes `mediaDir`:
+ *
+ * - empty config → feature off;
+ * - the outbound fence only allows `mediaDir` (+ the admin-turn workspace),
+ *   so a `memeDir` outside it could never deliver a meme;
+ * - `memeDir === mediaDir` is refused too: the temp dir for inbound images
+ *   lives directly under `mediaDir`, so that layout would let the tool send
+ *   some other chat's inbound picture as a "meme".
+ *
+ * Both sides are compared through `realpath`, so a symlink or `..` segment
+ * cannot smuggle the pack out of the media root. Fail-closed: an unresolvable
+ * root refuses the feature.
+ */
+function resolveMemeDir(memeDir: string, mediaDir: string): string | undefined {
+  // Both must be configured: an empty mediaDir would otherwise make
+  // realpathSync('') resolve to the process cwd and silently "contain" the
+  // pack — a containment proof that means nothing.
+  if (memeDir === '' || mediaDir === '') return undefined
+  let memeReal: string
+  let mediaReal: string
+  try {
+    memeReal = realpathSync(memeDir)
+  } catch {
+    return undefined // missing/unreadable pack
+  }
+  try {
+    mediaReal = realpathSync(mediaDir)
+  } catch {
+    return undefined // unknown media root: cannot prove containment
+  }
+  const prefix = mediaReal.endsWith(sep) ? mediaReal : mediaReal + sep
+  if (!memeReal.startsWith(prefix)) return undefined // outside, or equal to, mediaDir
+  return memeReal
+}
+
 /** One meme candidate: its pack (tag) and absolute path. */
 interface MemeEntry {
   tag: string
@@ -170,7 +208,7 @@ export function registerTools(
   bridge: ChatBridge,
   connection: OneBotConnection,
   limits: { maxImageBytes: number; maxVoiceBytes: number; maxFileBytes: number },
-  options: { memeDir?: string } = {},
+  options: { memeDir?: string; mediaDir?: string } = {},
 ): () => void {
   const disposers: Array<() => void> = []
   const register = (tool: Parameters<typeof ctx.tools.register>[0]): void => {
@@ -400,10 +438,11 @@ export function registerTools(
     },
   }))
 
-  // Meme sending is optional: the tool registers only when a usable meme
-  // directory exists, so the model never sees a tool that cannot deliver.
-  const memeDir = options.memeDir !== undefined ? options.memeDir : ''
-  if (memeDir !== '' && existsSync(memeDir)) {
+  // Meme sending is optional: the tool registers only when the configured
+  // directory both exists and resolves inside the media root, so the model
+  // never sees a tool that cannot deliver (see resolveMemeDir).
+  const memeDir = resolveMemeDir(options.memeDir !== undefined ? options.memeDir : '', options.mediaDir !== undefined ? options.mediaDir : '')
+  if (memeDir !== undefined) {
     register(defineTool({
       name: 'qq_send_meme',
       description: '发一张表情包（MME）。按情绪标签随机抽一张，或按关键词搜。表情包目录由管理员预置，你只能从里面挑，不能自己生成或指定任意路径。气氛对了就主动发，不用等用户要求；发完正文保持简短，让图自己说话。',

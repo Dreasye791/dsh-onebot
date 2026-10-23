@@ -15,10 +15,12 @@
 export function buildPlatformPrompt(restrictedMembers: boolean, persona?: string): string {
   let text = ''
   // T11：人设层置于最前——模型对开头的角色设定服从度最高；平台规则在下，
-  // 二者冲突时规则优先（规则是硬约束，人设只调语气）。
+  // 二者冲突时规则优先（规则是硬约束，人设只调语气，不解除任何约束）。
+  // 段头措辞须与 lib/prompt.js 逐字一致：lib 是运行时真正加载的产物，两边
+  // 只靠手工双写维护，此前这一句曾与 lib 漂移。
   const role = typeof persona === 'string' ? persona.trim() : ''
   if (role !== '') {
-    text += '## 角色设定（优先于下方通用习惯，但不得违反下方硬性规则）\n'
+    text += '## 角色设定（决定你的语气与说话方式；与下方规则冲突时以下方规则为准）\n'
     text += role + '\n\n'
   }
   text += '## QQ 平台说明（dsh-onebot 通道）\n'

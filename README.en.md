@@ -192,6 +192,7 @@ default). Common options:
 | `restrictedMemberPrefix` | `true` | Prefix non-admin group messages with `[受限用户:仅问答]` (soft restriction) |
 | `adminUsers` | `[]` | admin QQ numbers; or the `ONEBOT_ALLOWED_USERS` env var. **At least one is required**, otherwise DMs (`dmPolicy=open`) and slash commands are unavailable to everyone |
 | `allowFrom` / `groupAllowFrom` | `[]` | allowlisted users/groups |
+| `mcpToolAllow` | `[]` | MCP tool allowlist for the QQ channel (T20): **empty (default) = every MCP tool is denied** (a deliberate fail-closed default: MCP servers are mounted on the profile root scope, so the QQ channel inherits the same tool set as the Web GUI — an open default would hand those capabilities to every group member). Non-empty entries are matched in any of these forms: `mcp__akasha__akasha_search` (exact tool name, most precise), `mcp__akasha__*` (every tool of that server), `akasha` (server-name shorthand), `akasha_search` (same-named tool on any server), `*` (all MCP tools, use with care). `qq_*` tools and host built-ins (`read`/`bash`/…) are **not** affected. **QQ channel only; Web / GUI sessions are untouched.** Editable in the settings page's permissions group; a plugin-level hot restart applies it. |
 | `interimMessages` | `true` | send interim text between tool calls immediately; `false` sends only the final reply |
 | `interimRecall` | `true` | interim recall + turn-end summary card switch; `false` = send-only (degraded: no summary card, no recall) |
 | `sendErrorNotice` | `true` | Send a ⚠️ error notice to the user when a turn fails |
@@ -237,13 +238,14 @@ The dsh Web GUI settings page exposes this plugin's configuration visually (a ho
 `onebotSettings` that writes the config override of the `dsh-onebot` entry in the profile-level
 `cordis.patch.yml` — the same persistence layer as a hand-edited patch and the host's native settings page).
 
-### Three groups, 19 keys
+### Four groups, 38 keys
 
 | Group | Keys |
 |---|---|
-| connection | `mode`, `host`, `port`, `url`, `accessToken`, `botQQ` |
-| permissions | `requireMention`, `adminUsers`, `dmPolicy`, `groupPolicy`, `allowAllUsers`, `allowFrom`, `groupAllowFrom` |
-| behavior | `interimMessages`, `interimRecall`, `interimRecallMs`, `sendErrorNotice`, `unknownCommand`, `rateLimitPerMinute`, `newMessagePolicy`, `autoSteerPolicy`, `deferredTimeoutMs`, `reasoningEffort` |
+| connection | `mode`, `host`, `port`, `url`, `accessToken`, `botQQ`, `workspacePath`, `memeDir`, `attachInboundImages`, `attachMaxImageMB`, `attachmentBudgetMB`, `attachmentRetentionHours`, `attachmentSaveTimeoutMs` |
+| permissions | `requireMention`, `adminUsers`, `dmPolicy`, `groupPolicy`, `allowAllUsers`, `allowFrom`, `groupAllowFrom`, `mcpToolAllow` |
+| behavior | `interimMessages`, `interimRecall`, `interimRecallMs`, `sendErrorNotice`, `unknownCommand`, `rateLimitPerMinute`, `newMessagePolicy`, `autoSteerPolicy`, `deferredTimeoutMs`, `reasoningEffort`, `persona` |
+| diagnostics | `actionAuditEnabled`, `traceEnabled`, `recordInbound`, `inboxRedact`, `injectEnabled`, `injectDryRun` |
 
 `accessToken` is a password-style input in the settings page; snapshots redact it on return (no plaintext echo);
 the write side still lands in the patch file as plaintext.
@@ -252,7 +254,7 @@ the write side still lands in the patch file as plaintext.
 
 **schema defaults ← bundle/base patch (inherited layer) ← profile override line (what the settings page writes)**;
 within the same layer, later patch entries win. Settings-page keys and a hand-edited patch are the same line in
-the same layer — there are no two competing priorities. Keys outside the 19 (media/STT/performance/
+the same layer — there are no two competing priorities. Keys outside the 38 (media/STT/performance/
 `agentPreset` and other low-frequency keys) get no UI; hand-edit the patch in the same config line.
 
 ### How changes take effect

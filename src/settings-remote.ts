@@ -56,10 +56,10 @@ import type { WorkspaceRegistryLike } from './bridge.js'
 export const ENTRY_ID = 'dsh-onebot'
 /** Typert Remote 命名空间 = cordis 服务键（T1 §4）。 */
 export const NAMESPACE = 'onebotSettings'
-/** 快照固定值：37 键均为插件级热重启生效（T1 §5；W1/W2 新增 6 布尔键同粒度）。 */
+/** 快照固定值：38 键均为插件级热重启生效（T1 §5；W1/W2 新增 6 布尔键同粒度）。 */
 export const REMOTE_EFFECT = 'restart'
 
-/** 设置页 UI 四组 37 键（T1 §4 + T9 autoSteerPolicy + T3 deferredTimeoutMs + T10 reasoningEffort + T11 persona；与 src/index.ts Config schema 一一对应）。
+/** 设置页 UI 四组 38 键（T1 §4 + T9 autoSteerPolicy + T3 deferredTimeoutMs + T10 reasoningEffort + T11 persona；与 src/index.ts Config schema 一一对应）。
  *  W6：permissions/behavior 三组 19 键保持不动，W1/W2 的 6 个布尔键独立成
  *  「diagnostics（诊断）」组——它们全部默认关（除 actionAuditEnabled 默认开）、
  *  属观测/调试面，与连接权限行为组的使用频率与风险等级都不同，独立分组让
@@ -72,10 +72,11 @@ export const REMOTE_EFFECT = 'restart'
  *  T15：connection 组追加 attachInboundImages / attachMaxImageMB / attachmentBudgetMB
  *  三键（入站图片投递与附件库容量）。面板里 MB 是**展示单位**，schema 侧换算成字节。
  *  T18：再追加 attachmentRetentionHours / attachmentSaveTimeoutMs（账本回收窗口
- *  与宿主写盘超时），解决「软上限用满后永久拒收」和「临界区被卡死的写盘堵住」。 */
+ *  与宿主写盘超时），解决「软上限用满后永久拒收」和「临界区被卡死的写盘堵住」。
+ *  T20：permissions 组追加 mcpToolAllow（QQ 通道 MCP 工具白名单；空 = 全禁）。 */
 export const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>> = {
   connection: ['mode', 'host', 'port', 'url', 'accessToken', 'botQQ', 'workspacePath', 'memeDir', 'attachInboundImages', 'attachMaxImageMB', 'attachmentBudgetMB', 'attachmentRetentionHours', 'attachmentSaveTimeoutMs'],
-  permissions: ['requireMention', 'adminUsers', 'dmPolicy', 'groupPolicy', 'allowAllUsers', 'allowFrom', 'groupAllowFrom'],
+  permissions: ['requireMention', 'adminUsers', 'dmPolicy', 'groupPolicy', 'allowAllUsers', 'allowFrom', 'groupAllowFrom', 'mcpToolAllow'],
   behavior: ['interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'reasoningEffort', 'persona'],
   diagnostics: ['actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun'],
 }
@@ -100,6 +101,8 @@ export const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>> = {
   attachmentSaveTimeoutMs: 15000,
   requireMention: true,
   adminUsers: [],
+  // T20：MCP 工具白名单（schema 默认 [] = QQ 通道禁用全部 MCP 工具）。
+  mcpToolAllow: [],
   dmPolicy: 'open',
   groupPolicy: 'open',
   allowAllUsers: false,
@@ -174,8 +177,8 @@ const STRING_KEYS: readonly string[] = ['host', 'url', 'accessToken', 'botQQ', '
  *  防止仅经 Remote 直连的调用方绕过面板写入无界大文本进 patch）。
  *  未列出的字符串键不设上限（保持 T1 既有行为）。 */
 const STRING_MAX_LEN: Readonly<Record<string, number>> = { persona: 20000 }
-const STRING_ARRAY_KEYS: readonly string[] = ['adminUsers', 'allowFrom', 'groupAllowFrom']
-/** 全部 37 键（校验与快照的唯一键集；7 枚举 + 8 数字 + 12 布尔 + 7 字符串 + 3 字符串数组）。 */
+const STRING_ARRAY_KEYS: readonly string[] = ['adminUsers', 'allowFrom', 'groupAllowFrom', 'mcpToolAllow']
+/** 全部 38 键（校验与快照的唯一键集；7 枚举 + 8 数字 + 12 布尔 + 7 字符串 + 4 字符串数组）。 */
 export const ALL_KEYS: readonly string[] = [
   ...Object.keys(ENUM_KEYS), ...NUMBER_KEYS, ...BOOLEAN_KEYS, ...STRING_KEYS, ...STRING_ARRAY_KEYS,
 ]
@@ -186,7 +189,7 @@ export interface OnebotSettingsSnapshot {
   revision: number
   /** dsh-onebot 条目 fiber 是否 active（fiber.state === 2，同 configEditor.edit 的活性判据）。 */
   entryActive: boolean
-  /** 37 键生效值；accessToken 脱敏为 ''。 */
+  /** 38 键生效值；accessToken 脱敏为 ''。 */
   config: Record<string, unknown>
   /** 脱敏键标记：明文是否已配置。 */
   secrets: Array<{ path: string[]; set: boolean }>
@@ -420,7 +423,7 @@ function resolveDefaultModel(ctx: { get(key: string): unknown } | undefined): De
   return model !== undefined && model !== null && typeof model.currentSelection === 'function' ? model : undefined
 }
 
-/** 37 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
+/** 38 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
 export function effectiveConfig(raw: Record<string, unknown>): Record<string, unknown> {
   const effective: Record<string, unknown> = {}
   for (const key of ALL_KEYS) {

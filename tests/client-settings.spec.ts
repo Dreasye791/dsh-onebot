@@ -5,7 +5,7 @@
  * window.__ModuleLoader__）的模块级契约：
  *   ① 语法可解析（new Function）+ CJS banner/footer 形态 + externals 仅 react；
  *   ② 入口导出 inject + apply；
- *   ③ 四组 37 键：分组/键集/默认值与宿主侧 src/settings-remote.js（T3 + W6 扩展
+ *   ③ 四组 38 键：分组/键集/默认值与宿主侧 src/settings-remote.js（T3 + W6 扩展
  *      + W7 workspacePath + T2 newMessagePolicy + T9 autoSteerPolicy
  *      + T10 reasoningEffort + T11 persona）导出常量逐字一致（descriptor 契约核对，防两侧漂移）；
  *      诊断组 6 键文案为中文标签 + 一句话「关掉会怎样」+ 配置键名（W6）；
@@ -13,9 +13,9 @@
  *      updateSettings(patch, expectedRevision) / listWorkspaces()（W7），全
  *      positional，namespace onebotSettings，result codec 可解析 host 形态快照
  *      （含脱敏 accessToken）与 workspace 列表；
- *   ⑤ 渲染函数模块级可测：renderGroup 纯函数产出四组 37 键控件，accessToken
+ *   ⑤ 渲染函数模块级可测：renderGroup 纯函数产出四组 38 键控件，accessToken
  *      密码型输入且不明文回显（脱敏约定：host 快照 accessToken 恒 ''）；
- *   ⑥ 保存语义：computePatch 产出 37 键子集 patch；secretDraft '' = 不修改、
+ *   ⑥ 保存语义：computePatch 产出 38 键子集 patch；secretDraft '' = 不修改、
  *      clearSecret = accessToken ''（清空）；数字非法键不进 patch。
  *
  * 契约唯一来源：docs/settings-page-design.md（T1 定案）§3/§3.1/§4/§5。
@@ -134,7 +134,7 @@ describe('T4 客户端 bundle — descriptor 契约核对（与 T3 src/settings-
     expect(listWorkspaces.result.schema.parse({ available: false, workspaces: [] })).toEqual({ available: false, workspaces: [] })
   })
 
-  it('result codec 可解析宿主形态快照（T1 §3：37 键 config + secrets 脱敏标记 + groups + effect=restart）', () => {
+  it('result codec 可解析宿主形态快照（T1 §3：38 键 config + secrets 脱敏标记 + groups + effect=restart）', () => {
     const getSettings = descriptors[0] as { result: { schema: { parse(value: unknown): unknown } } }
     const config: Record<string, unknown> = { ...SCHEMA_DEFAULTS }
     config.accessToken = '' // 宿主 buildSnapshot 脱敏约定：快照 accessToken 恒 ''
@@ -160,7 +160,7 @@ describe('T4 客户端 bundle — descriptor 契约核对（与 T3 src/settings-
     expect(() => getSettings.result.schema.parse({ revision: 0, entryActive: true, config: SCHEMA_DEFAULTS, secrets: [], groups: SETTINGS_GROUPS, effect: 'none' })).toThrow()
   })
 
-  it('updateSettings patch codec 接受 37 键任意子集、拒绝非法枚举值', () => {
+  it('updateSettings patch codec 接受 38 键任意子集、拒绝非法枚举值', () => {
     const updateSettings = descriptors[1] as { parameters: Array<{ codec: { schema: { parse(value: unknown): unknown } } }> }
     const patchCodec = updateSettings.parameters[0].codec.schema
     expect(patchCodec.parse({ port: 1234 })).toEqual({ port: 1234 })
@@ -170,12 +170,12 @@ describe('T4 客户端 bundle — descriptor 契约核对（与 T3 src/settings-
   })
 })
 
-describe('T4 客户端 bundle — 四组 37 键（分组/键集/默认值 = T1 §4 表 + W6 诊断组 + W7 workspacePath + T2 newMessagePolicy + T9 autoSteerPolicy + T3 deferredTimeoutMs + T10 reasoningEffort + T11 persona + T12 memeDir + T15 attach 三键 = T4 常量）', () => {
+describe('T4 客户端 bundle — 四组 38 键（分组/键集/默认值 = T1 §4 表 + W6 诊断组 + W7 workspacePath + T2 newMessagePolicy + T9 autoSteerPolicy + T3 deferredTimeoutMs + T10 reasoningEffort + T11 persona + T12 memeDir + T15 attach 三键 = T4 常量）', () => {
   it('分组与键序逐字对齐 host SETTINGS_GROUPS', () => {
     expect(client.GROUP_KEYS).toEqual(SETTINGS_GROUPS)
     expect(groups.map((group) => group.id)).toEqual(['connection', 'permissions', 'behavior', 'diagnostics'])
     expect(allFields.map((field) => field.key).sort()).toEqual([...ALL_KEYS].sort())
-    expect(allFields).toHaveLength(37) // T2 26→27、T9 27→28、T3 28→29、T10 29→30（reasoningEffort）、T11 30→31（persona）、T12 31→32（memeDir）、T15 32→35（attach 三键）、T18 35→37（attachmentRetentionHours/attachmentSaveTimeoutMs）
+    expect(allFields).toHaveLength(38) // T2 26→27、T9 27→28、T3 28→29、T10 29→30（reasoningEffort）、T11 30→31（persona）、T12 31→32（memeDir）、T15 32→35（attach 三键）、T18 35→37（attachmentRetentionHours/attachmentSaveTimeoutMs）、T20 37→38（mcpToolAllow）
   })
 
   it('默认值逐字对齐 host SCHEMA_DEFAULTS（重置按钮唯一来源）', () => {
@@ -227,13 +227,13 @@ describe('T4 客户端 bundle — 渲染函数模块级可测（renderGroup 纯�
     }))
   }
 
-  it('四组各产出标题与逐字段控件行（37 行 obx-field）', () => {
+  it('四组各产出标题与逐字段控件行（38 行 obx-field）', () => {
     const sections = renderAll(draft({ config: SCHEMA_DEFAULTS }))
     expect(sections.map((section) => (section.props as Record<string, unknown>)['data-group'])).toEqual(['connection', 'permissions', 'behavior', 'diagnostics'])
     const titles = sections.map((section) => ((section.children[0] as StubElement).children[0] as string))
     expect(titles).toEqual(['连接', '权限', '行为', '诊断'])
     const fieldRows = sections.flatMap((section) => walk(section).filter((element) => element.type === 'div' && element.props.className === 'obx-field'))
-    expect(fieldRows).toHaveLength(37)
+    expect(fieldRows).toHaveLength(38)
   })
 
   it('控件类型齐备：7 枚举下拉 + 4 多行文本 + 12 布尔勾选 + 13 文本框 + 1 密码框（secret 另含清除勾选）', () => {
@@ -242,7 +242,7 @@ describe('T4 客户端 bundle — 渲染函数模块级可测（renderGroup 纯�
     const selects = elements.filter((element) => element.type === 'select')
     const textareas = elements.filter((element) => element.type === 'textarea')
     expect(selects).toHaveLength(7) // 5 原有枚举（mode/dmPolicy/groupPolicy/unknownCommand/newMessagePolicy）+ T9 autoSteerPolicy + T10 reasoningEffort
-    expect(textareas).toHaveLength(4) // allowFrom/groupAllowFrom（stringArray）+ inject 说明 + T11 persona
+    expect(textareas).toHaveLength(5) // allowFrom/groupAllowFrom（stringArray）+ inject 说明 + T11 persona + T20 mcpToolAllow
     expect(inputs.filter((input) => input.props.type === 'checkbox')).toHaveLength(12 + 1) // 12 布尔（5 原有 + 6 W6 + T15 attachInboundImages）+ secret 清除勾选
     expect(inputs.filter((input) => input.props.type === 'text')).toHaveLength(13) // 5 字符串（host/url/botQQ/workspacePath/memeDir）+ 全部 8 个 number（port/interimRecallMs/rateLimitPerMinute/deferredTimeoutMs/attachMaxImageMB/attachmentBudgetMB/T18 attachmentRetentionHours/attachmentSaveTimeoutMs）；accessToken 是 secret 单列
     expect(inputs.filter((input) => input.props.type === 'password')).toHaveLength(1)
@@ -277,7 +277,7 @@ describe('T4 客户端 bundle — 保存语义（updateSettings(patch, expectedR
     opts?: { secretDraft?: string; clearSecret?: boolean },
   ) => { patch: Record<string, unknown>; invalidKeys: string[] }
 
-  it('仅下发与生效值有差异的键（37 键任意子集）', () => {
+  it('仅下发与生效值有差异的键（38 键任意子集）', () => {
     const values = draft({ config: SCHEMA_DEFAULTS })
     values.port = '9999'
     values.mode = 'forward'
@@ -428,7 +428,7 @@ describe('W6 失败守卫（客户端侧）— host edit-failed 中文错误可�
     expect(isConflictError({ code: 'onebot-settings/conflict', message: 'expectedRevision mismatch' })).toBe(true)
   })
 
-  it('host patch 白名单 37 键与 client patchSchema 同宽：新键可下发（契约同步核对）', () => {
+  it('host patch 白名单 38 键与 client patchSchema 同宽：新键可下发（契约同步核对）', () => {
     const updateSettings = descriptors[1] as { parameters: Array<{ codec: { schema: { parse(value: unknown): unknown } } }> }
     const patch = updateSettings.parameters[0].codec.schema.parse({
       actionAuditEnabled: true, traceEnabled: false, recordInbound: true, inboxRedact: false, injectEnabled: false, injectDryRun: true,
@@ -561,7 +561,7 @@ describe('W7 workspacePath + 「快速填入 workspace」（connection 组新行
     }))
     // 附加行渲染在 workspacePath 之后（connection 组最后一个字段行后），字段行计数不受影响。
     // 用 connection.fields.length 而非字面量：本组的护栏是「附加行不影响字段行计数」，
-    // 而键集总数的护栏在上一组用例里已有（37 行 obx-field + ALL_FIELDS 37），
+    // 而键集总数的护栏在上一组用例里已有（38 行 obx-field + ALL_FIELDS 38），
     // 此处写死数字只会随每次加键再漂移一次（T18 加两键时就是漏改这里）。
     expect(withPicker.filter((element) => element.props.className === 'obx-field')).toHaveLength(connection.fields.length)
     expect(withPicker.filter((element) => element.props.className === 'obx-workspace-row')).toHaveLength(1)

@@ -160,6 +160,11 @@ export interface Config {
     persona?: string;
     /** T12：表情包目录；'' = 不注册 qq_send_meme。须位于 mediaDir 之内。 */
     memeDir?: string;
+    /** T20：QQ 通道可调用的 MCP 工具白名单（fail-closed）。空数组 = 禁用全部
+     * MCP 工具。支持 `*`、完整名 `mcp__akasha__akasha_search`、`mcp__akasha__*`、
+     * 服务器名 `akasha`、裸工具名 `akasha_search` 五种写法。qq_* 与宿主内置
+     * 工具不受影响。 */
+    mcpToolAllow?: string[];
     /** T15：入站图片是否投递为真图片块（默认 true）；false = 只给路径文本。 */
     attachInboundImages?: boolean;
     /** T15：单张入站图片投递上限（MB）；超过则只给路径文本。0 = 不限。 */

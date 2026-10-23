@@ -171,6 +171,16 @@ export interface Config {
   persona: string
   /** T12：表情包目录；'' = 不注册 qq_send_meme。须位于 mediaDir 之内。 */
   memeDir: string
+  /** T20：QQ 通道的 MCP 工具白名单（fail-closed）。
+   *
+   * MCP 工具注册在 profile 根作用域，而作用域视图沿链向下继承 —— 不设闸门时
+   * QQ 会话（子作用域）会白拿 profile 里所有 MCP 服务器（含 dbx 的数据库工具）
+   * 的调用权。这里按调用期 guard 拦截，只放行名单内的 MCP 工具；**空数组 =
+   * 禁用全部 MCP 工具**（默认值，与 mcpToolAllow 未配置时行为一致）。
+   * 支持 `*`、完整工具名 `mcp__akasha__akasha_search`、`mcp__akasha__*`、
+   * 服务器名 `akasha`、裸工具名 `akasha_search` 五种写法。非 MCP 工具
+   * （qq_* 与宿主内置）不受本闸门影响。 */
+  mcpToolAllow: string[]
   /** T15：入站图片是否投递为真图片块（默认 true）；false = 只给路径文本，
    * 与 T15 之前的行为一致。 */
   attachInboundImages: boolean
@@ -275,6 +285,8 @@ export const Config: Z<Config> = z.object({
     .description('groupPolicy=allowlist 时允许的群号'),
   adminUsers: z.array(z.string()).default([])
     .description('管理员 QQ 号（也可用环境变量 ONEBOT_ALLOWED_USERS 逗号分隔指定）'),
+  mcpToolAllow: z.array(z.string()).default([])
+    .description('QQ 通道可调用的 MCP 工具白名单（默认空 = 禁用全部 MCP）。写法：* 表示全部；mcp__akasha__akasha_search 完整名；mcp__akasha__* 或 akasha 表示整台服务器；akasha_search 表示任意服务器下的同名工具。非 MCP 工具（qq_* 与宿主内置）不受影响'),
   allowAllUsers: z.boolean().default(false)
     .description('放行所有用户（仅开发用；也可用 ONEBOT_ALLOW_ALL_USERS=true）'),
   ignoreSelf: z.boolean().default(true)
@@ -595,6 +607,8 @@ export function apply(ctx: Context, config: Config): void {
       // 不做 mediaDir/memes 隐式回退：那会让「没配置」和「显式配置」不可区分，
       // 也会在用户不知情时把工具塞进模型可见的工具集。
       memeDir: config.memeDir,
+      // T20：MCP 工具白名单。默认空数组 = QQ 通道禁用全部 MCP 工具（fail-closed）。
+      mcpToolAllow: config.mcpToolAllow,
       // T15：入站图片投递策略（MB → 字节由 attach.MIB 换算，负数/NaN 按不限）。
       attachInboundImages: config.attachInboundImages,
       attachMaxImageBytes: config.attachMaxImageMB * MIB,

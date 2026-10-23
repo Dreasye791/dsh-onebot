@@ -26,6 +26,7 @@ import { buildChatId, classifyUserRole, splitChatId } from './chat.js'
 import type { AccessPolicyConfig } from './chat.js'
 import { buildPlatformPrompt } from './prompt.js'
 import { registerTools } from './tools.js'
+import { makeMcpToolGuard } from './mcp-gate.js'
 import { tryHandleCommand as routeCommand, STEER_ACCEPTED_NOTICE, type CommandContext } from './commands.js'
 import { relayHostCards as relayCards, type CardRelayContext } from './card-relay.js'
 import { OutboundPipeline } from './outbound.js'
@@ -117,6 +118,8 @@ export interface BridgeConfig {
    *  空串/缺省 = 不注册 qq_send_meme；非空则本通道 agent 多一个只读该目录的
    *  发图工具。目录必须在 mediaDir 之内才能通过出站围栏。 */
   memeDir?: string
+  /** T20：QQ 通道可调用的 MCP 工具白名单；空/缺省 = 禁用全部 MCP 工具。 */
+  mcpToolAllow?: string[]
   /** T15：入站图片是否投递为真图片块（默认 true）；false = 只给路径文本。 */
   attachInboundImages?: boolean
   /** T15：单张入站图片投递上限（字节）；0 = 不限。 */
@@ -1265,10 +1268,12 @@ export class ChatBridge {
 
   /**
    * Compose the QQ channel's scoped world for one agent: the QQ platform
-   * prompt section and the qq_* tools. Registered on `agentCtx` (the agent's
-   * own scope) instead of the plugin context, so Web/local sessions never see
-   * the channel instructions or the media tools — they cannot (and should
-   * not) push messages to QQ.
+   * prompt section, the qq_* tools, and the MCP tool gate.
+   *
+   * Everything here is registered on `agentCtx` (the agent's own scope) instead
+   * of the plugin context, so Web/local sessions never see the channel
+   * instructions or the media tools — they cannot (and should not) push
+   * messages to QQ.
    */
   private installChannelScope(agentCtx: Context): void {
     agentCtx.systemPrompt.section({
@@ -1281,6 +1286,13 @@ export class ChatBridge {
       maxVoiceBytes: this.deps.config.maxVoiceBytes,
       maxFileBytes: this.deps.config.maxFileBytes,
     }, { memeDir: this.deps.config.memeDir, mediaDir: this.deps.config.mediaDir })
+    // T20：MCP 工具闸门。profile 里的 MCP 服务器把工具注册在根作用域，作用域
+    // 视图沿链向下继承 ⇒ 本 agent 会自动获得全部 MCP 工具（实测 dbx 的 25 个
+    // 数据库工具在每一个 QQ 会话里都可见）。宿主的 tools.restrict() 只能过滤
+    // 继承工具、要求工具名调用时已存在（MCP 异步连接，启动期写死会抛 unknown
+    // tool），且拒绝空 filter（无法表达「空名单=全禁」），所以用调用期 guard：
+    // 只接管 mcp__ 前缀，白名单外的调用一律拒绝并回可读原因。
+    agentCtx.tools.guard(makeMcpToolGuard(this.deps.config.mcpToolAllow))
   }
 
   // ------------------------------------------------------------ typing

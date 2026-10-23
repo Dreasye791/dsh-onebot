@@ -183,6 +183,7 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `restrictedMemberPrefix` | `true` | 群聊非管理员消息注入 `[受限用户:仅问答]` 前缀（软限制） |
 | `adminUsers` | `[]` | 管理员 QQ；也可用 `ONEBOT_ALLOWED_USERS` 环境变量。**必须至少设置一个**，否则私聊（dmPolicy=open）与斜杠命令无人可用 |
 | `allowFrom` / `groupAllowFrom` | `[]` | 白名单用户/群 |
+| `mcpToolAllow` | `[]` | QQ 通道 MCP 工具白名单（T20）：**留空（默认）= 禁用全部 MCP 工具**（刻意的 fail-closed 默认。MCP 服务器挂在 profile 根作用域上，QQ 通道与 Web GUI 继承同一套工具，等于把这些能力直接交给群友）。非空时按任一写法匹配、命中才放行：`mcp__akasha__akasha_search`（完整工具名，最精确）、`mcp__akasha__*`（该服务器全部工具）、`akasha`（服务器名简写）、`akasha_search`（任意服务器下同名工具）、`*`（全部 MCP 工具，慎用）。`qq_*` 工具与宿主内置工具（`read`/`bash` 等）**不受本项影响**。**只影响 QQ 通道，Web / GUI 会话不受影响**。设置页「权限」组可改，保存后由插件级热重启生效。 |
 | `interimMessages` | `true` | 工具调用之间的中间文本是否立即发送；`false` 只发最终回复 |
 | `interimRecall` | `true` | 中间消息撤回与回合末小结卡开关；`false` = 只发不撤（降级：无小结卡、不撤回，中间消息留在屏幕上） |
 | `sendErrorNotice` | `true` | 一轮运行出错时向用户发送 ⚠️ 错误提示 |
@@ -252,12 +253,12 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 dsh Web GUI 的设置页提供本插件的可视化配置（host-plane Remote `onebotSettings`，写入 profile 层
 `cordis.patch.yml` 中 `dsh-onebot` 条目的 config 覆盖行——与手改 patch、宿主原生设置页是同一个持久层）。
 
-### 四组 37 键
+### 四组 38 键
 
 | 组 | 键 |
 |---|---|
 | connection（连接） | `mode`、`host`、`port`、`url`、`accessToken`、`botQQ`、`workspacePath`、`memeDir`、`attachInboundImages`、`attachMaxImageMB`、`attachmentBudgetMB`、`attachmentRetentionHours`、`attachmentSaveTimeoutMs` |
-| permissions（权限） | `requireMention`、`adminUsers`、`dmPolicy`、`groupPolicy`、`allowAllUsers`、`allowFrom`、`groupAllowFrom` |
+| permissions（权限） | `requireMention`、`adminUsers`、`dmPolicy`、`groupPolicy`、`allowAllUsers`、`allowFrom`、`groupAllowFrom`、`mcpToolAllow` |
 | behavior（行为） | `interimMessages`、`interimRecall`、`interimRecallMs`、`sendErrorNotice`、`unknownCommand`、`rateLimitPerMinute`、`newMessagePolicy`、`autoSteerPolicy`、`deferredTimeoutMs`、`reasoningEffort`、`persona` |
 | diagnostics（诊断） | `actionAuditEnabled`、`traceEnabled`、`recordInbound`、`inboxRedact`、`injectEnabled`、`injectDryRun` |
 
@@ -266,7 +267,7 @@ dsh Web GUI 的设置页提供本插件的可视化配置（host-plane Remote `o
 ### 与 patch config 的优先级
 
 **schema 默认值 ← bundle/底层 patch（继承层） ← profile 覆盖行（设置页写这里）**；同一层内后写的 patch
-条目胜出。设置页键与手改 patch 是同一层的同一行，不存在两套优先级。四组 37 键之外的键
+条目胜出。设置页键与手改 patch 是同一层的同一行，不存在两套优先级。四组 38 键之外的键
 （media/STT/性能/`agentPreset` 等低频键）不设 UI，仍在同一行 config 手改 patch。
 
 ### 生效方式

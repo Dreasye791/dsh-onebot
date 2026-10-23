@@ -74,6 +74,9 @@ export interface BridgeConfig {
     fontFiles: readonly string[];
     fontFamilies: readonly string[];
     agentPreset: string;
+    /** T20：QQ 通道可调用的 MCP 工具白名单；空/缺省 = 禁用全部 MCP 工具。
+     * 由 `mcp-gate.makeMcpToolGuard()` 在调用期按工具名判定。 */
+    mcpToolAllow?: string[];
     /** T15：入站图片是否投递为真图片块（默认 true）；false = 只给路径文本。 */
     attachInboundImages?: boolean;
     /** T15：单张入站图片投递上限（字节）；0 = 不限。 */

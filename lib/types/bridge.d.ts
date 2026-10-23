@@ -20,6 +20,22 @@ import type { TraceSink } from './trace.js';
 import type { InjectChannel } from './inject.js';
 import type { InboundRecorder } from './record.js';
 import type { TraceStage } from './trace.js';
+import type { ImageAttachmentRef } from './attach.js';
+/**
+ * T15：一条入站用户消息的内容块（文本 + 已投递的图片）。
+ *
+ * 为什么不用宿主的 `UserMessageContent`：该类型名不在本插件的类型面上，
+ * 直接写会得到 TS2304 使 `npm run build`（tsc，strict）失败。
+ * 用判别联合而非「可选字段」：宿主每个变体的 text/attachment 若为必填，
+ * `text?: string` 无法赋给任一分支，tsc 仍会报 TS2345。
+ */
+export type InboundContentBlock = {
+    type: 'text';
+    text: string;
+} | {
+    type: 'image';
+    attachment: ImageAttachmentRef;
+};
 /** T2 (P1): the queue notice sent to a chat when a message arrives while its
  * task is running under the default 'queue' policy — at most ONE per running
  * turn (the flag resets at turn/end) so a burst of queued messages never
@@ -64,6 +80,10 @@ export interface BridgeConfig {
     attachMaxImageBytes?: number;
     /** T15：附件库软上限（字节）；0 = 不限。 */
     attachmentBudgetBytes?: number;
+    /** T18：账本回收窗口（毫秒）；0 = 不回收。只改记账不删文件。 */
+    attachmentRetentionMs?: number;
+    /** T18：单次写盘超时（毫秒）；0 = 不超时。 */
+    attachmentSaveTimeoutMs?: number;
     workspacePath: string;
     /** Max inbound file bytes fetched via QQ direct link / base64 (0 = no cap). */
     maxInboundFileBytes: number;

@@ -152,7 +152,7 @@ export interface DefaultModelLike {
     } | undefined;
 }
 /** T17：listReasoningEfforts 返回值。available=false 表示拿不到通道——面板据此
- *  回退到静态七选一（方案 A：绝不因查询失败而收窄可选项，不引入新的失败面）。 */
+ *  回退到静态八选一（方案 A：绝不因查询失败而收窄可选项，不引入新的失败面）。 */
 export interface ReasoningEffortsResult {
     available: boolean;
     efforts: Array<{
@@ -199,7 +199,7 @@ export declare function updateSettings(editor: ConfigEditorLike, state: Revision
  *  W7：workspaceRegistry 可选注入——省略时 listWorkspaces 降级 unavailable
  *  （与类分支的惰性 ctx 解析同一 listWorkspaces 纯函数出口）。
  *  T17：llm/defaultModel 同样可选注入——省略时 listReasoningEfforts 降级
- *  available=false（面板回退静态七选一）。 */
+ *  available=false（面板回退静态八选一）。 */
 export declare function createOnebotSettingsMethods(editor: ConfigEditorLike, state?: RevisionState, workspaceRegistry?: WorkspaceRegistryLike, llm?: LlmRuntimeLike, defaultModel?: DefaultModelLike): {
     getSettings(): Promise<OnebotSettingsSnapshot> | OnebotSettingsSnapshot;
     updateSettings(patch: unknown, expectedRevision?: number): Promise<OnebotSettingsSnapshot>;

@@ -352,7 +352,8 @@ export interface DefaultModelLike {
 }
 
 /** T17：listReasoningEfforts 返回值。available=false 表示拿不到通道——面板据此
- *  回退到静态七选一（方案 A：绝不因查询失败而收窄可选项，不引入新的失败面）。 */
+ *  回退到静态八选一（'' + 宿主七档；方案 A：绝不因查询失败而收窄可选项，
+ *  不引入新的失败面）。 */
 export interface ReasoningEffortsResult {
   available: boolean
   efforts: Array<{ id: string; name: string }>
@@ -361,7 +362,7 @@ export interface ReasoningEffortsResult {
 
 /** T17：查询「当前默认模型实际支持哪些思考档位」（纯函数，绝不抛错）。
  *
- *  为什么需要它：插件的 reasoningEffort 是静态七选一，但宿主
+ *  为什么需要它：插件的 reasoningEffort 是静态八选一（'' + 宿主七档），但宿主
  *  getSupportedThinkingLevels 的结果随模型变化——`xhigh`/`max` 只有模型显式
  *  声明才合法，否则请求期抛 UNSUPPORTED_REASONING_EFFORT（选了能存，用时报错）。
  *

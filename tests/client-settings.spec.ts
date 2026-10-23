@@ -227,7 +227,7 @@ describe('T4 客户端 bundle — 渲染函数模块级可测（renderGroup 纯�
     }))
   }
 
-  it('四组各产出标题与逐字段控件行（35 行 obx-field）', () => {
+  it('四组各产出标题与逐字段控件行（37 行 obx-field）', () => {
     const sections = renderAll(draft({ config: SCHEMA_DEFAULTS }))
     expect(sections.map((section) => (section.props as Record<string, unknown>)['data-group'])).toEqual(['connection', 'permissions', 'behavior', 'diagnostics'])
     const titles = sections.map((section) => ((section.children[0] as StubElement).children[0] as string))
@@ -236,7 +236,7 @@ describe('T4 客户端 bundle — 渲染函数模块级可测（renderGroup 纯�
     expect(fieldRows).toHaveLength(37)
   })
 
-  it('控件类型齐备：7 枚举下拉 + 4 多行文本 + 12 布尔勾选 + 11 文本框 + 1 密码框（secret 另含清除勾选）', () => {
+  it('控件类型齐备：7 枚举下拉 + 4 多行文本 + 12 布尔勾选 + 13 文本框 + 1 密码框（secret 另含清除勾选）', () => {
     const elements = renderAll(draft({ config: SCHEMA_DEFAULTS })).flatMap((section) => walk(section))
     const inputs = elements.filter((element) => element.type === 'input') as Array<StubElement & { props: Record<string, unknown> }>
     const selects = elements.filter((element) => element.type === 'select')
@@ -244,7 +244,7 @@ describe('T4 客户端 bundle — 渲染函数模块级可测（renderGroup 纯�
     expect(selects).toHaveLength(7) // 5 原有枚举（mode/dmPolicy/groupPolicy/unknownCommand/newMessagePolicy）+ T9 autoSteerPolicy + T10 reasoningEffort
     expect(textareas).toHaveLength(4) // allowFrom/groupAllowFrom（stringArray）+ inject 说明 + T11 persona
     expect(inputs.filter((input) => input.props.type === 'checkbox')).toHaveLength(12 + 1) // 12 布尔（5 原有 + 6 W6 + T15 attachInboundImages）+ secret 清除勾选
-    expect(inputs.filter((input) => input.props.type === 'text')).toHaveLength(11) // host/url/accessToken 之外的字符串键 + 全部 6 个 number（port/interimRecallMs/rateLimitPerMinute/deferredTimeoutMs/attachMaxImageMB/attachmentBudgetMB）+ T12 memeDir
+    expect(inputs.filter((input) => input.props.type === 'text')).toHaveLength(13) // 5 字符串（host/url/botQQ/workspacePath/memeDir）+ 全部 8 个 number（port/interimRecallMs/rateLimitPerMinute/deferredTimeoutMs/attachMaxImageMB/attachmentBudgetMB/T18 attachmentRetentionHours/attachmentSaveTimeoutMs）；accessToken 是 secret 单列
     expect(inputs.filter((input) => input.props.type === 'password')).toHaveLength(1)
   })
 
@@ -560,7 +560,10 @@ describe('W7 workspacePath + 「快速填入 workspace」（connection 组新行
         field.key === 'workspacePath' ? renderPicker(stubReact, pickerOpts({ selectedId: 'ws-1' })) : null,
     }))
     // 附加行渲染在 workspacePath 之后（connection 组最后一个字段行后），字段行计数不受影响。
-    expect(withPicker.filter((element) => element.props.className === 'obx-field')).toHaveLength(11)
+    // 用 connection.fields.length 而非字面量：本组的护栏是「附加行不影响字段行计数」，
+    // 而键集总数的护栏在上一组用例里已有（37 行 obx-field + ALL_FIELDS 37），
+    // 此处写死数字只会随每次加键再漂移一次（T18 加两键时就是漏改这里）。
+    expect(withPicker.filter((element) => element.props.className === 'obx-field')).toHaveLength(connection.fields.length)
     expect(withPicker.filter((element) => element.props.className === 'obx-workspace-row')).toHaveLength(1)
   })
 })

@@ -166,6 +166,12 @@ export interface Config {
     attachMaxImageMB?: number;
     /** T15：附件库软上限（MB），按本插件贡献的字节数计；0 = 不限。 */
     attachmentBudgetMB?: number;
+    /** T18：账本回收窗口（小时）。记账条目超过该时长未再被引用即移出记账，
+     * 使预算可复用；**只改记账不删文件**。0 = 不回收（记账只增不减，默认）。 */
+    attachmentRetentionHours?: number;
+    /** T18：单次写盘（宿主 saveImages）超时（毫秒）。超时按 save-failed 跳过本图，
+     * 让附件账本临界区及时释放，避免一张图卡住全部会话。0 = 不超时。 */
+    attachmentSaveTimeoutMs?: number;
     workspacePath: string;
     inboundFileMaxBytes: number;
     /** @deprecated D4a alias of inboundFileMaxBytes; honored for one release. */

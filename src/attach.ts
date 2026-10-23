@@ -27,7 +27,7 @@ export interface AttachPolicy {
   maxImageBytes: number
   /** 插件账本累计字节软上限（字节）；超过后新图只给路径。0 = 不限。 */
   budgetBytes: number
-  /** 账本回收窗口（字节时间，毫秒）：`lastSeenAt` 早于 now-该值的条目在下次
+  /** 账本回收窗口（毫秒）：`lastSeenAt` 早于 now-该值的条目在下次
    *  投递前被移出账本，从而把软上限占用还回去。0 = 不回收（只增不减）。
    *  注意它只影响本插件的预算记账，**不删宿主附件库里的任何文件**——
    *  宿主对象由宿主自己的清理策略回收（`MediaStore.cleanupExpired` 之类）。 */
@@ -251,6 +251,9 @@ export function pruneLedger(ledger: AttachLedger, now: number, retentionMs: numb
     // 用 lastSeenAt 而不是 firstSeenAt：一张图只要还在被重复引用（去重命中），
     // 就不该过期；只有真正长期没再出现的对象才让出配额。
     const last = entry.lastSeenAt > 0 ? entry.lastSeenAt : entry.firstSeenAt
+    // 两个时间戳都缺失（账本被外部改写/截断）时视为年龄未知：保留而不是误删。
+    // 否则一次 prune 会把预算记账整体清零，记账口径失真比多占一点空间更危险。
+    if (last <= 0) continue
     if (last >= cutoff) continue
     delete ledger.entries[id]
     pruned += 1
@@ -576,6 +579,6 @@ export function formatStorageStats(stats: StorageStats): string {
   // 以及为什么磁盘上的宿主对象还在（本插件只记账、不删文件）。
   lines.push(stats.retentionMs > 0
     ? '账本回收：' + humanDuration(stats.retentionMs) + ' 内未再出现的对象自动移出记账（不删文件）'
-    : '账本回收：未启用（attachmentRetentionMB=0，记账只增不减）')
+    : '账本回收：未启用（attachmentRetentionHours=0，记账只增不减）')
   return lines.join('\n')
 }

@@ -332,7 +332,7 @@ export const Config: Z<Config> = z.object({
   agentPreset: z.string().default('')
     .description('QQ 会话加入的 agent 预设 id；留空用部署默认（settings 的 agent-presets.default，当前为 router-flash）。创建时总是解析有效预设并写入会话 header，Web 界面可见；resume 优先恢复会话自己记录的预设'),
   reasoningEffort: z.union([z.const(''), z.const('off'), z.const('minimal'), z.const('low'), z.const('medium'), z.const('high'), z.const('xhigh'), z.const('max')]).default('')
-    .description('QQ 通道的思考强度覆盖：留空（默认）=继承宿主 agent-default-model 的 reasoningEffort（即 0.9.4 及以前的行为）；填 off/low/medium/high/xhigh/max 则只影响 QQ 通道创建的会话，Web/GUI 会话不受影响。off = 关闭思考（仅当模型报告 canDisableThinking 时可用，否则宿主会抛 UNSUPPORTED_REASONING_EFFORT，此时请退到 low）'),
+    .description('QQ 通道的思考强度覆盖：留空（默认）=继承宿主 agent-default-model 的 reasoningEffort（即 0.9.4 及以前的行为）；填 off/minimal/low/medium/high/xhigh/max 则只影响 QQ 通道创建的会话，Web/GUI 会话不受影响。off = 关闭思考（仅当模型报告 canDisableThinking 时可用，否则宿主会抛 UNSUPPORTED_REASONING_EFFORT，此时请退到 low）；xhigh/max 仅当模型显式声明才合法。面板会按当前模型的真实档位动态收窄可选项'),
   persona: z.string().max(20000).default('')
     .description('QQ 通道的角色设定（人设）：纯文本注入本通道 system prompt 的最前段，用来定语气与说话方式。留空（默认）=不注入，行为与 0.9.4 一致。只影响 QQ 通道，Web/GUI 会话不受影响。保存后对新回合生效（插件级热重启，无需重启 DSH）'),
   memeDir: z.string().default('')

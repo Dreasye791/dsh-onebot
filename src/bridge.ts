@@ -59,14 +59,15 @@ import { deliverImage, resolveAttachPolicy, formatStorageStats, storageStats } f
  *
  * 形状按宿主实现对齐（`dsh-llm` 的 `contentHasImage` / `replaceImagesForTextModel`
  * 都以 `block.type === 'image'` 且读 `block.attachment` 判别 image 块），
- * 因此这里的联合与宿主是可结构兼容的。 */
-export interface InboundContentBlock {
-  type: 'text' | 'image'
-  /** `type: 'text'` 时的正文。 */
-  text?: string
-  /** `type: 'image'` 时的宿主附件引用。 */
-  attachment?: ImageAttachmentRef
-}
+ * 因此这里的联合与宿主是可结构兼容的。
+ *
+ * 用判别联合而非「type + 两个可选字段」：若宿主 `UserMessageContent` 的每个变体
+ * 都把 `text` / `attachment` 声明为必填，`text?: string` 无法赋给任一分支，
+ * tsc 仍会在 createUserMessage 调用点报 TS2345（错误码变了但构建还是碎）。
+ * 判别联合让每个变体各自带上必填字段，两侧赋值都能通过。 */
+export type InboundContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; attachment: ImageAttachmentRef }
 /** T2 (P1): the queue notice sent to a chat when a message arrives while its
  * task is running under the default 'queue' policy — at most ONE per running
  * turn (the flag resets at turn/end) so a burst of queued messages never

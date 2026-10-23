@@ -129,6 +129,41 @@ export interface WorkspaceListResult {
  *  校验——与 requireConfigEditor 同款「运行期再校验形状」风格，但绝不抛错：
  *  缺席/形状不符/list() 失败都归一为 unavailable 空列表）。 */
 export declare function listWorkspaces(registry: WorkspaceRegistryLike | undefined): WorkspaceListResult;
+/** T17：思考档位查询用到的宿主 llm 服务最小面（@deepseek-ai/dsh-llm 的
+ *  LlmRuntime.resolveModelInfo）。该方法的返回里 reasoning.efforts 才是模型
+ *  真实支持的档位；同包的 listModels 返回值不含 reasoning 字段，故不能用它。 */
+export interface LlmRuntimeLike {
+    resolveModelInfo(provider: string, model: string, signal?: AbortSignal): Promise<{
+        reasoning?: {
+            efforts?: Array<{
+                id?: unknown;
+                name?: unknown;
+            }>;
+            defaultEffort?: unknown;
+        };
+    }>;
+}
+/** T17：宿主 agentDefaultModel 服务最小面（本通道沿用它作为模型来源，
+ *  与 registry.modelWiring() 的 inheritance 一致）。 */
+export interface DefaultModelLike {
+    currentSelection(): {
+        provider?: unknown;
+        model?: unknown;
+    } | undefined;
+}
+/** T17：listReasoningEfforts 返回值。available=false 表示拿不到通道——面板据此
+ *  回退到静态七选一（方案 A：绝不因查询失败而收窄可选项，不引入新的失败面）。 */
+export interface ReasoningEffortsResult {
+    available: boolean;
+    efforts: Array<{
+        id: string;
+        name: string;
+    }>;
+    defaultEffort?: string;
+}
+/** T17：查询「当前默认模型实际支持哪些思考档位」（纯函数，绝不抛错）。
+ *  失败（服务缺席/无默认模型/无 reasoning 元数据/抛错）统一归一为 available=false。 */
+export declare function listReasoningEfforts(llm: LlmRuntimeLike | undefined, defaultModel: DefaultModelLike | undefined, signal?: AbortSignal): Promise<ReasoningEffortsResult>;
 /** 35 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
 export declare function effectiveConfig(raw: Record<string, unknown>): Record<string, unknown>;
 /** updateSettings 入参校验（T1 §4：32 键的任意子集，扁平 JSON）。未知键整单
@@ -162,11 +197,14 @@ export declare function describeEditFailure(cause: unknown): string;
 export declare function updateSettings(editor: ConfigEditorLike, state: RevisionState, patch: unknown, expectedRevision?: number): Promise<OnebotSettingsSnapshot>;
 /** 组装 descriptor 方法对象（测试与降级类共用；与类方法同一实现）。
  *  W7：workspaceRegistry 可选注入——省略时 listWorkspaces 降级 unavailable
- *  （与类分支的惰性 ctx 解析同一 listWorkspaces 纯函数出口）。 */
-export declare function createOnebotSettingsMethods(editor: ConfigEditorLike, state?: RevisionState, workspaceRegistry?: WorkspaceRegistryLike): {
+ *  （与类分支的惰性 ctx 解析同一 listWorkspaces 纯函数出口）。
+ *  T17：llm/defaultModel 同样可选注入——省略时 listReasoningEfforts 降级
+ *  available=false（面板回退静态七选一）。 */
+export declare function createOnebotSettingsMethods(editor: ConfigEditorLike, state?: RevisionState, workspaceRegistry?: WorkspaceRegistryLike, llm?: LlmRuntimeLike, defaultModel?: DefaultModelLike): {
     getSettings(): Promise<OnebotSettingsSnapshot> | OnebotSettingsSnapshot;
     updateSettings(patch: unknown, expectedRevision?: number): Promise<OnebotSettingsSnapshot>;
     listWorkspaces(): Promise<WorkspaceListResult>;
+    listReasoningEfforts(): Promise<ReasoningEffortsResult>;
 };
 /** 服务装配：协议在位 → TypertRemoteService 子类（网关按 typertRemote 绑定 +
  *  原型 descriptor 发现）；否则降级为普通 cordis 服务（同名方法面，仅无网关

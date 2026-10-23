@@ -328,6 +328,89 @@ function resolveWorkspaceRegistry(ctx: { get(key: string): unknown } | undefined
   return registry !== undefined && registry !== null && typeof registry.list === 'function' ? registry : undefined
 }
 
+/** T17：思考档位查询用到的宿主 llm 服务最小面（@deepseek-ai/dsh-llm 的
+ *  LlmRuntime.resolveModelInfo）。该方法的返回里 reasoning.efforts 才是模型
+ *  真实支持的档位；同包的 listModels 返回值不含 reasoning 字段，故不能用它。 */
+export interface LlmRuntimeLike {
+  resolveModelInfo(provider: string, model: string, signal?: AbortSignal): Promise<{
+    reasoning?: { efforts?: Array<{ id?: unknown; name?: unknown }>; defaultEffort?: unknown }
+  }>
+}
+
+/** T17：宿主 agentDefaultModel 服务最小面（本通道沿用它作为模型来源，
+ *  与 registry.modelWiring() 的 inheritance 一致）。 */
+export interface DefaultModelLike {
+  currentSelection(): { provider?: unknown; model?: unknown } | undefined
+}
+
+/** T17：listReasoningEfforts 返回值。available=false 表示拿不到通道——面板据此
+ *  回退到静态七选一（方案 A：绝不因查询失败而收窄可选项，不引入新的失败面）。 */
+export interface ReasoningEffortsResult {
+  available: boolean
+  efforts: Array<{ id: string; name: string }>
+  defaultEffort?: string
+}
+
+/** T17：查询「当前默认模型实际支持哪些思考档位」（纯函数，绝不抛错）。
+ *
+ *  为什么需要它：插件的 reasoningEffort 是静态七选一，但宿主
+ *  getSupportedThinkingLevels 的结果随模型变化——`xhigh`/`max` 只有模型显式
+ *  声明才合法，否则请求期抛 UNSUPPORTED_REASONING_EFFORT（选了能存，用时报错）。
+ *
+ *  取证来源（@deepseek-ai/dsh-llm/lib/index.js）：:1816 `super(ctx, "llm")` 说明
+ *  该服务即 ctx.llm；:2111-2163 resolveModelInfo 返回 `reasoning: { efforts:
+ *  [{id,name,description?}], defaultEffort? }`；:2086-2101 listModels 不含
+ *  reasoning。失败（服务缺席/无默认模型/无 reasoning 元数据/抛错）统一归一为
+ *  available=false。 */
+export async function listReasoningEfforts(
+  llm: LlmRuntimeLike | undefined,
+  defaultModel: DefaultModelLike | undefined,
+  signal?: AbortSignal,
+): Promise<ReasoningEffortsResult> {
+  if (llm === undefined || typeof llm.resolveModelInfo !== 'function') return { available: false, efforts: [] }
+  if (defaultModel === undefined || typeof defaultModel.currentSelection !== 'function') return { available: false, efforts: [] }
+  try {
+    const selection = defaultModel.currentSelection()
+    const provider = typeof selection?.provider === 'string' ? selection.provider : ''
+    const model = typeof selection?.model === 'string' ? selection.model : ''
+    if (provider === '' || model === '') return { available: false, efforts: [] }
+    const info = await llm.resolveModelInfo(provider, model, signal)
+    const raw = info?.reasoning?.efforts
+    if (!Array.isArray(raw)) return { available: false, efforts: [] }
+    const efforts: Array<{ id: string; name: string }> = []
+    const seen = new Set<string>()
+    for (const effort of raw) {
+      const id = effort?.id
+      const name = effort?.name
+      if (typeof id !== 'string' || id === '' || typeof name !== 'string' || name === '') continue
+      if (seen.has(id)) continue
+      seen.add(id)
+      efforts.push({ id, name })
+    }
+    // 空档位集=宿主元数据异常（dsh-llm 自身也把空集判为 INVALID_MODEL_REASONING）
+    if (efforts.length === 0) return { available: false, efforts: [] }
+    const defaultEffort = info?.reasoning?.defaultEffort
+    return typeof defaultEffort === 'string' && seen.has(defaultEffort)
+      ? { available: true, efforts, defaultEffort }
+      : { available: true, efforts }
+  } catch {
+    // 只读辅助查询：任何失败都不该炸掉设置页（与 listWorkspaces 同款降级）。
+    return { available: false, efforts: [] }
+  }
+}
+
+/** T17：惰性解析宿主 llm 与 agentDefaultModel（与 resolveWorkspaceRegistry 同款
+ *  可选依赖——缺席时服务照常挂载，仅 listReasoningEfforts 降级 available=false）。 */
+function resolveLlmRuntime(ctx: { get(key: string): unknown } | undefined): LlmRuntimeLike | undefined {
+  const llm = ctx?.get?.('llm') as LlmRuntimeLike | undefined
+  return llm !== undefined && llm !== null && typeof llm.resolveModelInfo === 'function' ? llm : undefined
+}
+
+function resolveDefaultModel(ctx: { get(key: string): unknown } | undefined): DefaultModelLike | undefined {
+  const model = ctx?.get?.('agentDefaultModel') as DefaultModelLike | undefined
+  return model !== undefined && model !== null && typeof model.currentSelection === 'function' ? model : undefined
+}
+
 /** 35 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
 export function effectiveConfig(raw: Record<string, unknown>): Record<string, unknown> {
   const effective: Record<string, unknown> = {}
@@ -477,15 +560,19 @@ export function createOnebotSettingsMethods(
   editor: ConfigEditorLike,
   state: RevisionState = createRevisionState(),
   workspaceRegistry?: WorkspaceRegistryLike,
+  llm?: LlmRuntimeLike,
+  defaultModel?: DefaultModelLike,
 ): {
   getSettings(): Promise<OnebotSettingsSnapshot> | OnebotSettingsSnapshot
   updateSettings(patch: unknown, expectedRevision?: number): Promise<OnebotSettingsSnapshot>
   listWorkspaces(): Promise<WorkspaceListResult>
+  listReasoningEfforts(): Promise<ReasoningEffortsResult>
 } {
   return {
     getSettings: () => getSettings(editor, state),
     updateSettings: (patch, expectedRevision) => updateSettings(editor, state, patch, expectedRevision),
     listWorkspaces: async () => listWorkspaces(workspaceRegistry),
+    listReasoningEfforts: async () => listReasoningEfforts(llm, defaultModel),
   }
 }
 
@@ -542,10 +629,16 @@ if (protocol?.TypertRemoteService) {
     async listWorkspaces(): Promise<WorkspaceListResult> {
       return listWorkspaces(resolveWorkspaceRegistry(this.ownerCtx))
     }
+
+    /** T17：只读查询当前默认模型的可用思考档位（惰性解析，失败降级 available=false）。 */
+    async listReasoningEfforts(): Promise<ReasoningEffortsResult> {
+      return listReasoningEfforts(resolveLlmRuntime(this.ownerCtx), resolveDefaultModel(this.ownerCtx))
+    }
   }
   markRemote(OnebotSettingsRemote, 'getSettings')
   markRemote(OnebotSettingsRemote, 'updateSettings')
   markRemote(OnebotSettingsRemote, 'listWorkspaces')
+  markRemote(OnebotSettingsRemote, 'listReasoningEfforts')
   OnebotSettingsService = OnebotSettingsRemote
 } else {
   console.warn('[dsh-onebot] @deepseek-ai/dsh-typert-protocol unavailable — onebotSettings remote degrades to a plain cordis service')
@@ -574,6 +667,11 @@ if (protocol?.TypertRemoteService) {
     /** W7：与 typert 分支同一惰性解析 + 降级语义。 */
     async listWorkspaces(): Promise<WorkspaceListResult> {
       return listWorkspaces(resolveWorkspaceRegistry(this.ctx))
+    }
+
+    /** T17：与 typert 分支同一惰性解析 + 降级语义。 */
+    async listReasoningEfforts(): Promise<ReasoningEffortsResult> {
+      return listReasoningEfforts(resolveLlmRuntime(this.ctx), resolveDefaultModel(this.ctx))
     }
   }
   OnebotSettingsService = OnebotSettingsPlain

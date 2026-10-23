@@ -190,7 +190,7 @@ describe('T4 客户端 bundle — 四组 38 键（分组/键集/默认值 = T1 �
       else if (field.type === 'number') expect(typeof fallback).toBe('number')
       else if (field.type === 'enum') expect(field.options ?? []).toContain(fallback)
       else if (field.type === 'stringArray') expect(Array.isArray(fallback)).toBe(true)
-      else expect(field.type === 'string' || field.type === 'secret').toBe(true)
+      else expect(field.type === 'string' || field.type === 'secret' || field.type === 'textarea').toBe(true)
     }
     // 枚举键集与宿主 validatePatch 接受的枚举值一致（T1 §4 表）
     const enumField = (key: string) => groups.flatMap((group) => group.fields).find((field) => field.key === key)
@@ -462,7 +462,12 @@ describe('W7 workspacePath + 「快速填入 workspace」（connection 组新行
 
   it('connection 组追加 workspacePath：键序组尾、中文 label、hint 申明新会话生效与 /workspace 覆盖不受影响', () => {
     const connection = groups.find((group) => group.id === 'connection')!
-    expect(connection.fields.map((field) => field.key)).toEqual(['mode', 'host', 'port', 'url', 'accessToken', 'botQQ', 'workspacePath'])
+    // 只钉住「workspacePath 在组内、且位于既有键之后」这一条不变量，不写死整串键序：
+    // 该组此后又追加了 memeDir 与 T18/T20 五键（现共 13 键），写死整串会随每次加键再漂一次。
+    // 整组键集的总量护栏在「四组 38 键」那个断言里。
+    const keys = connection.fields.map((field) => field.key)
+    expect(keys).toContain('workspacePath')
+    expect(keys.indexOf('workspacePath')).toBeGreaterThan(keys.indexOf('botQQ'))
     const workspaceField = connection.fields.find((field) => field.key === 'workspacePath')!
     expect(workspaceField.type).toBe('string')
     expect(workspaceField.label).toMatch(/\p{Script=Han}/u)

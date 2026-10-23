@@ -385,7 +385,11 @@ describe('onebotSettings remote — W7 workspacePath 白名单扩展（connectio
     const snapshot = getSettings(new FakeConfigEditor(), createRevisionState())
     expect(ALL_KEYS).toHaveLength(38) // W6 19→25、W7 25→26、T2 26→27、T9 27→28、T3 28→29、T10 29→30（reasoningEffort）、T11 30→31（persona）、T12 31→32（memeDir）、T15 32→35（attach 三键）、T18 35→37（记账回收与写盘超时）、T20 37→38（mcpToolAllow）
     expect(SCHEMA_DEFAULTS.workspacePath).toBe('')
-    expect(SETTINGS_GROUPS.connection).toEqual(['mode', 'host', 'port', 'url', 'accessToken', 'botQQ', 'workspacePath'])
+    // 只钉不变量：workspacePath 在 connection 组内且位于 botQQ 之后。写死整串键序会随
+    // 每次加键再漂一次（该组此后追加了 memeDir 与 T18/T20 五键，现共 13 键）；
+    // 键集总量护栏在上一行的 ALL_KEYS 长度断言里。
+    expect(SETTINGS_GROUPS.connection).toContain('workspacePath')
+    expect(SETTINGS_GROUPS.connection.indexOf('workspacePath')).toBeGreaterThan(SETTINGS_GROUPS.connection.indexOf('botQQ'))
     expect(snapshot.groups.connection).toEqual(SETTINGS_GROUPS.connection)
     expect(snapshot.config.workspacePath).toBe('')
   })

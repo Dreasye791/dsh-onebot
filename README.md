@@ -31,7 +31,7 @@
 | 文字图 | t2i 卡片渲染器（@napi-rs/canvas）：标题/粗斜体/删除线/引用/列表/代码块/表格/行内 code 胶囊/彩色 emoji/中文标点禁则；与 Hermes 原版同款数值（800px/26px/禁则集合/右缘 790） |
 | 出站 | 正文 ≤ `textImageThreshold`（默认 150）字符单条发送、**超过阈值渲染 t2i 文字图卡片**（AstrBot 风格：标题/引用/列表/表格/代码块/彩色 emoji；渲染失败、PNG 超 `outboundImageMaxBytes` 或 `<=0` 禁用卡片时回退单条纯文本）、Markdown 剥离为 QQ 纯文本、[[qq_forward]] 合并转发（群/私聊）、**实时中间消息**（interimMessages：每条中间文本立即发出、实时可见；各自在 `interimRecallMs`（默认 90s）后自动单独撤回；回合结束时先把整轮中间消息渲染成一张 **t2i 小结卡**、立即撤回仍在屏幕上的原文、再发送最终回复——不用回合末合并转发，避免长回合「原文超 2 分钟撤不回+转发卡重复」；`interimRecall: false` 时降级为只发不撤（无小结卡、不撤回））、**宿主「计划书/提问卡」自动中继**（模型调用 exit_plan_mode / ask_user_question 时把计划全文/问题选项发到 QQ）、正在输入提示（set_input_status，仅私聊） |
 | 命令 | 斜杠命令（仅管理员）：`/new` 开新会话、`/stop` 停止生成、`/steer <补充内容>` 向运行中的任务补充指令（无运行任务时回用法提示；详见下方命令表与 `newMessagePolicy` 配置）、`/model` 查看或切换当前会话模型（`--default` 修改部署默认；无参输出两级序号列表，回复序号选 provider → 再回复序号选模型）、`/workspace` 查看或切换工作区（无参编号列表，回复序号即选）、`/preset` 查看或切换 agent 预设（无参编号列表，回复序号即选）、`/session` 查看可切回历史会话并按序号切回（`/new`、`/workspace`、`/preset` 切换下来的旧会话进列表，可来回切，历史上下文恢复）、`/status` 会话全景、`/storage` 存储占用（媒体目录 / 附件库 / 本插件贡献 / 软上限）、`/doctor [export [参考号]]`（别名 `/healthcheck`）运行体检（export [参考号] 导出脱敏诊断包 qq-diagnostics-*.zip，文件名含触发参考号）、`/retry` 重跑上一条、`/id` 会话标识、`/ver` 版本、`/ocr` 识别最近图片、`/mode` 切换出站模式（跨重启持久化）、`/plan` 计划模式、`/permission` 切换宿主权限预设（QQ 别名 `w`=工作区可写+需审批、`f`=全权+免审批；完整预设名照传，未知名由宿主报错并回显可用列表；无参查看当前与可用列表，序号按 available 顺序）、`/goal` 目标记录（跨重启持久化）、`/help` 帮助；未知斜杠命令默认拦截并提示相近命令（`unknownCommand: passthrough` 改为透传给模型） |
-| 工具 | `qq_send_image`（≤9 张，路径或 URL）、`qq_send_voice`、`qq_send_video`、`qq_send_file`、`qq_send_forward`、`qq_send_meme`（配 `memeDir` 后出现，按情绪/关键词抽预置表情包）、`qq_napcat_api`（14 个白名单 action）、`qq_group_history`（文件编辑工具 `code_safe_edit` 等已拆至独立插件 dsh-safe-edit，见下文「安全编辑」） |
+| 工具 | `qq_send_image`（≤9 张，路径或 URL）、`qq_send_voice`、`qq_send_video`、`qq_send_file`、`qq_send_forward`、`qq_send_meme`（配 `memeDir` 后出现，按情绪/关键词抽预置表情包）、`qq_napcat_api`（15 个白名单 action，仅管理员可调用上传/写群类；`file` 只收 file_id 或 `base64://`）、`qq_group_history`（文件编辑工具 `code_safe_edit` 等已拆至独立插件 dsh-safe-edit，见下文「安全编辑」） |
 | 权限 | 管理员白名单（`ONEBOT_ALLOWED_USERS`）、dm/group 策略（open/allowlist/disabled）、群聊 @提及 gating、受限用户 [受限用户:仅问答] 软限制、出站敏感内容审计 |
 | 会话 | 每个 QQ 会话一个持久 Agent（session id 稳定派生），重启后自动 resume；按 `agentPreset`/`workspacePath` 挂载到 preset 与工作区；每轮结束 flush 落盘 |
 | 运维 | 热加载：profile 层 patch 的 **config 覆盖**与 **insert 新增/删除**均热生效——插件 fiber 秒级原地重启（宿主进程不重启；代价：QQ 桥一次秒级重连、在途回合中断）；touch/内容未变不触发任何动作；bundle 自带 patch、仓库模板、部署副本的 patch 文件与根配置 `cordis.yml` 的改动**不**热生效；临时媒体 TTL 过期清理 |
@@ -46,7 +46,7 @@
 | OneBot 11 实现 | NapCat / Lagrange / LLOneBot / go-cqhttp（reverse 或 forward WebSocket） |
 | 可选依赖 | 语音转写需 ffmpeg + whisper CLI；t2i 文字图在 Linux 需 Noto CJK 字体 |
 
-最后验证：2026-10-12（0.9.0 发版批次 W1–W3 五特性：v4 命令审计 / verify 体检脚本 / 排队插话+autoSteerPolicy / 超时补发 / 诊断参考号——npx tsc --noEmit 零错误、vitest 532 用例全绿；M0 安全语义保持：reverse 空 token 拒绝启动、默认仅监听 127.0.0.1 为 BREAKING 变更，见下方配置表说明）。
+最后验证：2026-10-24（安全加固批次：`qq_napcat_api` 参数白名单、member 回合工具闸门、入站 `file://` 扩展名白名单 + 大小上限、会话映射原子写与串行落盘、设置页 descriptor 补齐——`npx tsc --noEmit` 零错误；vitest 40 个 spec / 588 用例，Linux 预期全绿，Windows 存在平台相关跳过与 19 条已知失败（t2i 字体与 8.3 短路径）。M0 安全语义保持：reverse 空 token 拒绝启动、默认仅监听 127.0.0.1 为 BREAKING 变更，见下方配置表说明）。
 
 ### 从 0.9.4 升级到本版本的行为变化
 
@@ -319,6 +319,7 @@ dsh Web GUI 的设置页提供本插件的可视化配置（host-plane Remote `o
 | `/session [序号]` | 查看本会话可切回的历史会话（无参编号列表，每项含内容预览、建立时间与退休时间，id 截短显示；日志不可读的项显示「（内容不可读）」且不影响其余项），回复序号切回：当前会话退休进列表、目标会话恢复其历史上下文（含 per-chat 设置），支持来回切换；列表跨重启保留（switchable-sessions.json，每 chat 上限 20 条） |
 | `/status` | 会话全景：chat/session/preset/model/cwd/出站模式/agent/可切回数 状态 |
 | `/storage` | 存储占用：`mediaDir` 总占用与文件数、本插件在宿主附件库里的贡献（`/storage` 会实时遍历附件库按本插件的写入路径统计）、`attachmentBudgetMB` 软上限与百分比、`attachmentRetentionHours` 回收窗口（未启用时会显式标注「记账只增不减」） |
+| `/doctor [export [参考号]]` | 运行体检（别名 `/healthcheck`）：连接/工具/存储/最近故障参考号全景；`export` 导出脱敏诊断包 `qq-diagnostics-*.zip`（文件名带触发参考号），非法参考号回用法提示且不落盘 |
 | `/retry` | 重跑上一条用户消息（上一轮出错后重试） |
 | `/id` | 只看 chat/session/cwd（排查用） |
 | `/ver` | 插件版本 + git commit |
@@ -422,7 +423,8 @@ chat 回退到下一条消息新建会话，不会卡死。损坏（碰撞/恢�
 
 ```sh
 ./scripts/build.sh                 # 编译 src/ → lib/
-./node_modules/.bin/vitest run     # 306 个测试：单元 + 真实 WS 对端 + 全管线
+./node_modules/.bin/vitest run     # 40 个 spec / 588 用例：单元 + 真实 WS 对端 + 全管线
+                                   # Linux 预期全绿；Windows 上 19 条已知失败（t2i 无 CJK 字体 + 8.3 短路径差异）
 ```
 
 要点（来自移植源 DEVLOG 的教训）：

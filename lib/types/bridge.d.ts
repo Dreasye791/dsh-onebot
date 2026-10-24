@@ -21,14 +21,21 @@ import type { InjectChannel } from './inject.js';
 import type { InboundRecorder } from './record.js';
 import type { TraceStage } from './trace.js';
 import type { ImageAttachmentRef } from './attach.js';
-/**
- * T15：一条入站用户消息的内容块（文本 + 已投递的图片）。
+/** T15：一条入站用户消息的内容块（文本 + 已投递的图片）。
  *
- * 为什么不用宿主的 `UserMessageContent`：该类型名不在本插件的类型面上，
- * 直接写会得到 TS2304 使 `npm run build`（tsc，strict）失败。
- * 用判别联合而非「可选字段」：宿主每个变体的 text/attachment 若为必填，
- * `text?: string` 无法赋给任一分支，tsc 仍会报 TS2345。
- */
+ * 为什么不直接标注宿主的 `UserMessageContent`：该类型名不在本插件的类型面上
+ * （`@deepseek-ai/dsh-llm` 只在此处按需 import 具体的构造器与模型信息类型），
+ * 直接写会得到 TS2304「找不到名称」，使 `npm run build`（tsc -p tsconfig.json，
+ * strict）整条构建失败——src 侧从此无法被编译器校验。
+ *
+ * 形状按宿主实现对齐（`dsh-llm` 的 `contentHasImage` / `replaceImagesForTextModel`
+ * 都以 `block.type === 'image'` 且读 `block.attachment` 判别 image 块），
+ * 因此这里的联合与宿主是可结构兼容的。
+ *
+ * 用判别联合而非「type + 两个可选字段」：若宿主 `UserMessageContent` 的每个变体
+ * 都把 `text` / `attachment` 声明为必填，`text?: string` 无法赋给任一分支，
+ * tsc 仍会在 createUserMessage 调用点报 TS2345（错误码变了但构建还是碎）。
+ * 判别联合让每个变体各自带上必填字段，两侧赋值都能通过。 */
 export type InboundContentBlock = {
     type: 'text';
     text: string;
@@ -74,8 +81,17 @@ export interface BridgeConfig {
     fontFiles: readonly string[];
     fontFamilies: readonly string[];
     agentPreset: string;
-    /** T20：QQ 通道可调用的 MCP 工具白名单；空/缺省 = 禁用全部 MCP 工具。
-     * 由 `mcp-gate.makeMcpToolGuard()` 在调用期按工具名判定。 */
+    /** QQ 通道的思考强度覆盖：''/缺省 = 继承宿主 agent-default-model（0.9.4 及
+     * 以前的行为）；非空 = 本通道 agent 的 reasoningEffort，Web/GUI 会话不受影响。 */
+    reasoningEffort?: string;
+    /** T11：QQ 通道的角色设定（人设）文本；空串/缺省 = 不注入人设层，行为与
+     *  0.9.4 一致。仅影响本通道的 system prompt，Web/GUI 会话不受影响。 */
+    persona?: string;
+    /** T12：表情包目录（`<memeDir>/<tag>/<file>.jpg`，与 dsh-meme 图库同构）。
+     *  空串/缺省 = 不注册 qq_send_meme；非空则本通道 agent 多一个只读该目录的
+     *  发图工具。目录必须在 mediaDir 之内才能通过出站围栏。 */
+    memeDir?: string;
+    /** T20：QQ 通道可调用的 MCP 工具白名单；空/缺省 = 禁用全部 MCP 工具。 */
     mcpToolAllow?: string[];
     /** T15：入站图片是否投递为真图片块（默认 true）；false = 只给路径文本。 */
     attachInboundImages?: boolean;
@@ -83,9 +99,9 @@ export interface BridgeConfig {
     attachMaxImageBytes?: number;
     /** T15：附件库软上限（字节）；0 = 不限。 */
     attachmentBudgetBytes?: number;
-    /** T18：账本回收窗口（毫秒）；0 = 不回收。只改记账不删文件。 */
+    /** T15：账本回收窗口（毫秒）；0 = 不回收（只增不减）。 */
     attachmentRetentionMs?: number;
-    /** T18：单次写盘超时（毫秒）；0 = 不超时。 */
+    /** T15：单次投递的宿主写盘超时（毫秒）；0 = 不超时。 */
     attachmentSaveTimeoutMs?: number;
     workspacePath: string;
     /** Max inbound file bytes fetched via QQ direct link / base64 (0 = no cap). */
@@ -268,10 +284,6 @@ export interface BridgeDeps {
     /** Log line callback (level, message). */
     log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void;
 }
-/**
- * Bridge between OneBot events and dsh agents. Create via the constructor and
- * call start() from the plugin's effect; call stop() on disposal.
- */
 export declare class ChatBridge {
     private readonly deps;
     /** Outbound pipeline (D1-PR2): the same-name bridge methods below delegate here. */
@@ -320,6 +332,9 @@ export declare class ChatBridge {
     private pluginVersion;
     private pluginCommit;
     private stopping;
+    /** T20：mcpToolAllow 的无效条目 warn 是否已打过。installChannelScope 在每次
+     * create 与 resume 都会执行，一条写错的条目会随聊天数重复刷日志 —— 只报一次。 */
+    private mcpAllowWarned;
     constructor(deps: BridgeDeps);
     /** Start listening: wire connection handlers and the session event feed. */
     start(): void;
@@ -439,8 +454,10 @@ export declare class ChatBridge {
     /** Resolve one media ref to a text annotation with a local path. */
     private resolveMediaRef;
     /** T15：把一张入站图片投递成宿主附件引用（inbound ctx.deliverInboundImage）。
-     * 三道闸门（单图大小 / 总预算 / 宿主能力）在 attach.deliverImage 里，这里只
-     * 接线「运行时取到的服务」与「配置解析出的策略」；异常一律吞掉记 debug。 */
+     *
+     * 三道闸门（单图大小 / 总预算 / 宿主能力）都在 `attach.deliverImage` 里，
+     * 这里只负责把「运行时取到的服务」与「配置解析出的策略」接线过去。任何
+     * 异常都吞掉并记 debug：视觉增强失败绝不能影响消息本身可达。 */
     private deliverInboundImage;
     /** M3-D4c: steer a completed voice transcript into the chat's agent — the
      * running turn consumes it at its nearest step boundary; an idle agent
@@ -543,10 +560,12 @@ export declare class ChatBridge {
     private resetChat;
     /**
      * Compose the QQ channel's scoped world for one agent: the QQ platform
-     * prompt section and the qq_* tools. Registered on `agentCtx` (the agent's
-     * own scope) instead of the plugin context, so Web/local sessions never see
-     * the channel instructions or the media tools — they cannot (and should
-     * not) push messages to QQ.
+     * prompt section, the qq_* tools, and the MCP tool gate.
+     *
+     * Everything here is registered on `agentCtx` (the agent's own scope) instead
+     * of the plugin context, so Web/local sessions never see the channel
+     * instructions or the media tools — they cannot (and should not) push
+     * messages to QQ.
      */
     private installChannelScope;
     /** Start the NapCat typing indicator (private chats only). */

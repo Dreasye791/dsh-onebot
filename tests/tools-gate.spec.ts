@@ -31,14 +31,16 @@ async function makeHarness() {
   await Promise.all([mkdir(mediaDir), mkdir(workspace), mkdir(otherDir), mkdir(outside)])
 
   const calls: Array<{ action: string; params: Record<string, unknown> }> = []
+  /** Shared stub: the bridge sends through it，qq_napcat_api 直接调用它。 */
+  const connection = {
+    call: async (action: string, params: Record<string, unknown>) => {
+      calls.push({ action, params })
+      return { message_id: 42 }
+    },
+  }
   const bridge = new ChatBridge({
     ctx: new Context(),
-    connection: {
-      call: async (action: string, params: Record<string, unknown>) => {
-        calls.push({ action, params })
-        return { message_id: 42 }
-      },
-    } as never,
+    connection: connection as never,
     media: {} as never,
     transcriber: {} as never,
     agents: {} as never,
@@ -83,7 +85,7 @@ async function makeHarness() {
       return () => undefined
     },
   } as never)
-  registerTools(ctx, bridge, {} as never, {
+  registerTools(ctx, bridge, connection as never, {
     maxImageBytes: 1_000_000,
     maxVoiceBytes: 1_000_000,
     maxFileBytes: 1_000_000,
@@ -142,7 +144,8 @@ describe('qq_send_* local-path outbound gate (M1-A3b)', () => {
     }
   })
 
-  it('refuses a symlink inside the workspace that escapes every root (admin turn)', async () => {
+  // Windows 无 symlink 权限（EPERM）：环境限制，POSIX CI 上仍跑。2026-10-24 审计。
+  it.skipIf(process.platform === 'win32')('refuses a symlink inside the workspace that escapes every root (admin turn)', async () => {
     const h = await makeHarness()
     const sessionId = 'sess-admin'
     h.seed(sessionId, 'admin')
@@ -211,5 +214,85 @@ describe('ChatBridge.mediaSendRoots (M1-A3b roots口径)', () => {
       roots: [realpathSync(h.mediaDir)],
       isTurnAdmin: true,
     })
+  })
+})
+
+/**
+ * 2026-10-24 审计 S-01 / S-03 的回归门。
+ *
+ * S-03：工具的默认目标是调用者自己的会话，显式 chat_id 只有管理员回合能指向别处
+ * （否则群友一次注入就能让 bot 跨群投递/读任意群历史）。
+ * S-01：qq_napcat_api 的参数原样透传给 NapCat，因此「本地路径」与「写群类 action」
+ * 必须在插件侧先被拒（真实机已证明 upload_private_file 能读宿主任意文件）。
+ */
+describe('S-01/S-03 chat binding and NapCat parameter gate (2026-10-24)', () => {
+  it('rejects a foreign chat_id on a member turn (no cross-chat delivery)', async () => {
+    const h = await makeHarness()
+    const sessionId = 'bind-member'
+    h.seed(sessionId, 'member')
+    await expect(h.tool('qq_send_image').execute(
+      { sources: ['https://example.com/a.jpg'], chat_id: 'group:99999' },
+      h.exec(sessionId),
+    )).rejects.toThrow(/只有管理员回合可以指定别的 chat_id/)
+    expect(h.calls).toHaveLength(0)
+  })
+
+  it('allows a foreign chat_id on an admin turn', async () => {
+    const h = await makeHarness()
+    const sessionId = 'bind-admin'
+    h.seed(sessionId, 'admin')
+    h.seed('peer-chat', 'member') // 目标会话必须已存在（group:20002）
+    const result = await h.tool('qq_send_image').execute(
+      { sources: ['https://example.com/a.jpg'], chat_id: 'group:20002' },
+      h.exec(sessionId),
+    ) as { sent: boolean }
+    expect(result.sent).toBe(true)
+    const send = h.calls.find(c => c.action === 'send_msg')
+    expect(Number(send?.params.group_id)).toBe(20002)
+  })
+
+  it('rejects a local-path file through qq_napcat_api on any turn', async () => {
+    const h = await makeHarness()
+    const sessionId = 'napcat-admin'
+    h.seed(sessionId, 'admin')
+    for (const local of ['C:\\\\Windows\\\\win.ini', '/etc/passwd', 'file:///etc/passwd', '..\\\\secret.txt']) {
+      await expect(h.tool('qq_napcat_api').execute(
+        { action: 'upload_private_file', params: { user_id: 1, file: local } },
+        h.exec(sessionId),
+      )).rejects.toThrow(/只接受 file_id 或 base64/)
+    }
+    expect(h.calls).toHaveLength(0)
+  })
+
+  it('rejects privileged NapCat actions on a member turn', async () => {
+    const h = await makeHarness()
+    const sessionId = 'napcat-member'
+    h.seed(sessionId, 'member')
+    await expect(h.tool('qq_napcat_api').execute(
+      { action: 'upload_group_file', params: { group_id: 20002, file: 'base64://aGk=', name: 'a.txt' } },
+      h.exec(sessionId),
+    )).rejects.toThrow(/仅管理员回合可用/)
+    expect(h.calls).toHaveLength(0)
+  })
+
+  it('still allows read-only actions with the current group id', async () => {
+    const h = await makeHarness()
+    const sessionId = 'napcat-readonly'
+    h.seed(sessionId, 'member')
+    await h.tool('qq_napcat_api').execute(
+      { action: 'get_group_member_list', params: { group_id: 20002 } },
+      h.exec(sessionId),
+    )
+    expect(h.calls).toHaveLength(1)
+  })
+
+  it('rejects a group_id that differs from the current chat', async () => {
+    const h = await makeHarness()
+    const sessionId = 'napcat-xgroup'
+    h.seed(sessionId, 'member')
+    await expect(h.tool('qq_napcat_api').execute(
+      { action: 'get_group_member_list', params: { group_id: 12345 } },
+      h.exec(sessionId),
+    )).rejects.toThrow(/必须等于当前会话的群号/)
   })
 })

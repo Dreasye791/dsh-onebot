@@ -157,7 +157,7 @@ export interface RegistryDeps {
     agentPresets: AgentPresetsLike | undefined;
     defaultModel: (() => ModelSelection | undefined) | undefined;
     /** The only config fields the registry reads. */
-    config: Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes' | 'chatIdleEvictDays'>;
+    config: Pick<BridgeConfig, 'mediaDir' | 'workspacePath' | 'agentPreset' | 'restrictedMemberPrefix' | 'maxImageBytes' | 'maxVoiceBytes' | 'maxFileBytes' | 'chatIdleEvictDays' | 'reasoningEffort'>;
     log(level: 'info' | 'warn' | 'error' | 'debug', message: string): void;
     /** Bridge stop flag (guards the resume loop). */
     isStopping(): boolean;
@@ -194,6 +194,18 @@ export declare class ChatRegistry {
     /** Per-chat switchable retired sessions (/session history), newest first. */
     private switchableByChat;
     private mappingSaveTimer;
+    /**
+     * R-01：映射文件存在但读取/解析失败时置位。此时**禁止**覆盖写 —— 否则任一
+     * turn/end 触发的 saveMapping 都会用内存里的空集把原文件覆盖掉，全部
+     * chat→session 映射永久丢失（session 日志还在盘上，但没有任何入口回去）。
+     */
+    private mappingLoadFailed;
+    /**
+     * R-01：映射文件的串行写链。原子 rename 只保证「读不到半截」，**不保证顺序** ——
+     * 两次 save 各写各的 tmp 时，后完成的 rename 会让旧快照覆盖新快照（实测：
+     * `/mode`、`/goal` 刚设置完，文件里又变回旧值）。
+     */
+    private mappingSaveChain;
     /** Resolves once the on-disk chat mapping has been loaded (wired by the bridge's start()). */
     mappingLoaded: Promise<void>;
     constructor(deps: RegistryDeps);
@@ -201,7 +213,16 @@ export declare class ChatRegistry {
     getSettings(chatId: ChatId): ChatSettings;
     /** C2: default-model wiring shared by the create and resume assembly paths
      * — agent options for the registry call plus the mutable per-agent
-     * selection ref (undefined when the deployment has no default model). */
+     * selection ref (undefined when the deployment has no default model).
+     *
+     * config.reasoningEffort overrides the host default for this channel only:
+     * installModelSelection's agent/request hook strips the inherited effort and
+     * re-applies `selection.assembled.reasoningEffort`, so overriding it on the
+     * selection we hand to installModelSelection is what actually changes the
+     * request — the host's own agent-default-model stays untouched (Web/GUI
+     * sessions keep inheriting it). Empty string keeps the pre-existing
+     * inheritance verbatim. `sameRoute` compares provider/model only, so an
+     * effort-only difference never emits a model-switch notice. */
     private modelWiring;
     /** C2: the AgentSetup closure shared by the create and resume assembly
      * paths. The only difference between the callers is the preset: a resumed
@@ -249,6 +270,8 @@ export declare class ChatRegistry {
      * chat: the normal save path covers it. */
     noteWorkspaceOverride(chatId: ChatId): void;
     saveMapping(): Promise<void>;
+    /** The actual snapshot+write body, always run inside `mappingSaveChain`. */
+    private writeMapping;
     saveMappingDebounced(): void;
     /** B8c: dispose chats whose last activity is older than chatIdleEvictDays
      * (0 disables; default 7). Called before each inbound message: the session

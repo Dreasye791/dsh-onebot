@@ -234,6 +234,18 @@ export class ChatRegistry {
   /** Per-chat switchable retired sessions (/session history), newest first. */
   private switchableByChat = new Map<ChatId, SwitchableSession[]>()
   private mappingSaveTimer: ReturnType<typeof setTimeout> | undefined
+  /**
+   * R-01：映射文件存在但读取/解析失败时置位。此时**禁止**覆盖写 —— 否则任一
+   * turn/end 触发的 saveMapping 都会用内存里的空集把原文件覆盖掉，全部
+   * chat→session 映射永久丢失（session 日志还在盘上，但没有任何入口回去）。
+   */
+  private mappingLoadFailed = false
+  /**
+   * R-01：映射文件的串行写链。原子 rename 只保证「读不到半截」，**不保证顺序** ——
+   * 两次 save 各写各的 tmp 时，后完成的 rename 会让旧快照覆盖新快照（实测：
+   * `/mode`、`/goal` 刚设置完，文件里又变回旧值）。
+   */
+  private mappingSaveChain: Promise<void> = Promise.resolve()
   /** Resolves once the on-disk chat mapping has been loaded (wired by the bridge's start()). */
   mappingLoaded: Promise<void> = Promise.resolve()
 
@@ -268,15 +280,18 @@ export class ChatRegistry {
   private modelWiring(): { agentOptions: { provider?: string; model?: string }; selectionRef: ModelSelectionRef | undefined } {
     const inherited = this.deps.defaultModel?.()
     const effort = this.deps.config.reasoningEffort
+    // config.reasoningEffort 是插件的字符串联合（index.ts:107 的 ReasoningEffort），
+    // 宿主的 ModelSelection 用 branded ReasoningEffortId：档位名已由 schema 的
+    // z.union 校验过，这里只需在类型层收窄（运行期值不变）。
     const selection = inherited !== undefined && effort !== undefined && effort !== ''
-      ? { ...inherited, reasoningEffort: effort }
+      ? ({ ...inherited, reasoningEffort: effort } as ModelSelectionRef['current'])
       : inherited
     const agentOptions: { provider?: string; model?: string } = {}
     if (selection !== undefined) {
       agentOptions.provider = selection.provider
       agentOptions.model = selection.model
     }
-    const selectionRef = selection !== undefined
+    const selectionRef: ModelSelectionRef | undefined = selection !== undefined
       ? { current: selection, assembled: undefined }
       : undefined
     return { agentOptions, selectionRef }
@@ -513,8 +528,14 @@ export class ChatRegistry {
           this.deps.log('warn', 'resume failed for ' + chatId + ': ' + describeError(error))
         }
       }
-    } catch {
-      // No mapping file yet — fresh start.
+    } catch (error) {
+      // R-01：只有「文件不存在」才算全新启动。JSON 截断 / 读权限错误若也当空集处理，
+      // 下一次 saveMapping（turn/end 必触发）就会用空映射覆盖原文件 —— 这是静默
+      // 数据丢失，不是降级。置旗标后 saveMapping 拒绝覆盖，留给人工修复。
+      if ((error as { code?: string }).code !== 'ENOENT') {
+        this.mappingLoadFailed = true
+        this.deps.log('warn', 'chat-sessions.json 读取失败，已停止覆盖写以保护现有映射（修复文件后重启）: ' + describeError(error))
+      }
     }
   }
 
@@ -587,6 +608,17 @@ export class ChatRegistry {
   }
 
   async saveMapping(): Promise<void> {
+    const run = this.mappingSaveChain.then(async () => this.writeMapping())
+    this.mappingSaveChain = run.catch(() => undefined)
+    return run
+  }
+
+  /** The actual snapshot+write body, always run inside `mappingSaveChain`. */
+  private async writeMapping(): Promise<void> {
+    if (this.mappingLoadFailed) {
+      this.deps.log('warn', '跳过 chat-sessions.json 覆盖写：启动时加载失败，保留原文件等待人工修复')
+      return
+    }
     try {
       await mkdir(this.deps.config.mediaDir, { recursive: true })
       const mapping: Record<string, string | PersistedChatSettings> = {}
@@ -612,7 +644,13 @@ export class ChatRegistry {
         if (settings.interimOverride === undefined && settings.goal === undefined && (settings.workspacePath === undefined || settings.workspacePath === '')) continue
         mapping[chatId] = persistEntry(makeSessionId(sessionIdForChat(chatId)), settings.interimOverride, settings.goal, settings.workspacePath)
       }
-      await writeFile(this.mappingPath(), JSON.stringify(mapping, null, 2), 'utf8')
+      // R-01：与 saveRetired 相同的「唯一 tmp + rename」。裸写目标文件时，进程
+      // 在写盘途中被杀 / 磁盘满都会留下半截 JSON，下次启动 loadMapping 解析失败；
+      // 唯一后缀是为了避免并发 save 共用同一个 .tmp（先 rename 的把后者 tmp 吃掉）。
+      const target = this.mappingPath()
+      const tmpPath = target + '.tmp-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)
+      await writeFile(tmpPath, JSON.stringify(mapping, null, 2), 'utf8')
+      await rename(tmpPath, target)
     } catch (error) {
       this.deps.log('warn', 'mapping save failed: ' + describeError(error))
     }

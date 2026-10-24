@@ -5,4 +5,10 @@ media/
 profiles/
 .expert-bus/
 lib/*.bak-*
+# 本地 AI 协作记忆（含部署路径/账号等运行期信息，不进公开库）
+.codebuddy/
+# 本地 AI 协作说明：个人开发途径，别人不一定用，不随包发布
+CODEBUDDY.md
+# 提交信息草稿（一次性的）
+commit-msg.txt
 

@@ -304,6 +304,37 @@ export interface BridgeDeps {
  * Bridge between OneBot events and dsh agents. Create via the constructor and
  * call start() from the plugin's effect; call stop() on disposal.
  */
+/**
+ * S-02：受限用户（member 回合）可用的工具白名单 —— **默认拒绝**。
+ *
+ * 为什么用白名单而不是「拦住 write/bash」：宿主的写/执行类工具名由 bundle 动态
+ * 注册（peer 包里查不到），黑名单漏一个名字就静默失效；而受限用户的语义本来
+ * 就是「只能问问题」。注意「只读」也不等于安全 —— `Read` 能读
+ * `napcat/NapCat.Shell/config/*.json`（含 accessToken），因此本地文件读取
+ * （read/glob/grep 等）对 member 同样不放行。
+ *
+ * 放行项：
+ * - `mcp__*`：MCP 已有独立白名单闸门（mcpToolAllow）；
+ * - `qq_send_*` / `qq_group_history`：发送类，走媒体围栏与主动写闸门；
+ * - `web_search` / `web_fetch`：外网只读检索；
+ * - 交互卡与 todo：无文件/命令副作用。
+ */
+const MEMBER_ALLOWED_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'qq_send_image', 'qq_send_voice', 'qq_send_video', 'qq_send_file',
+  'qq_send_forward', 'qq_send_meme', 'qq_group_history',
+  'web_search', 'web_fetch',
+  'ask_user_question', 'exit_plan_mode', 'todo_write',
+])
+
+/** member 回合的工具拒绝理由；`undefined` = 放行。 */
+function memberToolDenialReason(name: string): string | undefined {
+  if (name === '') return '无法确定工具名，受限用户回合默认拒绝该调用'
+  if (name.startsWith('mcp__')) return undefined
+  if (MEMBER_ALLOWED_TOOL_NAMES.has(name)) return undefined
+  return '当前是受限用户回合（非管理员）：只能问答、只读检索与发送消息，'
+    + '工具「' + name + '」已被拒绝。需要读写文件或执行命令请让管理员来问。'
+}
+
 export class ChatBridge {
   private readonly deps: BridgeDeps
   /** Outbound pipeline (D1-PR2): the same-name bridge methods below delegate here. */
@@ -487,6 +518,9 @@ export class ChatBridge {
       this.sessionFlushOff()
       this.sessionFlushOff = undefined
     }
+    // R-02：先把已排队的发送结算完，再拆 registry（热重启时 socket 随后关闭，
+    // 在途消息若还挂在链上会全部变成 OneBotNotConnectedError）。
+    await this.outbound.drain()
     await this.registry.stop()
     // T3 (P2): disarm the deferred silent-wait timers（pending 条目已落盘，
     // 重启后 loadPersisted 恢复跟踪续投）。
@@ -1313,6 +1347,21 @@ export class ChatBridge {
       this.deps.log('warn', 'mcpToolAllow 有 ' + dropped.join('、') + ' 已被忽略。仅支持 * 与 mcp__<server>__* 两种通配，其它含 * 的写法会被忽略；条目原文不打印，请在设置页「权限」组核对')
     }
     guard.call(agentCtx.tools, makeMcpToolGuard(allow))
+    // S-02：受限用户回合的工具闸门。角色按回合冻结在 activeTurnRole（turn/start
+    // 时从派发队列取），所以必须在 guard 内部**实时**判定 —— 注册时写死会让第一个
+    // admin 回合之后永久放行（或反过来）。取不到会话时按 member 处理（fail-closed）。
+    guard.call(agentCtx.tools, (exec: unknown) => {
+      const e = exec as { name?: unknown; agent?: { session?: { id?: unknown } } } | null
+      const name = typeof e?.name === 'string' ? e.name : ''
+      const rawId = e?.agent?.session?.id
+      const sessionId = typeof rawId === 'string' ? rawId : undefined
+      // canEditFiles 对「查不到 chat 映射」的 session 返回 true（非 QQ 会话默认
+      // 信任），所以必须先要求它确实映射到一个 QQ chat，否则未知上下文会被当成
+      // 管理员放行 —— 这个闸门本身就会 fail-open。
+      const chatId = sessionId !== undefined ? this.chatForSession(sessionId) : undefined
+      if (chatId !== undefined && sessionId !== undefined && this.canEditFiles(sessionId)) return undefined
+      return memberToolDenialReason(name)
+    })
   }
 
   // ------------------------------------------------------------ typing

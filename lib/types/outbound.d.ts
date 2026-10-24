@@ -150,6 +150,15 @@ export declare class OutboundPipeline {
     /** The chat's send-chain tail; resolves once every queued send has settled
      * (settleLoop snapshots the interim trail after it, preserving order). */
     chainTail(chatId: ChatId): Promise<unknown>;
+    /**
+     * R-02：等待所有 chat 的发送链结算。插件拆卸（配置热更新会**原地重启**插件）
+     * 前必须先排空，否则在途消息随 socket 关闭变成 OneBotNotConnectedError，用户
+     * 侧表现为「上一条回复没发出去」。
+     *
+     * 有界重试：链尾在结算后自删；stop 之后不会再有新入站派发，所以最多三轮兜住
+     * 「排空期间新入队的尾巴」，绝不无限等待。
+     */
+    drain(): Promise<void>;
     /** Send one message to a chat and return its message id. */
     sendMsg(chatId: ChatId, segments: OutboundSegment[], options: SendOptions): Promise<string | undefined>;
     /** Send [[qq_forward]] nodes as a merged-forward message (proactive write

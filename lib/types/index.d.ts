@@ -96,6 +96,15 @@ type Context = CordisContext & {
 };
 export declare const name = "dsh-onebot";
 export declare const inject: string[];
+/** QQ 通道可选的思考强度档位。'' = 不覆盖，继承宿主 agent-default-model
+ * 的 reasoningEffort（保持 0.9.4 及以前的行为）。其余取值必须是 pi-ai 的
+ * THINKING_LEVELS 档位名（off/minimal/low/medium/high/xhigh/max）——宿主
+ * 的 installModelSelection 会把它原样塞进 agent/request 的 modelOptions，再由
+ * 适配器的 resolveReasoningLevel 逐个比对 getSupportedThinkingLevels(model)，
+ * 名字不在其中直接抛 UNSUPPORTED_REASONING_EFFORT。
+ * 注意「关闭思考」的档位名是 off，不是 none：none 只是 codebuddy-cli 在
+ * canDisableThinking 模型上的 wire 拼写，pi-ai 层面不存在名为 none 的档位。 */
+export type ReasoningEffort = '' | 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 /** Plugin configuration (validated by schemastery). */
 export interface Config {
     mode: 'reverse' | 'forward';
@@ -153,30 +162,37 @@ export interface Config {
     fontFiles: string[];
     fontFamilies: string[];
     agentPreset: string;
-    /** QQ 通道的思考强度覆盖：''/缺省 = 继承宿主 agent-default-model（0.9.4 及
-     * 以前的行为）；非空 = 本通道 agent 的 reasoningEffort，Web/GUI 会话不受影响。 */
-    reasoningEffort?: string;
+    /** QQ 通道的思考强度覆盖：留空（默认）=继承宿主 agent-default-model 的
+     * reasoningEffort；非空则本通道创建/恢复的每个 agent 都用该值，不影响
+     * Web/GUI 会话。合法值取自 codebuddy-cli 适配器的 STANDARD_EFFORTS。 */
+    reasoningEffort: ReasoningEffort;
     /** T11：QQ 通道角色设定（人设）文本；'' = 不注入（0.9.4 行为）。 */
-    persona?: string;
+    persona: string;
     /** T12：表情包目录；'' = 不注册 qq_send_meme。须位于 mediaDir 之内。 */
-    memeDir?: string;
-    /** T20：QQ 通道可调用的 MCP 工具白名单（fail-closed）。空数组 = 禁用全部
-     * MCP 工具。支持 `*`、完整名 `mcp__akasha__akasha_search`、`mcp__akasha__*`、
-     * 服务器名 `akasha`、裸工具名 `akasha_search` 五种写法。qq_* 与宿主内置
-     * 工具不受影响。 */
-    mcpToolAllow?: string[];
-    /** T15：入站图片是否投递为真图片块（默认 true）；false = 只给路径文本。 */
-    attachInboundImages?: boolean;
+    memeDir: string;
+    /** T20：QQ 通道的 MCP 工具白名单（fail-closed）。
+     *
+     * MCP 工具注册在 profile 根作用域，而作用域视图沿链向下继承 —— 不设闸门时
+     * QQ 会话（子作用域）会白拿 profile 里所有 MCP 服务器（含 dbx 的数据库工具）
+     * 的调用权。这里按调用期 guard 拦截，只放行名单内的 MCP 工具；**空数组 =
+     * 禁用全部 MCP 工具**（默认值，与 mcpToolAllow 未配置时行为一致）。
+     * 支持 `*`、完整工具名 `mcp__akasha__akasha_search`、`mcp__akasha__*`、
+     * 服务器名 `akasha`、裸工具名 `akasha_search` 五种写法。非 MCP 工具
+     * （qq_* 与宿主内置）不受本闸门影响。 */
+    mcpToolAllow: string[];
+    /** T15：入站图片是否投递为真图片块（默认 true）；false = 只给路径文本，
+     * 与 T15 之前的行为一致。 */
+    attachInboundImages: boolean;
     /** T15：单张入站图片投递上限（MB）；超过则只给路径文本。0 = 不限。 */
-    attachMaxImageMB?: number;
+    attachMaxImageMB: number;
     /** T15：附件库软上限（MB），按本插件贡献的字节数计；0 = 不限。 */
-    attachmentBudgetMB?: number;
-    /** T18：账本回收窗口（小时）。记账条目超过该时长未再被引用即移出记账，
-     * 使预算可复用；**只改记账不删文件**。0 = 不回收（记账只增不减，默认）。 */
-    attachmentRetentionHours?: number;
-    /** T18：单次写盘（宿主 saveImages）超时（毫秒）。超时按 save-failed 跳过本图，
-     * 让附件账本临界区及时释放，避免一张图卡住全部会话。0 = 不超时。 */
-    attachmentSaveTimeoutMs?: number;
+    attachmentBudgetMB: number;
+    /** T15：账本回收窗口（小时）——`lastSeenAt` 早于 now-该时长的条目在下次
+     * 投递前移出记账，把软上限占用还回去。只改本插件的预算记账，不删任何文件。
+     * 0 = 不回收（保持只增不减的旧行为）。 */
+    attachmentRetentionHours: number;
+    /** T15：单次入站图片投递的宿主写盘超时（毫秒）；0 = 不超时。 */
+    attachmentSaveTimeoutMs: number;
     workspacePath: string;
     inboundFileMaxBytes: number;
     /** @deprecated D4a alias of inboundFileMaxBytes; honored for one release. */

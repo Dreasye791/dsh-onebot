@@ -1039,3 +1039,34 @@ describe('ChatRegistry', () => {
     await h.connection.stop()
   }, 30_000)
 })
+
+/**
+ * R-01（2026-10-24 审计）：映射文件是「全部 chat→session 的唯一索引」。它损坏时
+ * 最危险的不是读不到，而是随后用内存里的空集把它覆盖掉 —— 那等于永久丢失全部
+ * 会话入口（session 日志还在盘上，但用户没有入口回去）。
+ */
+describe('R-01 chat-sessions.json durability (2026-10-24)', () => {
+  const mappingPathOf = (deps: RegistryDeps): string => join(deps.config.mediaDir, 'chat-sessions.json')
+
+  it('never overwrites a corrupt mapping file', async () => {
+    const deps = makeRegistryDeps()
+    const registry = new ChatRegistry(deps)
+    const broken = '{ "private:10001": "onebot-pr'
+    await writeFile(mappingPathOf(deps), broken)
+    await registry.loadMapping()
+    await registry.saveMapping()
+    expect(await readFile(mappingPathOf(deps), 'utf8')).toBe(broken)
+  })
+
+  it('writes atomically through a unique tmp file (no stray tmp, parseable JSON)', async () => {
+    const deps = makeRegistryDeps()
+    const registry = new ChatRegistry(deps)
+    await registry.loadMapping() // 文件不存在 = 全新启动
+    await registry.saveMapping()
+    const names = await readdir(deps.config.mediaDir)
+    expect(names).toContain('chat-sessions.json')
+    expect(names.filter(n => n.startsWith('chat-sessions.json.tmp-'))).toHaveLength(0)
+    const written = JSON.parse(await readFile(mappingPathOf(deps), 'utf8')) as Record<string, unknown>
+    expect(written).toEqual({})
+  })
+})

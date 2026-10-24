@@ -31,6 +31,21 @@ import { FAILURE_REF_DETAIL_MAX, FailureRefRegistry, isFailureRef, newFailureRef
 
 import { makeCmdHarness, makeEvent, makeHarness, sentTexts } from './helpers/bridge-harness.js'
 
+/**
+ * 从一条 send_msg 的 JSON 参数里取出「诊断包已导出」文案里的真实路径。
+ *
+ * 不能直接在 `JSON.stringify(params)` 上正则提路径：JSON 把 Windows 的 `\` 转义成
+ * `\\`，截出来的片段（例如 `\\Users\\...`）不是可用的文件系统路径，existsSync 必假
+ * （2026-10-24 审计发现的测试缺陷）。先解析 JSON、拼回文本段，再提路径。
+ */
+function archivePathOf(line: string): string {
+  const params = JSON.parse(line) as { message?: Array<{ data?: { text?: string } }> }
+  const text = (params.message ?? []).map(segment => segment.data?.text ?? '').join('')
+  const found = /[^\s：]+qq-diagnostics-[^\s]*\.zip/.exec(text)
+  if (found === null) throw new Error('导出文案里没有诊断包路径: ' + text)
+  return found[0]
+}
+
 /** Trace jsonl 读取助手：逐行解析为事件数组（坏行跳过）。 */
 function readTrace(mediaDir: string): Array<Record<string, unknown>> {
   const file = join(mediaDir, TRACE_FILE)
@@ -154,7 +169,7 @@ describe('消息回合故障 → MF- 号贯穿', () => {
     h.sendText('/healthcheck export')
     await vi.waitFor(() => expect(sentTexts(h.outbound).some(t => t.includes('诊断包已导出'))).toBe(true))
     const archiveLine = sentTexts(h.outbound).find(t => t.includes('诊断包已导出'))!
-    const archivePath = /\/\S*qq-diagnostics-\S*\.zip/.exec(archiveLine)![0]
+    const archivePath = archivePathOf(archiveLine)
     expect(archivePath).toMatch(new RegExp('-' + ref + '\\.zip$'))
     expect(existsSync(archivePath)).toBe(true)
 
@@ -180,8 +195,11 @@ describe('消息回合故障 → MF- 号贯穿', () => {
     // 同一次故障不双发：补发终态已带号，基线 ⚠️ 被抑制
     expect(sentTexts(h.outbound).some(t => t.includes('⚠️ 运行出错'))).toBe(false)
     // 条目持久化同号
-    const entryLine = readFileSync(join(mediaDir, DEFERRED_REGISTRY_FILE), 'utf8').split('\n').filter(l => l.trim() !== '')[0]!
-    expect(JSON.parse(entryLine).ref).toBe(ref)
+    // 注册表由异步写链落盘：等条目写出后再读（立即读会拿到空文件/旧版本）。
+    await vi.waitFor(() => {
+      const entryLine = readFileSync(join(mediaDir, DEFERRED_REGISTRY_FILE), 'utf8').split('\n').filter(l => l.trim() !== '')[0]!
+      expect(JSON.parse(entryLine).ref).toBe(ref)
+    })
     // trace queue 事件携带 ref（deferredRetryable/uncertain/delivered 至少一条含号）
     await sink.flush()
     expect(readTrace(mediaDir).some(e => (e.data as { ref?: string } | undefined)?.ref === ref)).toBe(true)
@@ -235,7 +253,7 @@ describe('正常路径零发号 + export 文件名模式', () => {
     h.sendText('/healthcheck export')
     await vi.waitFor(() => expect(sentTexts(h.outbound).some(t => t.includes('诊断包已导出'))).toBe(true))
     const archiveLine = sentTexts(h.outbound).find(t => t.includes('诊断包已导出'))!
-    const archivePath = /\/\S*qq-diagnostics-\S*\.zip/.exec(archiveLine)![0]
+    const archivePath = archivePathOf(archiveLine)
     expect(archivePath).toMatch(/qq-diagnostics-\d{4,}-\d+\.zip$/)
 
     // 显式传号：合法号逐字入名；报告带「本次导出参考号」
@@ -243,7 +261,7 @@ describe('正常路径零发号 + export 文件名模式', () => {
     h.sendText('/healthcheck export ' + explicit)
     await vi.waitFor(() => expect(sentTexts(h.outbound).filter(t => t.includes('诊断包已导出')).length).toBe(2))
     const explicitLine = sentTexts(h.outbound).filter(t => t.includes('诊断包已导出'))[1]!
-    const explicitPath = /\/\S*qq-diagnostics-\S*\.zip/.exec(explicitLine)![0]
+    const explicitPath = archivePathOf(explicitLine)
     expect(explicitPath.endsWith('-' + explicit + '.zip')).toBe(true)
     expect(existsSync(explicitPath)).toBe(true)
 

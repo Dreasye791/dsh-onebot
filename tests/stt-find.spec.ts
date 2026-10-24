@@ -31,7 +31,8 @@ describe('findCommand (A8 PATH scan, no shell)', () => {
     await expect(findCommand('fake-whisper')).resolves.toBeUndefined()
   })
 
-  it('skips a non-executable file and keeps scanning the next dir', async () => {
+  // Windows 没有 POSIX 可执行位（chmod 无效），该语义无法在 win32 上构造。2026-10-24 审计。
+  it.skipIf(process.platform === 'win32')('skips a non-executable file and keeps scanning the next dir', async () => {
     const noExec = mkdtempSync(join(tmpdir(), 'stt-find-noexec-'))
     const exec = mkdtempSync(join(tmpdir(), 'stt-find-exec-'))
     await writeFile(join(noExec, 'fake-whisper'), 'plain data, no x bit')

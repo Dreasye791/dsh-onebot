@@ -371,6 +371,21 @@ export class OutboundPipeline {
     return this.sendChains.get(chatId) ?? Promise.resolve()
   }
 
+  /**
+   * R-02：等待所有 chat 的发送链结算。插件拆卸（配置热更新会**原地重启**插件）
+   * 前必须先排空，否则在途消息随 socket 关闭变成 OneBotNotConnectedError，用户
+   * 侧表现为「上一条回复没发出去」。
+   *
+   * 有界重试：链尾在结算后自删；stop 之后不会再有新入站派发，所以最多三轮兜住
+   * 「排空期间新入队的尾巴」，绝不无限等待。
+   */
+  async drain(): Promise<void> {
+    for (let round = 0; round < 3 && this.sendChains.size > 0; round += 1) {
+      const tails = [...this.sendChains.values()].map(chain => chain.catch(() => undefined))
+      await Promise.all(tails)
+    }
+  }
+
   /** Send one message to a chat and return its message id. */
   async sendMsg(chatId: ChatId, segments: OutboundSegment[], options: SendOptions): Promise<string | undefined> {
     const ref = splitChatId(chatId)

@@ -116,8 +116,8 @@ describe('T4 客户端 bundle — descriptor 契约核对（与 T3 src/settings-
     }
   })
 
-  it('方法集逐字对齐：getSettings() 0 参；updateSettings(patch, expectedRevision)；listWorkspaces() 0 参（W7），全 positional', () => {
-    expect(descriptors.map((descriptor) => descriptor.method)).toEqual(['getSettings', 'updateSettings', 'listWorkspaces'])
+  it('方法集逐字对齐：getSettings() 0 参；updateSettings(patch, expectedRevision)；listWorkspaces() / listReasoningEfforts() 0 参（W7/T17），全 positional', () => {
+    expect(descriptors.map((descriptor) => descriptor.method)).toEqual(['getSettings', 'updateSettings', 'listWorkspaces', 'listReasoningEfforts'])
     const getSettings = descriptors[0] as { parameters: Array<unknown>; result: { schema: { parse(value: unknown): unknown } } }
     expect(getSettings.parameters).toEqual([])
     const updateSettings = descriptors[1] as { parameters: Array<{ name: string }>; result: { schema: { parse(value: unknown): unknown } } }
@@ -132,6 +132,18 @@ describe('T4 客户端 bundle — descriptor 契约核对（与 T3 src/settings-
     })
     // registry 缺席降级形态同样可解析。
     expect(listWorkspaces.result.schema.parse({ available: false, workspaces: [] })).toEqual({ available: false, workspaces: [] })
+    // T17：第 4 个方法是服务端已 markRemote 的 listReasoningEfforts —— 客户端漏声明
+    // descriptor 时 remote 上没有该方法，面板恒回退静态八选一（功能静默降级）。
+    const listReasoningEfforts = descriptors[3] as { parameters: Array<unknown>; result: { typeSymbol: string; schema: { parse(value: unknown): unknown } } }
+    expect(listReasoningEfforts.parameters).toEqual([])
+    expect(listReasoningEfforts.result.typeSymbol).toBe('ReasoningEffortsResult')
+    expect(listReasoningEfforts.result.schema.parse({ available: true, efforts: [{ id: 'low', name: '低' }], defaultEffort: 'low' })).toEqual({
+      available: true,
+      efforts: [{ id: 'low', name: '低' }],
+      defaultEffort: 'low',
+    })
+    // 宿主降级形态（拿不到 llm/默认模型）同样可解析。
+    expect(listReasoningEfforts.result.schema.parse({ available: false, efforts: [] })).toEqual({ available: false, efforts: [] })
   })
 
   it('result codec 可解析宿主形态快照（T1 §3：38 键 config + secrets 脱敏标记 + groups + effect=restart）', () => {

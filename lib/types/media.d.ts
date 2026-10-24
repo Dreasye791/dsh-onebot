@@ -67,6 +67,11 @@ export declare class MediaStore {
         url?: string;
         file?: string;
     } | undefined>): Promise<ResolvedMedia | undefined>;
+    /**
+     * S-04：`file://` 引用的统一闸门。事件字段不可信，必须先把「不是媒体/文档」
+     * 与「超过大小上限」拒掉，再读文件；否则任意宿主文件都会被复制进 mediaDir。
+     */
+    private assertLocalMediaSource;
     private resolveInner;
     /**
      * Download a URL into the scratch dir, behind the SSRF fence: http/https
@@ -93,6 +98,12 @@ export declare function extForInboundName(name: string): string;
 export declare function extForKind(kind: 'image' | 'voice' | 'video' | 'file'): string;
 /**
  * Identify an image container from its magic bytes.
+ *
+ * `.bmp` 会被识别出来，但**宿主附件服务不支持该 MIME**（`dsh-attachment-local`
+ * 的 `mediaTypes` 只有 png/jpeg/webp/gif，见 attach.ts 的 HOST_MEDIA_TYPES 注释）。
+ * 因此 BMP 在本插件里的命运是：扩展名被校正成 `.bmp` → 附件投递判定为
+ * `unsupported-type` → 退回 `[图片:<路径>]` 文本。识别它仍然有价值（避免一个
+ * 真 BMP 被当成 `.jpg` 送给下游），只是不要把"识别"误当成"可投递"。
  * @param data - file bytes (only the head is inspected).
  * @returns the canonical extension ('.png' / '.jpg' / '.gif' / '.webp' /
  *   '.bmp'), or undefined when the bytes are not a recognised image.

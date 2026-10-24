@@ -112,19 +112,22 @@ describe('deferred 单元 — 发送失败分类与重试上限', () => {
     registerUnit(scheduler, delivery)
     const before = sendAttempts // 超时提醒发送（同样被拒）不计入补发重试计数
     delivery.onTurnEnd('private:10001', 's-1', { kind: 'completed' })
-    for (let i = 0; i < DEFERRED_MAX_SEND_ATTEMPTS; i += 1) {
+    // 驱动退避：MAX 次尝试之间有 MAX-1 段 sleep，但每段 sleep 结束后还要让下一轮
+    // 尝试的 microtask 跑完才轮得到下一次 schedule。固定次数会 off-by-one 停在
+    // pending（2026-10-24 审计发现的测试缺陷，产品状态机本身正确）。
+    for (let i = 0; i < DEFERRED_MAX_SEND_ATTEMPTS + 1; i += 1) {
       await flush()
-      if (i < DEFERRED_MAX_SEND_ATTEMPTS - 1) scheduler.runNext() // 退避到点
+      if (scheduler.active().length > 0) scheduler.runNext() // 退避到点
     }
-    await flush()
-    expect(sendAttempts - before).toBe(DEFERRED_MAX_SEND_ATTEMPTS) // 3 次尝试
-    // 第 4 次永不尝试：再放行任何残余任务也不产生新发送
     while (scheduler.active().length > 0) scheduler.runNext()
-    await flush()
-    expect(sendAttempts - before).toBe(DEFERRED_MAX_SEND_ATTEMPTS)
+    // 终态落盘是异步写链（mkdir + writeFile + rename），必须等它完成再读文件。
+    await vi.waitFor(() => {
+      const entries = readRegistry(mediaDir)
+      expect(entries[0]?.state).toBe('failed')
+    })
+    expect(sendAttempts - before).toBe(DEFERRED_MAX_SEND_ATTEMPTS) // 恰好 3 次，第 4 次不试
     const entries = readRegistry(mediaDir)
     expect(entries).toHaveLength(1)
-    expect(entries[0].state).toBe('failed')
     expect(entries[0].attempts).toBe(3)
     expect(entries[0].reason).toContain('发送明确失败')
     // 退避间隔：2s → 10s
@@ -167,6 +170,11 @@ describe('deferred 单元 — 发送失败分类与重试上限', () => {
     delivery.onTurnEnd('private:10001', 's-1', { kind: 'completed' })
     await flush()
     expect(sendAttempts - before).toBe(1)
+    // 注册表是异步写链落盘的：等它写出 uncertain 再断言（固定 flush 次数会读到空表）。
+    await vi.waitFor(() => {
+      const entries = readRegistry(mediaDir)
+      expect(entries[0]?.state).toBe('uncertain')
+    })
     while (scheduler.active().length > 0) scheduler.runNext()
     await flush()
     expect(sendAttempts - before).toBe(1) // 零自动重试

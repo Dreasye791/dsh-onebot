@@ -6,7 +6,7 @@
  */
 
 import { mkdir, readFile, readdir, realpath, rm, stat, writeFile, copyFile } from 'node:fs/promises'
-import { join, sep } from 'node:path'
+import { extname, join, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { shrinkImage } from './image-shrink.js'
@@ -16,6 +16,27 @@ import { describeError } from './errors.js'
 export const IMAGE_MAX_BYTES = 8 * 1024 * 1024
 export const VOICE_MAX_BYTES = 15 * 1024 * 1024
 export const MEDIA_MAX_BYTES = 20 * 1024 * 1024
+
+/**
+ * S-04：允许 `file://` 入站引用的扩展名（**白名单**，不是黑名单）。
+ *
+ * `file://` 分支直接按事件字段读宿主文件系统 —— 而事件字段完全由 WS 对端提供。
+ * 不设限时，一条伪造的「图片」消息 `file://C:/.../onebot11_<qq>.json` 就能把
+ * NapCat 配置（含 accessToken）复制进 mediaDir，再随 `attachInboundImages`
+ * 进入模型上下文。黑名单（排除 .json/.env 等）挡不住 `.json.bak` 这类变体，
+ * 所以这里只认媒体与常见文档类型；非白名单类型请让 NapCat 走 url/base64 分支。
+ */
+const LOCAL_MEDIA_EXTS: ReadonlySet<string> = new Set([
+  // images
+  '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.heic',
+  // audio
+  '.mp3', '.wav', '.amr', '.silk', '.ogg', '.m4a', '.flac',
+  // video
+  '.mp4', '.mov', '.webm', '.mkv',
+  // documents (group files)
+  '.pdf', '.zip', '.rar', '.7z', '.tar', '.gz',
+  '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.txt', '.md', '.csv',
+])
 
 /** Hard wall clock for one download, matching the OneBot call timeout; covers every redirect hop and the body. */
 const DOWNLOAD_TIMEOUT_MS = 30_000
@@ -128,6 +149,23 @@ export class MediaStore {
     return result
   }
 
+  /**
+   * S-04：`file://` 引用的统一闸门。事件字段不可信，必须先把「不是媒体/文档」
+   * 与「超过大小上限」拒掉，再读文件；否则任意宿主文件都会被复制进 mediaDir。
+   */
+  private async assertLocalMediaSource(source: string): Promise<void> {
+    const ext = extname(source).toLowerCase()
+    if (!LOCAL_MEDIA_EXTS.has(ext)) {
+      throw new Error('file:// 引用不是受支持的媒体/文档类型（' + (ext === '' ? '无扩展名' : ext) + '）')
+    }
+    const info = await stat(source)
+    if (!info.isFile()) throw new Error('file:// 引用不是普通文件')
+    const cap = this.downloadMaxBytes > 0 ? this.downloadMaxBytes : MEDIA_MAX_BYTES
+    if (info.size > cap) {
+      throw new Error('file:// 引用超过大小上限（' + info.size + ' > ' + cap + ' 字节）')
+    }
+  }
+
   private async resolveInner(ref: {
     kind: 'image' | 'voice' | 'video' | 'file'
     url?: string
@@ -149,6 +187,7 @@ export class MediaStore {
       if (file.startsWith('file://')) {
         const source = file.slice('file://'.length)
         try {
+          await this.assertLocalMediaSource(source)
           const path = reconcileExt(this.freshPath(extForKind(ref.kind)), await readFile(source))
           await copyFile(source, path)
           return { path, kind: ref.kind }
@@ -166,6 +205,7 @@ export class MediaStore {
         }
         if (resolved.file !== undefined && resolved.file.startsWith('file://')) {
           const source = resolved.file.slice('file://'.length)
+          await this.assertLocalMediaSource(source)
           const path = reconcileExt(this.freshPath(extForKind(ref.kind)), await readFile(source))
           await copyFile(source, path)
           return { path, kind: ref.kind }

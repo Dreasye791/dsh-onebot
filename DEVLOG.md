@@ -853,3 +853,23 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **验证**：全量 vitest 全绿（38 文件 / 534 用例）；首轮 tests/inject.spec.ts「dry-run=false lets injected rounds really send」并行负载下偶发失败（既有环境 flake，0.9.0 已记录口径），隔离单跑 11/11 绿后全量复跑 38 文件 / 534 用例全过。
 - **清单同步**：package.json version 0.9.3→0.9.4；dsh.plugin.json 同步 0.9.4；tests/commands.spec.ts packageVersion 断言随版更新为 0.9.4（it 描述串 + expect 两行，仿 0.9.3 发版先例）；lib 产物零改动（本发版不改 src，`/ver` 的 packageVersion() 动态读 package.json，client.js 本次未再改）；package-lock.json 沿用既有惯例不动。
 - **边界**：commit → tag v0.9.4 → push → npm publish 随本发版同批完成。
+
+
+## 2026-10-24 安全加固批次（审计收口，未发版）
+
+外部第三方对 0.9.4 做了一次全项目审计（代码 / 契约 / 测试 / 运行时），本批次收口其中的高危项。审计报告含内部部署路径与账号信息，不入本仓库。
+
+- **工具面**：`qq_napcat_api` 增加参数白名单——上传 / 写群类 action 仅管理员；`file` / `image` 只接受 `file_id` 或 `base64://`，不再接受本地绝对路径；`group_id` 必须等于当前会话。`qq_*` 工具默认目标锁定当前会话，显式跨会话仅管理员回合可用。
+- **角色闸门**：受限用户（非管理员）回合改用 `tools.guard` 白名单（`Read` / `Grep` 一并拒绝，因其可读宿主配置），拒绝写文件、执行命令与 NapCat 代理。此前只有提示词前缀 `[受限用户:仅问答]`，属软约束——同一次注入成功后即可读写宿主文件。
+- **入站**：`file://` 引用增加扩展名白名单与大小上限，伪造的媒体事件不能再把任意本地文件复制进 `mediaDir` 并交给视觉模型。
+- **持久化**：`chat-sessions.json` 改 tmp+rename 原子写并加串行写链（原子只保证「读不到半截」，串行才保证不被旧快照覆盖）；加载失败（非 ENOENT）时拒绝覆盖，留给人工修复。原实现裸写 + 读取吞错，一次写盘中断会让全部会话映射永久丢失。
+- **拆卸**：`bridge.stop()` 先排空出站发送链，再 flush trace / record 队列；配置热更新引发的插件重启不再丢在途消息与观测数据。
+- **设置页**：`lib/client.js` 补 `listReasoningEfforts` descriptor（服务端早已 `markRemote`、客户端漏声明，思考档位收窄一直静默回退到静态八档）。
+- **契约**：模型平台提示的命令清单补 `/steer` `/storage` `/doctor`；README 命令表补 `/doctor`、`qq_napcat_api` action 数改为 15、测试数字与实测对齐。
+- **测试**：
+  - 新增 `tests/member-gate.spec.ts`（角色闸门 4 条）；`tools-gate` +6、`media-guard` +4、`registry` +2。
+  - 修 3 条测试缺陷：`deferred` 两条（假调度器少驱动一轮退避 + 异步落盘未等待）、`health-ref` 一条（对 `JSON.stringify` 结果直接正则提路径，转义后的 `\\` 不是有效路径）。此前被误判为产品缺陷，本次以内部状态打印与会话日志否证。
+  - Windows 平台差异（symlink 权限、POSIX 可执行位）改为显式 `skipIf`。
+  - 顺带修 `registry.ts` 的 `reasoningEffort` 与宿主 branded 类型不匹配（此前 `tsc` 实际有 1 个错误，一直被输出截断掩盖）。
+- **验证**：`npx tsc --noEmit` 0 错误；`vitest run` 40 spec / 588 用例 → 557 passed / 19 failed / 12 skipped；19 条全部为 Windows 平台差异（t2i 无 CJK 字体 10、8.3 短路径 9），Linux 预期全绿。
+- **未做**：`lib/` 中 6 个文件（`attach` / `commands` / `cq` / `inbound` / `mcp-gate` / `settings-remote`）发现原产物与 `src/` 存在历史漂移，本批次已回滚保持现状，留待单独一轮「产物重建 + 真机回归」。

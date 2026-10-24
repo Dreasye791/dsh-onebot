@@ -11,7 +11,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync } from 'node:fs'
-import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, symlink, truncate, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -177,7 +177,9 @@ describe('resolveContainedPath fence (M1-A3a)', () => {
     await expect(resolveContainedPath([join(fence, 'foo')], join(fence, 'foo', 'y.txt'))).resolves.toBe(join(fence, 'foo', 'y.txt'))
   })
 
-  it('rejects symlink escapes and resolves inner symlinks to the real path', async () => {
+  // Windows 非管理员/未开开发者模式时 symlink 直接 EPERM：这是环境限制，
+  // 不是围栏失效（Linux/macOS CI 上仍跑）。2026-10-24 审计。
+  it.skipIf(process.platform === 'win32')('rejects symlink escapes and resolves inner symlinks to the real path', async () => {
     await writeFile(join(fence, 'in.txt'), 'inner')
     await writeFile(join(outside, 'out.txt'), 'outer')
     await symlink(join(outside, 'out.txt'), join(fence, 'escape'))
@@ -208,5 +210,49 @@ describe('fileToBase64 allowedRoots (M1-A3a)', () => {
     const outside = mkdtempSync(join(tmpdir(), 'media-b64-out2-'))
     await writeFile(join(outside, 'legacy.txt'), 'legacy')
     await expect(fileToBase64(join(outside, 'legacy.txt'), 1000)).resolves.toBe('base64://' + Buffer.from('legacy').toString('base64'))
+  })
+})
+
+/**
+ * S-04：入站 `file://` 引用直接指向宿主文件系统，事件字段完全由 WS 对端提供。
+ * 不设限时，伪造一条「图片」消息就能把 NapCat 配置（含 accessToken）复制进
+ * mediaDir，再随 attachInboundImages 进入模型上下文。
+ */
+describe('S-04 file:// inbound local-source fence (2026-10-24)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'media-local-'))
+  const store = new MediaStore(dir)
+  const resolveHash = async (): Promise<undefined> => undefined
+  const scratchFiles = async (): Promise<string[]> => (await readdir(dir)).filter(n => n.startsWith('media_'))
+
+  it('refuses a JSON config file and copies nothing', async () => {
+    const secret = join(dir, 'onebot11_10002.json')
+    await writeFile(secret, '{"token":"should-not-leak"}')
+    await expect(store.resolve({ kind: 'image', file: 'file://' + secret }, resolveHash)).resolves.toBeUndefined()
+    expect(await scratchFiles()).toHaveLength(0)
+  })
+
+  it('refuses an extensionless credential file', async () => {
+    const key = join(dir, 'id_rsa')
+    await writeFile(key, 'PRIVATE-KEY')
+    await expect(store.resolve({ kind: 'file', file: 'file://' + key }, resolveHash)).resolves.toBeUndefined()
+    expect(await scratchFiles()).toHaveLength(0)
+  })
+
+  it('refuses files above the inbound size cap', async () => {
+    const big = join(dir, 'big.png')
+    await writeFile(big, '')
+    await truncate(big, 20 * 1024 * 1024 + 1)
+    await expect(store.resolve({ kind: 'image', file: 'file://' + big }, resolveHash)).resolves.toBeUndefined()
+    expect(await scratchFiles()).toHaveLength(0)
+  })
+
+  it('still resolves a normal media file', async () => {
+    const photo = join(dir, 'photo.png')
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47])
+    await writeFile(photo, bytes)
+    const out = await store.resolve({ kind: 'image', file: 'file://' + photo }, resolveHash)
+    expect(out?.kind).toBe('image')
+    expect(out?.path.startsWith(dir)).toBe(true)
+    expect(await readFile(out!.path)).toEqual(bytes)
   })
 })

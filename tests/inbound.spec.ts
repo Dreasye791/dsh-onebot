@@ -34,8 +34,11 @@ describe('inbound pipeline', () => {
     // T20 接线：installChannelScope 必须把 MCP 白名单闸门装到 agent 自己的 scope 上。
     // 只测 mcp-gate 的判定语义不够 —— 这条接线被删掉时判定逻辑仍全绿，权限闸门
     // 却已静默失效。所以这里断言「装了 1 个 guard」且它的判定真的在起作用。
-    expect(h.captured.guards).toHaveLength(1)
-    const guard = h.captured.guards![0]
+    // S-02 之后 installChannelScope 装两个 guard：MCP 白名单 + 受限用户工具白名单。
+    // 这里按拒绝文案定位 MCP 那个，不依赖注册顺序。
+    expect(h.captured.guards!.length).toBeGreaterThanOrEqual(1)
+    const guard = h.captured.guards!.find(g => String(g({ name: 'mcp__probe__x' })).includes('mcpToolAllow'))!
+    expect(guard).toBeDefined()
     // 默认 mcpToolAllow = []（fail-closed）：任何 MCP 工具都被拒。
     expect(typeof guard({ name: 'mcp__dbx__dbx_execute_query' })).toBe('string')
     // 非 MCP 工具不受闸门影响。
@@ -80,8 +83,9 @@ describe('inbound pipeline', () => {
     h.sendText('你好')
     await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
 
-    expect(h.captured.guards).toHaveLength(1)
-    const guard = h.captured.guards![0]
+    expect(h.captured.guards!.length).toBeGreaterThanOrEqual(1)
+    const guard = h.captured.guards!.find(g => String(g({ name: 'mcp__probe__x' })).includes('mcpToolAllow'))!
+    expect(guard).toBeDefined()
     // 通配命中该服务器的单段工具名。
     expect(guard({ name: 'mcp__akasha__akasha_search' })).toBeUndefined()
     expect(guard({ name: 'mcp__akasha__akasha_read' })).toBeUndefined()

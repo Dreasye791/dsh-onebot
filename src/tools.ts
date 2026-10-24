@@ -40,6 +40,53 @@ const NAPCAT_API_WHITELIST = [
   'send_group_ai_record',
 ]
 
+/**
+ * S-01：会写入群/私聊或让 NapCat 接触宿主文件系统的 action —— 仅管理员回合可用。
+ * 白名单本身只挡 action 名，参数是原样透传给 NapCat 的，所以上传类 action
+ * 一旦带上本地绝对路径就绕过了所有出站围栏（已真机验证）。
+ */
+const NAPCAT_PRIVILEGED_ACTIONS = new Set(['upload_group_file', 'upload_private_file', 'send_group_ai_record'])
+
+/** Whether a string names a host-local file instead of a OneBot file id / base64 body. */
+function looksLikeLocalPath(value: string): boolean {
+  return value.startsWith('file://')
+    || value.startsWith('/')
+    || value.startsWith('\\')
+    || /^[A-Za-z]:[\\/]/.test(value)
+    || value.includes('..')
+}
+
+/**
+ * S-01/S-03：`qq_napcat_api` 的参数收口。
+ * - 上传/写群类 action 仅管理员回合；
+ * - `file` / `image` 只接受 file_id 或 `base64://`，本地路径一律拒（要发本地文件
+ *   请用 qq_send_*，那条路径有围栏 + 大小限制 + 主动写闸门）；
+ * - 群参数必须等于当前会话的群，避免借工具跨群写/读。
+ */
+function assertNapcatParams(
+  action: string,
+  params: Record<string, unknown>,
+  chatId: string | undefined,
+  isAdmin: boolean,
+): void {
+  if (NAPCAT_PRIVILEGED_ACTIONS.has(action) && !isAdmin) {
+    throw new Error('qq_napcat_api: ' + action + ' 会写入群/私聊或让 NapCat 读取本地文件，仅管理员回合可用')
+  }
+  for (const key of ['file', 'image'] as const) {
+    const value = params[key]
+    if (typeof value === 'string' && looksLikeLocalPath(value)) {
+      throw new Error('qq_napcat_api: ' + key + ' 只接受 file_id 或 base64:// 内容；本地文件请用 qq_send_file（受出站围栏与大小限制）')
+    }
+  }
+  const target = params.group_id
+  if (target !== undefined && chatId !== undefined) {
+    const parted = splitChatId(chatId)
+    if (parted.kind === 'group' && String(target) !== parted.target) {
+      throw new Error('qq_napcat_api: group_id 必须等于当前会话的群号（拒绝跨群操作）')
+    }
+  }
+}
+
 /** Output projection shared by the send tools (unconstrained JSON value). */
 function sendOutput() {
   return {
@@ -51,15 +98,27 @@ function sendOutput() {
   }
 }
 
-/** Resolve the target chat for a tool call. */
+/**
+ * Resolve the target chat for a tool call.
+ *
+ * S-03：工具的默认目标永远是**调用者自己的会话**。显式 `chat_id` 只有在管理员
+ * 回合才允许指向别的会话 —— 否则一条群消息里的提示注入就能让 bot 以自己身份
+ * 向任意 QQ/群投递，或读任意群的历史（dm/group 策略在这些路径上不起作用）。
+ * 取不到会话 id 时 fail-closed（QQ 工具只注册在 QQ agent 作用域内，取不到
+ * 说明上下文契约已破裂）。
+ */
 function resolveChat(bridge: ChatBridge, exec: ToolRunContext, chatIdArg: unknown): string {
-  if (typeof chatIdArg === 'string' && chatIdArg !== '') return chatIdArg
   const sessionId = exec.agent?.session.id
-  if (sessionId !== undefined) {
-    const chatId = bridge.chatForSession(String(sessionId))
-    if (chatId !== undefined) return chatId
+  const own = sessionId !== undefined ? bridge.chatForSession(String(sessionId)) : undefined
+  const explicit = typeof chatIdArg === 'string' && chatIdArg !== '' ? chatIdArg : undefined
+  if (explicit !== undefined) {
+    if (own !== undefined && explicit === own) return own
+    if (sessionId !== undefined && own !== undefined && bridge.canEditFiles(String(sessionId))) return explicit
+    throw new Error('qq_* 工具：只有管理员回合可以指定别的 chat_id；当前会话为 ' + (own ?? '未知')
+      + '，请省略 chat_id 或传当前会话')
   }
-  throw new Error('无法确定目标会话：请传 chat_id（格式 private:<qq> 或 group:<群号>）')
+  if (own !== undefined) return own
+  throw new Error('无法确定目标会话：当前调用没有关联到 QQ 会话（请省略 chat_id 使用默认目标）')
 }
 
 /**
@@ -385,6 +444,13 @@ export function registerTools(
         throw new Error('qq_napcat_api: action 不在白名单内（' + NAPCAT_API_WHITELIST.join(', ') + '）')
       }
       const params = typeof a.params === 'object' && a.params !== null ? a.params as Record<string, unknown> : {}
+      // S-01/S-03：先按 action 与参数收口，再交给 NapCat。isAdmin 必须同时要求
+      // 「会话存在」——canEditFiles 对未知 session 返回 true（非 QQ 会话默认信任），
+      // 直接用它会把「查不到 chat 映射」当成管理员。
+      const sessionId = exec.agent?.session.id
+      const chatId = sessionId !== undefined ? bridge.chatForSession(String(sessionId)) : undefined
+      const isAdmin = chatId !== undefined && sessionId !== undefined && bridge.canEditFiles(String(sessionId))
+      assertNapcatParams(a.action, params, chatId, isAdmin)
       return await connection.call(a.action, params) as JsonValue
     },
   }))

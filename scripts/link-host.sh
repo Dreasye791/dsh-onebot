@@ -64,17 +64,26 @@ resolve_dsh_root() {
 NODE_MODULES=$(resolve_dsh_root) || { echo "link-host: cannot locate the dsh install (dsh not on PATH, no npx store found)" >&2; exit 1; }
 
 # The @deepseek-ai/dsh-* packages this plugin imports at runtime or whose
-# types it compiles against. Transitive deps resolve from the host install.
+# types it compiles against, plus the ones the tests import directly.
+# Transitive deps resolve from the host install.
 LINK_PKGS=(
   cordis
   cosmokit
   schemastery
   dsh-agent
   dsh-brand
-  dsh-invariants
+  # 0.2 line hosts (rc.2/rc.3) ship no dsh-invariants and the plugin never
+  # imports it; a list entry missing on the host still fails hard below.
   dsh-llm
   dsh-scope
   dsh-session
+  # tests/session-v4-persistence.spec.ts imports this chain directly.
+  dsh-session-format
+  dsh-session-format-catalog
+  dsh-session-format-v0-to-v1
+  dsh-session-format-v1-to-v2
+  dsh-session-format-v2-to-v3
+  dsh-session-format-v3-to-v4
   dsh-system-prompt
   dsh-timeout
   dsh-tools
@@ -92,10 +101,14 @@ for p in "${LINK_PKGS[@]}"; do
   ln -sfn "$target" "node_modules/@deepseek-ai/$p"
 done
 
-# schemastery lives at the top level of the host install.
-rm -rf node_modules/schemastery
-ln -sfn "$NODE_MODULES/schemastery" node_modules/schemastery
-rm -rf node_modules/cosmokit
-ln -sfn "$NODE_MODULES/cosmokit" node_modules/cosmokit
+# schemastery/cosmokit: hoisted to the top level of older host installs, but
+# rc.2+ keeps them only under @deepseek-ai/ — link whichever exists.
+for p in schemastery cosmokit; do
+  target="$NODE_MODULES/$p"
+  [ -e "$target" ] || target="$NODE_MODULES/@deepseek-ai/$p"
+  [ -e "$target" ] || { echo "link-host: missing host package: $target" >&2; exit 1; }
+  rm -rf "node_modules/$p"
+  ln -sfn "$target" "node_modules/$p"
+done
 
 echo "linked host packages from: $NODE_MODULES"

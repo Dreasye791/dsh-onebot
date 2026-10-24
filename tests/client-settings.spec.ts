@@ -247,15 +247,27 @@ describe('T4 客户端 bundle — 渲染函数模块级可测（renderGroup 纯�
     expect(fieldRows).toHaveLength(38)
   })
 
+  it('persona 渲染为多行 textarea（rows 取字段声明，不能退化为单行 input）', () => {
+    // 回归护栏：移植上游 UI 时曾漏掉 type=textarea 分支，人设编辑框退化成单行。
+    const elements = renderAll(draft({ config: SCHEMA_DEFAULTS })).flatMap((section) => walk(section))
+    const textareas = elements.filter((element) => element.type === 'textarea') as Array<StubElement & { props: Record<string, unknown> }>
+    const personaField = allFields.find((field) => field.key === 'persona')!
+    expect(personaField.type).toBe('textarea')
+    const personaArea = textareas.find((area) => area.props['aria-label'] === personaField.label)
+    expect(personaArea).toBeDefined()
+    expect(Number(personaArea!.props.rows)).toBeGreaterThanOrEqual(10)
+    expect(String(personaArea!.props.placeholder)).toContain('\n') // 占位示例保留换行
+  })
+
   it('控件类型齐备：4 枚举下拉 + 3 多行文本 + 11 布尔勾选 + 5 文本框 + 1 密码框（secret 另含清除勾选）', () => {
     const elements = renderAll(draft({ config: SCHEMA_DEFAULTS })).flatMap((section) => walk(section))
     const inputs = elements.filter((element) => element.type === 'input') as Array<StubElement & { props: Record<string, unknown> }>
     const selects = elements.filter((element) => element.type === 'select')
     const textareas = elements.filter((element) => element.type === 'textarea')
     expect(selects).toHaveLength(7) // 6 上游枚举 + T10 reasoningEffort（按模型档位动态收窄）
-    expect(textareas).toHaveLength(4) // 3 个 stringArray + T11 persona
+    expect(textareas).toHaveLength(5) // 4 个 stringArray + T11 persona（type=textarea，多行可编辑）
     expect(inputs.filter((input) => input.props.type === 'checkbox')).toHaveLength(12 + 1) // 12 布尔（5 原有 + 6 W6 + T15 attachInboundImages）+ secret 清除勾选
-    expect(inputs.filter((input) => input.props.type === 'text')).toHaveLength(14) // 38 键除去 7 枚举 / 12 布尔 / 4 多行 / 1 密码后的其余键（字符串 + 数字，均以文本框渲染）
+    expect(inputs.filter((input) => input.props.type === 'text')).toHaveLength(13) // 38 键除去 7 枚举 / 12 布尔 / 5 多行 / 1 密码后的其余键（字符串 + 数字，以文本框渲染）
     expect(inputs.filter((input) => input.props.type === 'password')).toHaveLength(1)
   })
 

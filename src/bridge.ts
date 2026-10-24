@@ -328,6 +328,12 @@ const MEMBER_ALLOWED_TOOL_NAMES: ReadonlySet<string> = new Set([
   'qq_send_forward', 'qq_send_meme', 'qq_group_history',
   'web_search', 'web_fetch',
   'ask_user_question', 'exit_plan_mode', 'todo_write',
+  // 只读浏览类（2026-10-24 补）：受限成员的边界是「能看不能改」，
+  // 原先连 glob/grep/read 都拒，导致「列一下你能用的工具」这类纯只读请求
+  // 也会触发工具被拒 —— 而宿主在拒绝后还会撞 "prepare" 空指针把整轮打挂。
+  // 只读工具没有写盘/执行副作用，放进白名单既符合模型也不扩大攻击面。
+  'glob', 'grep', 'read',
+  'list_mcp_resources', 'list_mcp_resource_templates',
 ])
 
 /** member 回合的工具拒绝理由；`undefined` = 放行。 */
@@ -411,7 +417,7 @@ export class ChatBridge {
         this.injectRoundByChat.delete(chat.chatId)
         this.queueNoticeChats.delete(chat.chatId)
       },
-      installChannelScope: agentCtx => this.installChannelScope(agentCtx),
+      installChannelScope: (agentCtx, chatId) => this.installChannelScope(agentCtx, chatId),
     })
     this.outbound = new OutboundPipeline({
       getChat: chatId => this.chats.get(chatId),
@@ -1332,9 +1338,11 @@ export class ChatBridge {
    * instructions or the media tools — they cannot (and should not) push
    * messages to QQ.
    */
-  private installChannelScope(agentCtx: Context): void {
+  private installChannelScope(agentCtx: Context, chatId: string): void {
     agentCtx.systemPrompt.section({
-      name: 'channel:dsh-onebot',
+      // section 名必须按 chat 唯一：宿主的作用域层会把同名 section 当作
+      // 重复注册而抛错，第二个 agent（群聊／另一个私聊）就建不起来。
+      name: `channel:dsh-onebot:${chatId}`,
       order: 90,
       text: buildPlatformPrompt(this.deps.config.restrictedMemberPrefix, this.deps.config.persona),
     })

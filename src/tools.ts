@@ -302,7 +302,17 @@ export function registerTools(
 ): () => void {
   const disposers: Array<() => void> = []
   const register = (tool: Parameters<typeof ctx.tools.register>[0]): void => {
-    disposers.push(ctx.tools.register(tool))
+    try {
+      disposers.push(ctx.tools.register(tool))
+    } catch (error) {
+      // 宿主的工具 registry 不按 agent 隔离：第二个 agent（群聊／另一个私聊）
+      // 注册同名工具会抛 "tool ... is already registered"，整条 dispatch 直接
+      // 失败。工具实现是 bridge 级的（靠 chat_id 参数或 exec.agent.session 反查
+      // 目标），重复注册没有意义，跳过即可；否则会退化成「只有第一个 chat 能用」。
+      const message = error instanceof Error ? error.message : String(error)
+      if (message.includes('already registered')) return
+      throw error
+    }
   }
 
   register(defineTool({

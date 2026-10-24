@@ -84,7 +84,9 @@ async function main() {
     const hostRequire = createRequire(join(hostNodeModules, 'verify-anchor.js'));
     const importHost = async (name) => import(pathToFileURL(hostRequire.resolve(name)).href);
     const cordis = await importHost('@deepseek-ai/cordis');
-    const { default: JsonlSessionPersistence } = await importHost('@deepseek-ai/dsh-session-persistence-jsonl');
+    // 该包是 cordis 插件模块（导出 { Config, JsonlCompressionSchema, apply, name }），
+    // 没有 default 导出；cordis 接受「带 apply 的对象」本身作为插件，故传入整个模块命名空间。
+    const jsonlMod = await importHost('@deepseek-ai/dsh-session-persistence-jsonl');
     const sessionMod = await importHost('@deepseek-ai/dsh-session');
     const llm = await importHost('@deepseek-ai/dsh-llm');
     const { SESSION_FORMAT_VERSION } = sessionMod;
@@ -96,7 +98,7 @@ async function main() {
     const root = await mkdtemp(join(tmpdir(), 'dsh-onebot-ctx-verify-'));
     console.log('临时会话目录: ' + root);
     try {
-        await verify(root, cordis, JsonlSessionPersistence, llm, SESSION_FORMAT_VERSION);
+        await verify(root, cordis, jsonlMod, llm, SESSION_FORMAT_VERSION);
     }
     finally {
         await cleanup(root);
@@ -108,10 +110,10 @@ async function main() {
         process.exit(1);
 }
 
-async function verify(root, cordis, JsonlSessionPersistence, llm, formatVersion) {
+async function verify(root, cordis, jsonlMod, llm, formatVersion) {
     // 独立 cordis Context 装载宿主 JSONL 持久化插件（root 指向临时目录）。
     const ctx = new cordis.Context();
-    ctx.plugin(JsonlSessionPersistence, { root });
+    ctx.plugin(jsonlMod, { root });
     const persistence = await waitFor(() => {
         try {
             const service = ctx.sessionPersistence ?? ctx.get('sessionPersistence');

@@ -854,6 +854,28 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **清单同步**：package.json version 0.9.3→0.9.4；dsh.plugin.json 同步 0.9.4；tests/commands.spec.ts packageVersion 断言随版更新为 0.9.4（it 描述串 + expect 两行，仿 0.9.3 发版先例）；lib 产物零改动（本发版不改 src，`/ver` 的 packageVersion() 动态读 package.json，client.js 本次未再改）；package-lock.json 沿用既有惯例不动。
 - **边界**：commit → tag v0.9.4 → push → npm publish 随本发版同批完成。
 
+## 2026-10-24 发版 0.9.5（设置页可视化重设计三批实施，T8）
+
+- **改动**：设置页可视化重设计三批实施随本发版出版本号，本发版零代码改动：token 视觉基线 + 暗色适配 + 交互逻辑（脏状态/确认/折叠/mode 联动/重试）+ 冲突合并保留 + 数字行内校验。实现见 feat commit aebbe7f（代码 956+/52−，已部署真机）与设计文档 commit 0f787af（三份设计文档），均已入库。
+- **验证**：npx tsc --noEmit 零错误；全量 vitest 全绿（38 文件 / 550 用例）；部署目录 /vol2/@appshare/Harness/dsh-plugins/dsh-onebot 已同步版本号（lib 代码已在真机，未动其他文件）。
+- **清单同步**：package.json version 0.9.4→0.9.5；dsh.plugin.json 同步 0.9.5；tests/commands.spec.ts packageVersion 断言随版更新为 0.9.5（it 描述串 + expect 两行，仿 0.9.3/0.9.4 发版先例）；lib 产物零改动（本发版不改 src，`/ver` 的 packageVersion() 动态读 package.json）；package-lock.json 沿用既有惯例不动。
+- **边界**：commit → tag v0.9.5 → push → npm publish 随本发版同批完成。
+
+## 2026-10-23 工具脚本修复：link-host 清单与 verify-injected-context 加载（T3，未发版；实际提交跨日至 10-24 凌晨）
+
+- **缺陷①（link-host.sh）**：LINK_PKGS 含 `dsh-invariants`，而 rc.2/rc.3 宿主 node_modules/@deepseek-ai/（顶层与嵌套）均无此包，插件零引用 → 缺包分支 `exit 1`，完整 `build.sh` 在首个 link-host 阶段中止（rc.3 验收实测）。修法：移出清单并就地加一行注释；同一清单补齐 `tests/session-v4-persistence.spec.ts:268` 直接 import 的 6 个 dsh-session-format* 包（此前靠人工补链，重装后该处准入断言 warn 后降级跳过 = 假绿）。
+- **缺陷②（link-host.sh）**：末尾 schemastery/cosmokit 硬指 `$NODE_MODULES/<p>`，而 rc.2/rc.3 只在 @deepseek-ai/ 下有这两个包（宿主顶层无）→ 每轮重链必产 2 条悬空链接。修法：顶层优先、@deepseek-ai/ 兜底，两处都缺仍硬失败（保留原有缺包语义与 DSH_ROOT 入口）。
+- **缺陷③（verify-injected-context.mjs:87）**：按 `default` 解构 dsh-session-persistence-jsonl，实际导出为 `{ Config, JsonlCompressionSchema, apply, name }`（cordis 插件模块，无 default）→ `ctx.plugin(undefined)` 抛 invalid plugin 并 exit 1，rc.2 同样失败（非 rc.3 回归）。修法：改为整模块命名空间传入（cordis 接受带 apply 的对象）；S1–S6 检查项与「旧宿主缺包 DEGRADE」分支语义均不变。
+- **验证**：`link-host.sh` 对 rc.3 exit 0（20 链接全指向 rc.3、`find node_modules -xtype l` 悬空 0）；`verify-injected-context.mjs` 对 rc.3 与 rc.2 均 7/7 PASS（S1–S6 + 清理，日志见 dsh-onebot-rc3-adapt-test-evidence/w5-*-fixed.log）；`verify-lan-management.mjs` 对 rc.3 12/12 PASS（回归）；`npx tsc -p tsconfig.json --noEmit` 0 错误；全量 vitest 549/550——唯一失败项是 tests/inject.spec.ts 既有并行负载 flake（15s waitFor 超时，隔离 26/26 绿，与 0.9.3/0.9.4 条目同口径），本次改动只碰 scripts/ 且不被任何测试引用。
+- **未发版原因**：`scripts/` 不在 package.json `files` 白名单内，npm 发布物不含这两个脚本，故不 bump 版本。
+
+## 2026-10-24 发版 0.9.6（工具脚本修复与 rc.3 适配验证收口，T5）
+
+- **改动**：本次发版为「发布面收口」，**无运行时代码变更**（src/ 零改动、lib/ 零改动）。随本发版出版本号的是已入库的工具脚本修复 commit `ac5c80a`（link-host.sh 清单修正：移出宿主不存在的 `dsh-invariants`、补齐 6 个 `dsh-session-format*` 依赖、schemastery/cosmokit 顶层优先兜底；verify-injected-context.mjs:87 改为整模块命名空间传入）与 DSH 0.2.1-rc.3 适配验证结论 **= 兼容**（link-host exit 0；verify-injected-context 对 rc.3 与 rc.2 均 7/7 PASS；verify-lan-management 对 rc.3 12/12 PASS）。
+- **说明（发布物边界）**：`scripts/` 不在 package.json `files` 白名单（仅 `lib` + `cordis.patch.yml`），这两个脚本修复**不随 npm 包分发**；版本号 bump 仅作为该修复与其 rc.3 适配验证的收口标记，安装用户运行行为与 0.9.5 完全一致。
+- **验证**：`npx tsc -p tsconfig.json --noEmit` 0 错误；全量 vitest 38 文件 / 550 用例全绿（一次通过，本轮无 flake）；lib 产物 sha256 与发版前逐字节一致（零改动）。
+- **清单同步**：package.json version 0.9.5→0.9.6；dsh.plugin.json 同步 0.9.6；tests/commands.spec.ts packageVersion 断言随版更新为 0.9.6（it 描述串 + expect 两行，仿 0.9.3/0.9.4/0.9.5 发版先例）；package-lock.json 沿用既有惯例不动。
+- **发布面收口**：commit → push origin main（同批带上此前未推送的 `ac5c80a`）→ tag `v0.9.6` → GitHub Release → npm publish → npmmirror 同步 → profile web 升级 0.9.6；同批**补建历史缺失的 v0.9.4 / v0.9.5 GitHub Release**（只建 Release，不新建、不覆盖既有 tag）。宿主进程未重启，0.9.6 随宿主下次重启生效。
 
 ## 2026-10-24 安全加固批次（审计收口，未发版）
 

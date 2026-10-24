@@ -56,6 +56,8 @@ export declare class InjectChannel {
     private consumedBytes;
     private lastWarnAt;
     private stopped;
+    /** R-11：上一轮 tick 是否还在跑（setInterval 不等 await）。 */
+    private running;
     private readonly stats;
     constructor(options: InjectChannelOptions);
     /** Whether this channel intercepts outbound writes (dry-run mode). */

@@ -5,6 +5,11 @@
 > 全部结论附文件路径+行号；本任务不改任何插件代码，本文件是唯一新增产物。
 > 结论供 T2（README 措辞）、T3（host Remote）、T4（客户端 UI）、T5（双语文档）直接引用。
 
+> ⚠️ **2026-10-24 状态更新（审计 C-06）**：本文正文仍是 T1 定案时的「三组 19 键 / 2 个 descriptor 方法」。
+> 现实现已扩展到**四组 38 键 / 4 个方法**（新增 `diagnostics` 组、`listWorkspaces`、`listReasoningEfforts`）。
+> **键集与默认值的真相源是 `src/settings-remote.ts` 的 `SETTINGS_GROUPS` / `SCHEMA_DEFAULTS` / `ALL_KEYS`**；
+> 本文只作设计沿革阅读，两者不一致时以代码为准（`tests/settings-remote.spec.ts` 的 C-09 守卫会把漂移炸出来）。
+
 ---
 
 ## 1. 宿主「热加载 patch config」真实语义（源码钉死）

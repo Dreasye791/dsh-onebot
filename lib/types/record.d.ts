@@ -62,6 +62,8 @@ export interface InboundRecorderOptions {
 }
 /** Mask every digit run of length ≥6 (the first three digits stay readable). */
 export declare function redactDigits(text: string): string;
+/** 把敏感查询参数的值替换成 `[REDACTED]`（保留参数名，便于排障对照）。 */
+export declare function redactQuerySecrets(text: string): string;
 /** Deep-redact a frame: strings get redactDigits, numeric/other id values are
  * converted to their redacted string form, unknown fields are dropped. */
 export declare function redactFrame(frame: InboxFrame): InboxFrame;

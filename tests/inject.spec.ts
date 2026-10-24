@@ -41,7 +41,7 @@ describe('inject config defaults (schema)', () => {
     expect(config.injectDryRun).toBe(true)
     expect(config.injectIntervalMs).toBe(2000)
     expect(config.recordInbound).toBe(false)
-    expect(config.inboxRedact).toBe(false)
+    expect(config.inboxRedact).toBe(true) // S-07：录制脱敏改为默认开启
   })
 
   it('the poll interval floor is 500ms', () => {

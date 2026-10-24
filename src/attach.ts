@@ -296,6 +296,8 @@ export interface AttachResult {
   ref?: ImageAttachmentRef
   /** 未投递的原因（成功时缺省）。 */
   skipped?: 'disabled' | 'too-large' | 'budget' | 'unsupported-type' | 'host-unavailable' | 'save-failed'
+  /** R-08：跳过时的原始原因（宿主异常信息/超时），供日志与 `/storage` 定位根因。 */
+  detail?: string
   /** 本次是否命中去重（仅成功时有意义）。 */
   dedupHit?: boolean
 }
@@ -441,8 +443,10 @@ export async function deliverImage(
         mediaType,
         name: path.slice(Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/')) + 1),
       }]), policy.saveTimeoutMs, 'host.saveImages')
-    } catch {
-      return { skipped: 'save-failed' }
+    } catch (error) {
+      // R-08：原实现把宿主真实原因（超时 / 磁盘满 / 权限）折叠成裸 save-failed，
+      // 日志与 /storage 都看不到根因，只能靠猜。带上 detail（不含图片内容）。
+      return { skipped: 'save-failed', detail: error instanceof Error ? error.message : String(error) }
     }
     const ref = Array.isArray(refs) ? refs[0] : undefined
     if (ref === undefined || ref === null || typeof ref !== 'object'

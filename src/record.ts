@@ -100,6 +100,30 @@ export function redactDigits(text: string): string {
   return text.replace(/\d{6,}/g, match => match.slice(0, 3) + '****')
 }
 
+/**
+ * S-07：URL 里的签名/令牌查询参数不是纯数字，`redactDigits` 覆盖不到
+ * （CDN 签名链接、`?access_token=`、`?sign=` 之类）。录制文件会长期留在
+ * mediaDir 并被 `/doctor export` 打进诊断包，这些参数必须单独剥掉。
+ */
+const SENSITIVE_QUERY_PARAM = /([?&](?:access_?token|token|key|sign|signature|sig|auth|authorization|ticket|password|expires)=)[^&\s"'\\)]+/gi
+
+/** 把敏感查询参数的值替换成 `[REDACTED]`（保留参数名，便于排障对照）。 */
+export function redactQuerySecrets(text: string): string {
+  return text.replace(SENSITIVE_QUERY_PARAM, '$1[REDACTED]')
+}
+
+/** 对任意 JSON 形状里的字符串递归套用 redactQuerySecrets（段数组/嵌套 data）。 */
+function redactUrlsDeep(value: unknown): unknown {
+  if (typeof value === 'string') return redactQuerySecrets(value)
+  if (Array.isArray(value)) return value.map(item => redactUrlsDeep(item))
+  if (typeof value === 'object' && value !== null) {
+    const out: Record<string, unknown> = {}
+    for (const [key, inner] of Object.entries(value)) out[key] = redactUrlsDeep(inner)
+    return out
+  }
+  return value
+}
+
 /** Numeric id keys that are masked even when the event carries them as numbers. */
 const ID_KEYS = new Set(['user_id', 'group_id', 'self_id', 'message_id', 'operator_id', 'target_id', 'discuss_id'])
 
@@ -118,7 +142,9 @@ export function redactFrame(frame: InboxFrame): InboxFrame {
       continue
     }
     if (key === 'raw_message' || key === 'message') {
-      out[key as keyof InboxFrame] = value as never
+      // S-07：正文与段数组原本原样落盘，其中的媒体 URL 带签名参数也算明文凭证。
+      // 正文文字不动（可读性/排障语义不变），只剥 URL 查询参数里的令牌值。
+      out[key as keyof InboxFrame] = redactUrlsDeep(value) as never
       continue
     }
     if (key === 'sender' && typeof value === 'object' && value !== null) {

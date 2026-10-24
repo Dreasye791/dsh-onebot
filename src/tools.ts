@@ -148,6 +148,37 @@ async function fencedMediaFile(path: string, maxBytes: number, allowedRoots: str
   }
 }
 
+/**
+ * S-11：`qq_send_image` 的 URL 分支把地址原样交给 NapCat 去取（SSRF 面在 NapCat
+ * 进程），此前零校验——与本地路径的严格围栏形成明显落差。这里做三件低成本的事：
+ * 只允许 http/https、拒绝带用户信息的 URL、拒绝指向本机/内网的字面量地址。
+ *
+ * 已知边界：域名解析到内网（DNS rebinding / 内网域名）在插件侧拦不住，取图动作
+ * 发生在 NapCat；需要更强保证时应在 NapCat 侧做出站限制。
+ */
+function assertOutboundImageUrl(raw: string): void {
+  let parsed: URL
+  try {
+    parsed = new URL(raw)
+  } catch {
+    throw new Error('qq_send_image: 图片 URL 不合法：' + raw)
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('qq_send_image: 图片 URL 只支持 http/https（收到 ' + parsed.protocol + '）')
+  }
+  if (parsed.username !== '' || parsed.password !== '') {
+    throw new Error('qq_send_image: 图片 URL 不能包含用户名/密码')
+  }
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  const loopbackOrPrivate = host === 'localhost' || host === '::1' || host === '0.0.0.0'
+    || host.endsWith('.localhost') || host.endsWith('.local')
+    || /^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host)
+    || /^172\.(1[6-9]|2\d|3[01])\./.test(host) || /^169\.254\./.test(host)
+  if (loopbackOrPrivate) {
+    throw new Error('qq_send_image: 图片 URL 不能指向本机/内网地址（SSRF 防护）：' + host)
+  }
+}
+
 /** Image extensions a meme pack may contain. */
 const MEME_IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
 
@@ -308,6 +339,7 @@ export function registerTools(
       }
       for (const source of sources) {
         if (isUrl(source)) {
+          assertOutboundImageUrl(source)
           segments.push({ type: 'image', data: { url: source } })
         } else {
           segments.push({ type: 'image', data: { file: await fencedMediaFile(source, limits.maxImageBytes, allowedRoots) } })

@@ -10,7 +10,7 @@
  * escape hatch to exercise genuine body streaming. Nothing hits the network.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, realpathSync } from 'node:fs'
 import { mkdir, readdir, readFile, symlink, truncate, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -153,8 +153,11 @@ describe('MediaStore.downloadUrl SSRF guards (M1-A5)', () => {
 })
 
 describe('resolveContainedPath fence (M1-A3a)', () => {
-  const fence = mkdtempSync(join(tmpdir(), 'media-fence-'))
-  const outside = mkdtempSync(join(tmpdir(), 'media-fence-out-'))
+  // 8.3 短路径（形如 C:\Users\USER~1）：tmpdir 若来自短名环境变量，mkdtemp 出来的
+  // 根也是短名，而产品侧 realpath 会展开成长名。用 native realpath 规范化根，
+  // 期望值才与产品返回值可比（2026-10-24 审计的 9 条 Windows 失败同源）。
+  const fence = realpathSync.native(mkdtempSync(join(tmpdir(), 'media-fence-')))
+  const outside = realpathSync.native(mkdtempSync(join(tmpdir(), 'media-fence-out-')))
 
   it('accepts contained paths and returns their realpath', async () => {
     await writeFile(join(fence, 'a.txt'), 'x')

@@ -121,6 +121,8 @@ export class InjectChannel {
   private consumedBytes = 0
   private lastWarnAt = 0
   private stopped = false
+  /** R-11：上一轮 tick 是否还在跑（setInterval 不等 await）。 */
+  private running = false
   private readonly stats = { consumed: 0, skippedHistory: 0, intercepted: 0, parseErrors: 0, readFailures: 0 }
 
   constructor(options: InjectChannelOptions) {
@@ -139,7 +141,14 @@ export class InjectChannel {
   start(): void {
     void this.skipHistory()
     this.stopped = false
-    this.timer = setInterval(() => void this.tick(), this.intervalMs)
+    // R-11：tick 内有 await（消费事件、跑真实入站管线），setInterval 不会等上一轮
+    // 结束 —— 文件大或事件多时会并发跑两轮真实管线。用旗标串行化；被跳过的那轮
+    // 由下个周期补齐（consumedBytes 只在成功后推进，不会丢行）。
+    this.timer = setInterval(() => {
+      if (this.running) return
+      this.running = true
+      void this.tick().finally(() => { this.running = false })
+    }, this.intervalMs)
     this.timer.unref?.()
   }
 

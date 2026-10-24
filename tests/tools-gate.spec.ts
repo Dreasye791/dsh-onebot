@@ -186,11 +186,11 @@ describe('ChatBridge.mediaSendRoots (M1-A3b roots口径)', () => {
     h.seed(member, 'member')
     h.seed(admin, 'admin')
     expect(await h.bridge.mediaSendRoots(member)).toEqual({
-      roots: [realpathSync(h.mediaDir)],
+      roots: [realpathSync.native(h.mediaDir)],
       isTurnAdmin: false,
     })
     expect(await h.bridge.mediaSendRoots(admin)).toEqual({
-      roots: [realpathSync(h.mediaDir), realpathSync(h.workspace)],
+      roots: [realpathSync.native(h.mediaDir), realpathSync.native(h.workspace)],
       isTurnAdmin: true,
     })
   })
@@ -201,7 +201,7 @@ describe('ChatBridge.mediaSendRoots (M1-A3b roots口径)', () => {
     const chatId = h.seed(sessionId, 'admin')
     ;(h.bridge as unknown as { registry: { getSettings(id: string): { workspacePath?: string } } }).registry.getSettings(chatId).workspacePath = h.otherDir
     expect(await h.bridge.mediaSendRoots(sessionId)).toEqual({
-      roots: [realpathSync(h.mediaDir), realpathSync(h.otherDir)],
+      roots: [realpathSync.native(h.mediaDir), realpathSync.native(h.otherDir)],
       isTurnAdmin: true,
     })
   })
@@ -211,7 +211,7 @@ describe('ChatBridge.mediaSendRoots (M1-A3b roots口径)', () => {
     // canEditFiles trusts non-QQ sessions (A1), but the media gate does not:
     // no chat → no workspace root, mediaDir only.
     expect(await h.bridge.mediaSendRoots('some-web-session')).toEqual({
-      roots: [realpathSync(h.mediaDir)],
+      roots: [realpathSync.native(h.mediaDir)],
       isTurnAdmin: true,
     })
   })

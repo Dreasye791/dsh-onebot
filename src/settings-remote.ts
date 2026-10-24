@@ -44,6 +44,7 @@
  * dsh-expert-orchestrator/lib/remote.js 的降级骨架）。
  */
 
+import { isAbsolute } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 
 import type { Context } from '@deepseek-ai/cordis'
@@ -51,6 +52,7 @@ import type { Context } from '@deepseek-ai/cordis'
 /** 宿主 dsh-workspace 注册表（src/bridge.ts:152 已有结构面；本模块只读消费
  *  list()，不打开 registry 内部态——import type 零运行时依赖，不改 bridge.ts）。 */
 import type { WorkspaceRegistryLike } from './bridge.js'
+import { MCP_ALLOW_ITEM_MAX_LEN, MCP_ALLOW_MAX_ENTRIES } from './mcp-gate.js'
 
 /** patch insert 中 dsh-onebot 主条目的 id（T1 §2/§3：唯一持久层条目）。 */
 export const ENTRY_ID = 'dsh-onebot'
@@ -128,7 +130,7 @@ export const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>> = {
   actionAuditEnabled: true,
   traceEnabled: false,
   recordInbound: false,
-  inboxRedact: false,
+  inboxRedact: true,
   injectEnabled: false,
   injectDryRun: true,
 }
@@ -180,9 +182,9 @@ const STRING_MAX_LEN: Readonly<Record<string, number>> = { persona: 20000 }
 const STRING_ARRAY_KEYS: readonly string[] = ['adminUsers', 'allowFrom', 'groupAllowFrom', 'mcpToolAllow']
 /** 字符串数组键的单项长度上限（T20：与 client patchSchema `vString(0, 128)` 同宽）。
  *  未列出的数组键不设上限（保持 T1 既有行为）。 */
-const STRING_ARRAY_ITEM_MAX_LEN: Readonly<Record<string, number>> = { mcpToolAllow: 128 }
+const STRING_ARRAY_ITEM_MAX_LEN: Readonly<Record<string, number>> = { mcpToolAllow: MCP_ALLOW_ITEM_MAX_LEN }
 /** 字符串数组键的条目数上限（T20：防止 patch 里塞进无界的白名单）。 */
-const STRING_ARRAY_MAX_ITEMS: Readonly<Record<string, number>> = { mcpToolAllow: 256 }
+const STRING_ARRAY_MAX_ITEMS: Readonly<Record<string, number>> = { mcpToolAllow: MCP_ALLOW_MAX_ENTRIES }
 /** 全部 38 键（校验与快照的唯一键集；7 枚举 + 8 数字 + 12 布尔 + 7 字符串 + 4 字符串数组）。 */
 export const ALL_KEYS: readonly string[] = [
   ...Object.keys(ENUM_KEYS), ...NUMBER_KEYS, ...BOOLEAN_KEYS, ...STRING_KEYS, ...STRING_ARRAY_KEYS,
@@ -457,9 +459,43 @@ function buildSnapshot(entry: ConfigEditorEntry, state: RevisionState): OnebotSe
   }
 }
 
+/**
+ * S-05：字符串键的**取值**校验（此前只校验类型/长度）。
+ *
+ * 为什么必须有：`url` 决定插件主动连接谁——把它改成攻击者的 WS 服务，对方就成了
+ * OneBot 对端，可以伪造任意 `user_id`（鉴权唯一信任源就是 WS 对端），等于把管理员
+ * 身份交出去。`workspacePath` / `memeDir` 则是 Agent 的工作目录，写进相对路径或
+ * `..` 段会让围栏与工作区判定落空。
+ *
+ * 返回 undefined = 合法；返回字符串 = 拒绝原因（整单拒绝，不做静默修正）。
+ * 不限制「必须连本机」：跨机部署是合法场景，这里只排除协议错误与用户信息。
+ */
+function validateStringValue(key: string, value: string): string | undefined {
+  if (key === 'url' && value !== '') {
+    let parsed: URL
+    try {
+      parsed = new URL(value)
+    } catch {
+      return 'url 不是合法 URL'
+    }
+    if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') return 'url 只支持 ws:// 或 wss://'
+    if (parsed.username !== '' || parsed.password !== '') return 'url 不能包含用户名/密码'
+    return undefined
+  }
+  if (key === 'host' && value !== '') {
+    // 监听地址：IP（v4/v6）或主机名；空串 = schema 默认 127.0.0.1。
+    return /^[A-Za-z0-9.:[\]_-]+$/.test(value) ? undefined : 'host 只接受 IP 或主机名'
+  }
+  if ((key === 'workspacePath' || key === 'memeDir') && value !== '') {
+    if (!isAbsolute(value)) return key + ' 必须是绝对路径（工作区/表情包目录）'
+    if (value.split(/[\\/]/).includes('..')) return key + ' 不能包含 .. 段'
+    return undefined
+  }
+  return undefined
+}
+
 /** updateSettings 入参校验（T1 §4：32 键的任意子集，扁平 JSON）。未知键整单
- *  拒绝（不静默丢弃）；类型/枚举不符拒绝；具体取值合法性交由宿主 schemastery
- *  校验 + reconcile 失败自动回滚兜底（T1 §5）。 */
+ *  拒绝（不静默丢弃）；类型/枚举不符拒绝；字符串键另做取值校验（S-05）。 */
 export function validatePatch(patch: unknown): Record<string, unknown> {
   if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
     throw new RemoteError('onebot-settings/bad-request', 'patch must be a flat JSON object keyed by setting names', {
@@ -482,8 +518,10 @@ export function validatePatch(patch: unknown): Record<string, unknown> {
       else issues.push(`${key} 必须是布尔值`)
     } else if (STRING_KEYS.includes(key)) {
       const maxLen = STRING_MAX_LEN[key]
+      const valueIssue = typeof value === 'string' ? validateStringValue(key, value) : undefined
       if (typeof value !== 'string') issues.push(`${key} 必须是字符串`)
       else if (maxLen !== undefined && value.length > maxLen) issues.push(`${key} 长度不得超过 ${maxLen} 字符（当前 ${value.length}）`)
+      else if (valueIssue !== undefined) issues.push(valueIssue)
       else clean[key] = value
     } else if (STRING_ARRAY_KEYS.includes(key)) {
       if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) {

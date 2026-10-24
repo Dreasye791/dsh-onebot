@@ -281,7 +281,7 @@ describe('onebotSettings remote — W6 白名单扩展（W1/W2 观测/调试 6 �
     actionAuditEnabled: true,
     traceEnabled: false,
     recordInbound: false,
-    inboxRedact: false,
+    inboxRedact: true,
     injectEnabled: false,
     injectDryRun: true,
   }
@@ -607,5 +607,22 @@ describe('onebotSettings remote — T3 deferredTimeoutMs 白名单扩展（behav
     expect(editor.editCalls).toBe(writes) // 拒写绝不触达宿主 edit
     expect(getSettings(editor, state).revision).toBe(1)
     expect(getSettings(editor, state).config.deferredTimeoutMs).toBe(300_000) // 拒写不改生效值
+  })
+})
+
+/**
+ * C-09（2026-10-24 审计）：面板键集与默认值一直是**四处手抄**（schema / SETTINGS_GROUPS
+ * / ALL_KEYS / SCHEMA_DEFAULTS / 客户端 DEFAULTS），此前没有任何测试把 schema 当真相源
+ * 对比。这条守卫的作用：新增配置键忘记同步面板 → 这里先炸，而不是等用户看到
+ * 「设置页里没有 / 保存报未知键」。
+ */
+describe('C-09 键集守卫：Config schema ↔ ALL_KEYS / SCHEMA_DEFAULTS', () => {
+  it('ALL_KEYS 全部存在于 schema，且默认值与 SCHEMA_DEFAULTS 逐键相等', async () => {
+    const { Config } = await import('../src/index.js')
+    const effective = Config({}) as Record<string, unknown>
+    for (const key of ALL_KEYS) {
+      expect(Object.prototype.hasOwnProperty.call(effective, key), key + ' 不在 Config schema 里').toBe(true)
+      expect(effective[key], key + ' 的 schema 默认值与 SCHEMA_DEFAULTS 不一致').toEqual(SCHEMA_DEFAULTS[key])
+    }
   })
 })

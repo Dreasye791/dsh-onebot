@@ -158,7 +158,9 @@ export class Transcriber {
       if (ffmpeg === undefined) {
         throw new Error('STT: ffmpeg not found on PATH (needed to convert QQ voice to WAV)')
       }
-      await runProcess(ffmpeg, ['-y', '-i', filePath, '-ar', '16000', '-ac', '1', '-f', 'wav', wavPath], 60_000)
+      // R-12：原实现硬编码 60s，`sttTimeoutMs` 只作用于引擎段 —— 转码卡住时
+      // 配置调大也无效，且一条卡死的语音会阻塞后面所有语音（队列并发=1）。
+      await runProcess(ffmpeg, ['-y', '-i', filePath, '-ar', '16000', '-ac', '1', '-f', 'wav', wavPath], Math.max(10_000, this.config.timeoutMs))
 
       const engine = await this.resolveEngine()
       const text = await this.runEngine(engine, wavPath, workDir)

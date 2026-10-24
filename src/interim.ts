@@ -68,6 +68,9 @@ export type InterimState = 'idle' | 'accumulating' | 'settling'
 interface InterimCycle {
   state: InterimState
   inFlight: Array<Promise<void>>
+  /** R-04：drain 期间又来了 turn/end —— 结算跑完后需要补跑一轮，
+   * 否则该回合的 loopBuffer 永远不会进小结卡（只剩各自的 90s 定时器）。 */
+  pendingSettle?: boolean
 }
 
 /** The bridge capabilities the interim tracker touches. Deliberately narrower
@@ -207,7 +210,13 @@ export class InterimTracker {
    * and skipping it keeps the two passes from racing. */
   onTurnEnd(chatId: ChatId, chat: InterimChat): void {
     const rec = this.cycle(chat)
-    if (rec.state === 'settling') return
+    if (rec.state === 'settling') {
+      // R-04：上一回合的 settle 仍在 drain（含逐条 60ms 撤回与发送链等待）。
+      // 直接 return 会让本回合刚写入 loopBuffer 的条目永远不进小结卡；标记后
+      // 由 settleLoop 末尾补跑一轮。
+      rec.pendingSettle = true
+      return
+    }
     if (this.ctx.effectiveInterim(chatId)) {
       rec.state = 'settling'
       void this.settleLoop(chatId, chat)
@@ -389,5 +398,12 @@ export class InterimTracker {
     // The settlement owns 'settling' only until it completes; a user turn or
     // a new turn starting mid-drain already moved the machine on.
     if (rec.state === 'settling') rec.state = 'idle'
+    // R-04：drain 期间又来了 turn/end → 立刻补跑一轮（此时 loopBuffer 属于新回合）。
+    // 补跑期间再来的 turn/end 会重新置位，形成有界链式收敛，不会丢帧。
+    if (rec.pendingSettle === true) {
+      rec.pendingSettle = false
+      rec.state = 'settling'
+      void this.settleLoop(chatId, chat)
+    }
   }
 }

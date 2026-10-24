@@ -60,9 +60,13 @@ export declare const REMOTE_EFFECT = "restart";
  *  W7：connection 组追加 workspacePath（会话默认工作区；schema 已有该键
  *  src/index.ts:287，本批次起入面板白名单，键序追加在组尾）。
  *  T12：connection 组追加 memeDir（表情包目录；schema 已有该键 src/index.ts:318，
- *  本批次起入面板白名单，键序追加在组尾。留空 = 不注册 qq_send_meme 工具）。
+ *  本批次起入面板白名单，键序追加在组尾。留空 = 不注册 qq_send_meme 工具；
+ *  T16 起要求它位于 mediaDir 之内且不等于 mediaDir，否则注册期即跳过）。
  *  T15：connection 组追加 attachInboundImages / attachMaxImageMB / attachmentBudgetMB
- *  三键（入站图片投递与附件库容量）。面板里 MB 是**展示单位**，schema 侧换算成字节。 */
+ *  三键（入站图片投递与附件库容量）。面板里 MB 是**展示单位**，schema 侧换算成字节。
+ *  T18：再追加 attachmentRetentionHours / attachmentSaveTimeoutMs（账本回收窗口
+ *  与宿主写盘超时），解决「软上限用满后永久拒收」和「临界区被卡死的写盘堵住」。
+ *  T20：permissions 组追加 mcpToolAllow（QQ 通道 MCP 工具白名单；空 = 全禁）。 */
 export declare const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>>;
 /** schema 默认值（T1 §4 表；摘自 src/index.ts:171-245），快照生效值的底层。 */
 export declare const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>>;
@@ -152,7 +156,8 @@ export interface DefaultModelLike {
     } | undefined;
 }
 /** T17：listReasoningEfforts 返回值。available=false 表示拿不到通道——面板据此
- *  回退到静态八选一（方案 A：绝不因查询失败而收窄可选项，不引入新的失败面）。 */
+ *  回退到静态八选一（'' + 宿主七档；方案 A：绝不因查询失败而收窄可选项，
+ *  不引入新的失败面）。 */
 export interface ReasoningEffortsResult {
     available: boolean;
     efforts: Array<{
@@ -162,13 +167,21 @@ export interface ReasoningEffortsResult {
     defaultEffort?: string;
 }
 /** T17：查询「当前默认模型实际支持哪些思考档位」（纯函数，绝不抛错）。
- *  失败（服务缺席/无默认模型/无 reasoning 元数据/抛错）统一归一为 available=false。 */
+ *
+ *  为什么需要它：插件的 reasoningEffort 是静态八选一（'' + 宿主七档），但宿主
+ *  getSupportedThinkingLevels 的结果随模型变化——`xhigh`/`max` 只有模型显式
+ *  声明才合法，否则请求期抛 UNSUPPORTED_REASONING_EFFORT（选了能存，用时报错）。
+ *
+ *  取证来源（@deepseek-ai/dsh-llm/lib/index.js）：:1816 `super(ctx, "llm")` 说明
+ *  该服务即 ctx.llm；:2111-2163 resolveModelInfo 返回 `reasoning: { efforts:
+ *  [{id,name,description?}], defaultEffort? }`；:2086-2101 listModels 不含
+ *  reasoning。失败（服务缺席/无默认模型/无 reasoning 元数据/抛错）统一归一为
+ *  available=false。 */
 export declare function listReasoningEfforts(llm: LlmRuntimeLike | undefined, defaultModel: DefaultModelLike | undefined, signal?: AbortSignal): Promise<ReasoningEffortsResult>;
 /** 38 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
 export declare function effectiveConfig(raw: Record<string, unknown>): Record<string, unknown>;
 /** updateSettings 入参校验（T1 §4：32 键的任意子集，扁平 JSON）。未知键整单
- *  拒绝（不静默丢弃）；类型/枚举不符拒绝；具体取值合法性交由宿主 schemastery
- *  校验 + reconcile 失败自动回滚兜底（T1 §5）。 */
+ *  拒绝（不静默丢弃）；类型/枚举不符拒绝；字符串键另做取值校验（S-05）。 */
 export declare function validatePatch(patch: unknown): Record<string, unknown>;
 /** getSettings 实现（descriptor 方法体共用；descriptor 参数 0 个）。 */
 export declare function getSettings(editor: ConfigEditorLike, state: RevisionState): OnebotSettingsSnapshot;
@@ -197,9 +210,7 @@ export declare function describeEditFailure(cause: unknown): string;
 export declare function updateSettings(editor: ConfigEditorLike, state: RevisionState, patch: unknown, expectedRevision?: number): Promise<OnebotSettingsSnapshot>;
 /** 组装 descriptor 方法对象（测试与降级类共用；与类方法同一实现）。
  *  W7：workspaceRegistry 可选注入——省略时 listWorkspaces 降级 unavailable
- *  （与类分支的惰性 ctx 解析同一 listWorkspaces 纯函数出口）。
- *  T17：llm/defaultModel 同样可选注入——省略时 listReasoningEfforts 降级
- *  available=false（面板回退静态八选一）。 */
+ *  （与类分支的惰性 ctx 解析同一 listWorkspaces 纯函数出口）。 */
 export declare function createOnebotSettingsMethods(editor: ConfigEditorLike, state?: RevisionState, workspaceRegistry?: WorkspaceRegistryLike, llm?: LlmRuntimeLike, defaultModel?: DefaultModelLike): {
     getSettings(): Promise<OnebotSettingsSnapshot> | OnebotSettingsSnapshot;
     updateSettings(patch: unknown, expectedRevision?: number): Promise<OnebotSettingsSnapshot>;

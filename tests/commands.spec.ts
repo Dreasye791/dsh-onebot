@@ -198,7 +198,8 @@ describe('commands', () => {
   })
 
   it('slash /workspace switches the directory for the next session', async () => {
-    const otherDir = mkdtempSync(join(tmpdir(), 'onebot-other-'))
+    // 8.3 短路径：tmpdir 可能给短名（形如 USER~1），产品侧 realpath 会展开成长名。
+    const otherDir = realpathSync.native(mkdtempSync(join(tmpdir(), 'onebot-other-')))
     const h = await makeCmdHarness({
       workspaceRegistry: {
         resolveByPath: vi.fn(async () => undefined),
@@ -224,14 +225,14 @@ describe('commands', () => {
     const chats = (h.bridge as unknown as { chats: Map<string, { agent: { session: { header: { cwd: string } } } }> }).chats
     // The bridge stores the realpath'd directory; macOS /var is a symlink to
     // /private/var, so normalize the expectation the same way.
-    expect(chats.get('private:10001')!.agent.session.header.cwd).toBe(realpathSync(otherDir))
+    expect(chats.get('private:10001')!.agent.session.header.cwd).toBe(realpathSync.native(otherDir))
 
     // 3. Invalid path is rejected.
     h.sendText('/workspace /nonexistent/definitely/not/here')
     await vi.waitFor(() => {
       expect(h.outbound.some(f => JSON.stringify(f.params).includes('目录无效'))).toBe(true)
     })
-    expect(chats.get('private:10001')!.agent.session.header.cwd).toBe(realpathSync(otherDir))
+    expect(chats.get('private:10001')!.agent.session.header.cwd).toBe(realpathSync.native(otherDir))
 
     h.client.close()
     await h.bridge.stop()
@@ -757,7 +758,10 @@ describe('commands', () => {
     // /workspace pointing at a file (not a directory): numbered-list pointer.
     h.sendText('/workspace ' + notDir)
     await vi.waitFor(() => {
-      expect(text()).toContain('❌ 不是目录：' + notDir)
+      // 只断言错误文案的前缀与目标文件名：盘符前缀在 Windows 上可能被 realpath
+      // 展开成 8.3 短名或长名（取决于路径是否存在），不该由测试硬编死。
+      expect(text()).toContain('❌ 不是目录：')
+      expect(text()).toContain('not-a-dir.txt')
       expect(text()).toContain('发 /workspace 查看编号列表，或发 /workspace list 查看全部')
     })
     // /preset unknown id with no on-disk presets: still carries the usage line.
@@ -886,8 +890,13 @@ describe('commands · serial selection (R2)', () => {
     await vi.waitFor(() => {
       const text = h.outbound.map(f => JSON.stringify(f.params)).join('\n')
       expect(text).toContain('当前工作目录：')
-      expect(text).toContain('1. ' + h.mediaDir + '（1 会话） ← 当前')
-      expect(text).toContain('2. ' + otherDir + '（0 会话）')
+      // 比较目录名而不是完整盘符路径：tmpdir 可能给 8.3 短名（形如 USER~1），产品侧
+      // 是否展开取决于路径来源，测试意图是「编号列表 + 当前标记 + 会话数」。
+      const baseOf = (p: string): string => p.slice(Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/')) + 1)
+      expect(text).toContain('1. ')
+      expect(text).toContain(baseOf(h.mediaDir) + '（1 会话） ← 当前')
+      expect(text).toContain('2. ')
+      expect(text).toContain(baseOf(otherDir) + '（0 会话）')
       expect(text).toContain('回复 /workspace <序号> 切换')
     })
     expect(pendingOf(h)?.kind).toBe('workspace')
@@ -909,7 +918,7 @@ describe('commands · serial selection (R2)', () => {
     h.sendText('新工作区的第一条')
     await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
     const chats = (h.bridge as unknown as { chats: Map<string, { agent: { session: { header: { cwd: string } } } }> }).chats
-    expect(chats.get('private:10001')!.agent.session.header.cwd).toBe(realpathSync(otherDir))
+    expect(chats.get('private:10001')!.agent.session.header.cwd).toBe(realpathSync.native(otherDir))
 
     h.client.close()
     await h.bridge.stop()

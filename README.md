@@ -178,7 +178,7 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `traceLevel` | `debug` | 追踪事件级别（W1）：`debug` 记录全部决策事件；`warn` 仅记录 ok:false（被拒/失败/丢弃）事件 |
 | `logLevel` | `info` | 控制台日志级别门槛（debug < info < warn < error）：低于该级别的日志不输出。`debug` 全部输出（含「session 事件早退」等调试行）；`info` 常规信息（启动、连接建立、meta 事件等，默认）；`warn` 仅警告与错误；`error` 仅错误 |
 | `recordInbound` | `false` | 入站录制（W1）：把收到的每条入站事件（含被门控跳过的，附当时决策 reason）按可回放形状逐行 JSON 追加写 `mediaDir/qq-inbox.jsonl`（2MiB 改名轮转，保留 `qq-inbox.1/2.jsonl`；注入的帧不会被二次录制，杜绝「注入→录制→回放→注入」自激）；纯旁路：写失败仅 warn 限频，绝不影响回复管线 |
-| `inboxRedact` | `false` | 录制脱敏（W1）：落盘前把帧中 6 位以上的数字串（QQ 号/群号等）脱敏为前 3 位+`****`（数字型 id 字段一并处理），便于把录制文件发给别人离线回放（`npm run replay`） |
+| `inboxRedact` | `true` | 录制脱敏（W1）：落盘前把帧中 6 位以上的数字串（QQ 号/群号等）脱敏为前 3 位+`****`（数字型 id 字段一并处理），并剥离媒体 URL 中 token/sign 类查询参数；默认开启（录制文件长期留在 `mediaDir`，还可能被打进诊断包），需要完整原文排障时显式关闭后配 `npm run replay` 使用 |
 | `injectEnabled` | `false` | 事件注入通道（W1，**仅调试用**）：开启后按 `injectIntervalMs` 轮询 `mediaDir/qq-inject.jsonl`，把新行（每行一个 OneBot 消息事件 JSON）喂进**真实入站管线**（trace 事件标 `stage=inject`）；启动时已存在的历史行跳过并记一条说明。信任边界：注入是调试通道，默认全关，勿在生产开启 |
 | `injectDryRun` | `true` | 注入干跑（W1，**强烈建议保持 `true`**）：注入回合触发的全部出站写操作（发消息/撤回等，**含异步模型回合的最终回复**——拦截点在出站动作层）被拦截计数、原文进 trace 事件、绝不真发 QQ；真实消息到达同一会话立即解除拦截（不连坐真人）；`false` = 注入内容会真实发送，仅限隔离环境实验 |
 | `injectIntervalMs` | `2000` | 注入队列轮询间隔（毫秒，W1；最小 500） |
@@ -196,6 +196,7 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `allowFrom` / `groupAllowFrom` | `[]` | 白名单用户/群 |
 | `mcpToolAllow` | `[]` | QQ 通道 MCP 工具白名单（T20）：**留空（默认）= 禁用全部 MCP 工具**（刻意的 fail-closed 默认。MCP 服务器挂在 profile 根作用域上，QQ 通道与 Web GUI 继承同一套工具，等于把这些能力直接交给群友）。非空时按任一写法匹配、命中才放行：`mcp__akasha__akasha_search`（完整工具名，最精确）、`mcp__akasha__*`（该服务器全部工具）、`akasha`（服务器名简写）、`akasha_search`（任意服务器下同名工具）、`*`（全部 MCP 工具，慎用）。**通配只有 `*` 与 `mcp__<服务器>__*` 两种**，其它含 `*` 的写法（如 `akasha*`）会被忽略并记一条 warn，避免无意放大授权范围；服务器名与工具名一律整段全等比较，不做前缀/子串匹配。**`mcp__<服务器>__*` 只覆盖单段工具名**：服务器名自身含 `__`（如 `dbx__prod`）时，`mcp__dbx__*` 不会连带放行它的工具（否则一个泛化条目就能越权到别的服务器），必须写成 `mcp__dbx__prod__*` 或完整工具名。单项 ≤128 字符、最多 256 条（设置页与 schema 均限；读侧刻意放宽到 4096 字符，这样手改配置写了超长值只会让该项不生效，不会让整份设置解码失败、面板全空）。拒绝时只回「不在白名单内」，不回显白名单内容（避免模型把它转述到群里）。`qq_*` 工具与宿主内置工具（`read`/`bash` 等）**不受本项影响**。**只影响 QQ 通道，Web / GUI 会话不受影响**。设置页「权限」组可改，保存后由插件级热重启生效。 |
 | `interimMessages` | `true` | 工具调用之间的中间文本是否立即发送；`false` 只发最终回复 |
+| `interimRecallMs` | `90000` | 每条中间消息发送完成后多久自动单独撤回（毫秒；QQ 撤回时限约 2 分钟，建议 ≤110000；运行期下限 3000，避免配错成「发完即撤」） |
 | `interimRecall` | `true` | 中间消息撤回与回合末小结卡开关；`false` = 只发不撤（降级：无小结卡、不撤回，中间消息留在屏幕上） |
 | `sendErrorNotice` | `true` | 一轮运行出错时向用户发送 ⚠️ 错误提示 |
 | `sensitivePatterns` | `[]` | 出站敏感内容审计正则（内置 `rm -rf`/关机/删库/密钥 等模式；留空用内置默认） |
@@ -233,7 +234,7 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 
 | 能力 | 开关（默认） | 用法 |
 |---|---|---|
-| 入站录制 | `recordInbound`（**false**）+ `inboxRedact`（false） | 开启后每条入站事件逐行 JSON 追加写 `mediaDir/qq-inbox.jsonl`（含被门控跳过的事件与当时决策 reason；2MiB 改名轮转）；纯旁路，写失败仅 warn 限频 |
+| 入站录制 | `recordInbound`（**false**）+ `inboxRedact`（true） | 开启后每条入站事件逐行 JSON 追加写 `mediaDir/qq-inbox.jsonl`（含被门控跳过的事件与当时决策 reason；2MiB 改名轮转）；纯旁路，写失败仅 warn 限频 |
 | 离线回放 | 无需开关 | `npm run build` 后 `npm run replay -- <inbox.jsonl> [--media-dir <dir>] [--limit <n>] [--require-mention] [--bot-qq <qq>] [--admin <qq>] [--out report.json]`：读录制文件喂**真实入站管线**（强制 dry-run：不启 WebSocket、出站写全部拦截计数），输出每条消息的 traceId+决策链汇总；不依赖宿主运行。回放门控取自命令行参数（默认全放行），需复现线上门控请传相同策略 |
 | 事件注入 | `injectEnabled`（**false**）+ `injectDryRun`（**true**）+ `injectIntervalMs`（2000，最小 500） | **仅调试用**：往 `mediaDir/qq-inject.jsonl` 追加一行 OneBot 消息事件 JSON（可直接复制 `qq-inbox.jsonl` 的行），桥按间隔轮询喂进真实管线；dry-run 下该回合全部出站写（含异步模型回复）被拦截计数、原文进 trace（`stage=inject`），绝不真发 QQ。启动时已存在的历史行跳过并记一条说明 |
 | 体检+诊断包 | 无需开关 | QQ 里发 `/doctor`（仅管理员，等价别名 `/healthcheck`）：连接态/重试与自愈/去重与写闸门计数/trace·inbox·audit 文件大小/最近 5 条 ok:false 事件/最近故障参考号；`/doctor export [参考号]` 打包 trace+inbox+actions log+脱敏配置快照为 `mediaDir/qq-diagnostics-<ts>[-<参考号>].zip`（参考号省略时自动用最近一次故障的参考号；token/accessToken 强制脱敏，含最终字节扫描 fail-closed） |

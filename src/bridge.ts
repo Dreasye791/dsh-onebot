@@ -99,6 +99,10 @@ export interface BridgeConfig {
   rateLimitPerMinute?: number
   restrictedMemberPrefix: boolean
   sensitivePatterns: readonly string[]
+  /** S-08：OneBot access token（只给诊断包脱敏用；空串 = 未配置）。
+   * 原先 HealthDeps.secrets 恒为空数组，导致「归档里不得含明文密钥」的
+   * fail-closed 断言空转，只剩 access_token/bearer 一类正则兜底。 */
+  accessToken?: string
   mediaDir: string
   maxImageBytes: number
   maxVoiceBytes: number
@@ -751,6 +755,14 @@ export class ChatBridge {
 
   /** Tool calls whose host-plane UI has no QQ equivalent; relay them to the chat. */
   private relayHostCards(chatId: ChatId, content: readonly unknown[]): void {
+    // S-10：计划书（exit_plan_mode 全文）与提问卡是给「发起者」看的。群聊里
+    // 非管理员发起的回合把它整份发到群里，等于把内部计划/待确认选项暴露给
+    // 所有人；私聊只有本人可见，保持原行为。
+    const chat = this.chats.get(chatId)
+    if (chatId.startsWith('group:') && chat?.activeTurnRole !== 'admin') {
+      this.deps.log('debug', '跳过群聊非管理员回合的宿主卡片中继（chat=' + chatId + '）')
+      return
+    }
     relayCards(this.cardRelayCtx, chatId, content)
   }
 
@@ -916,7 +928,10 @@ export class ChatBridge {
       return result.ref
     }
     if (result.skipped !== undefined && result.skipped !== 'disabled') {
-      this.deps.log('debug', '入站图片未投递为图片块（' + result.skipped + '），退回路径文本: ' + path)
+      // R-08：带上 detail（宿主异常原文），否则 save-failed 无法区分超时/配额/权限。
+      this.deps.log('debug', '入站图片未投递为图片块（' + result.skipped
+        + (result.detail !== undefined ? ': ' + result.detail : '')
+        + '），退回路径文本: ' + path)
     }
     return undefined
   }
@@ -1091,6 +1106,11 @@ export class ChatBridge {
             },
           }
         : {}),
+      // S-08：真实 token 交给诊断包 scrub，让 fail-closed 断言（归档字节里
+      // 不得含任何 secret）真正生效；空 token 不占位，避免 split('') 破坏文本。
+      secrets: this.deps.config.accessToken !== undefined && this.deps.config.accessToken !== ''
+        ? [this.deps.config.accessToken]
+        : [],
       configSnapshot: this.deps.configSnapshot?.() ?? {},
       // T4 (P3): the recent fault references for the report section.
       failureRefs: () => this.failureRefs.recent(),

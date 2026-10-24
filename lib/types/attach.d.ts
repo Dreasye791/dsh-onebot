@@ -21,21 +21,16 @@ export interface AttachPolicy {
     enabled: boolean;
     /** 单张图片字节上限；超过则不走附件投递（避免一张巨图吃掉配额）。0 = 不限。 */
     maxImageBytes: number;
-    /** 插件账本累计字节软上限（MB）；超过后新图只给路径。0 = 不限。 */
+    /** 插件账本累计字节软上限（字节）；超过后新图只给路径。0 = 不限。 */
     budgetBytes: number;
-    /**
-     * 账本回收窗口（毫秒，T18）；<=0 = 不回收（旧行为：记账只增不减）。
-     *
-     * 超过该窗口未再被投递的对象会从**记账**里移出，把 `budgetBytes` 的占用
-     * 还回去；只改记账、不删任何文件——磁盘回收仍由宿主的清理策略负责。
-     */
+    /** 账本回收窗口（毫秒）：`lastSeenAt` 早于 now-该值的条目在下次
+     *  投递前被移出账本，从而把软上限占用还回去。0 = 不回收（只增不减）。
+     *  注意它只影响本插件的预算记账，**不删宿主附件库里的任何文件**——
+     *  宿主对象由宿主自己的清理策略回收（`MediaStore.cleanupExpired` 之类）。 */
     retentionMs: number;
-    /**
-     * 单张图片交给宿主落盘的超时（毫秒，T18）；<=0 = 不超时。
-     *
-     * 投递临界区按 `mediaDir` 全局串行，一次卡住的宿主写盘会堵住所有会话的
-     * 图片投递，因此默认给一个有限的等待上限而非无限等。
-     */
+    /** 单次投递的宿主写盘超时（毫秒）：超过即放弃本次投递并退回路径文本。
+     *  0 = 不超时。存在的理由见 `withLedgerLock` 的说明：临界区里包含一次
+     *  无超时的宿主调用，卡住就会堵死所有会话的图片投递。 */
     saveTimeoutMs: number;
 }
 /** 账本里的一条记录：哪些对象是插件贡献的。 */
@@ -58,7 +53,7 @@ export interface AttachLedger {
     /** 按 attachmentId 索引。 */
     entries: Record<string, LedgerEntry>;
 }
-/** 容量统计快照：给 /storage 与 qq_storage_stats 共用。 */
+/** 容量统计快照：给 /storage 命令与 bridge.storageReport() 共用。 */
 export interface StorageStats {
     /** 插件媒体目录（mediaDir）绝对路径。 */
     mediaDir: string;
@@ -82,7 +77,7 @@ export interface StorageStats {
     budgetBytes: number;
     /** 是否已达软上限（不再投递新图）。 */
     budgetExhausted: boolean;
-    /** 账本回收窗口（毫秒，T18）；0 = 未启用（记账只增不减）。 */
+    /** 账本回收窗口（毫秒）；0 = 不回收（只增不减）。 */
     retentionMs: number;
 }
 /** 递归统计一个目录：字节数与文件数。目录不存在时返回 0/0。 */
@@ -90,9 +85,18 @@ export declare function dirUsage(dir: string): {
     bytes: number;
     files: number;
 };
-/** 读账本；文件缺失/损坏都返回空账本（统计是旁路，不因坏文件而抛）。 */
+/** 读账本；文件缺失/损坏都返回空账本（统计是旁路，不因坏文件而抛）。
+ *
+ * 逐条校验条目形状：`ledgerBytes` 会直接读 `entry.bytes`，一条 `null` 条目
+ * 就能让预算判定抛 TypeError 并静默关掉整条投递链。非法条目直接丢弃，
+ * 让坏账本退化为「少记」而不是「全崩」。 */
 export declare function readLedger(mediaDir: string): AttachLedger;
-/** 写账本；失败仅返回 false（调用方降级为 warn，不影响图片投递）。 */
+/** 写账本；失败仅返回 false（调用方降级为 warn，不影响图片投递）。
+ *
+ * 原子写：先写 `*.tmp` 再 rename 覆盖。直接覆写目标文件时，进程中断或
+ * 并发写会留下截断的 JSON，而 `readLedger` 对坏文件一律返回空账本 ——
+ * 预算会从 0 重算，等于把软上限抹掉。rename 在同一文件系统内是原子的，
+ * 读方要么看到旧账本、要么看到新账本，不会看到半截内容。 */
 export declare function writeLedger(mediaDir: string, ledger: AttachLedger): boolean;
 /** 账本当前累计字节数。 */
 export declare function ledgerBytes(ledger: AttachLedger): number;
@@ -121,20 +125,27 @@ export declare function recordContribution(ledger: AttachLedger, ref: {
     bytes?: unknown;
 }, now: number): boolean;
 /**
- * 把长期未被再引用的对象移出账本（T18）。
+ * 从账本里移出过期条目，返回被释放的字节数（就地更新，调用方负责落盘）。
  *
- * 过期判据取 `lastSeenAt`（重复引用的图不该过期），退回 `firstSeenAt`。
- * **只改记账、不删文件**——磁盘对象属于宿主附件库，插件无权处置别人的数据。
+ * 存在的理由：`withinBudget` 只看「累计已用 < 上限」，而账本只增不减 ——
+ * 软上限一旦用满，即使宿主附件库被清空、磁盘上一个对象都不剩，本插件仍然
+ * 永久拒绝新图（只能手删账本 JSON 才能恢复，而文档里没有这个入口）。
+ *
+ * 语义边界（必须说清，否则容易被误读成删除文件）：
+ * - 只改本插件的预算记账，**不删** `<mediaDir>` 与宿主附件库里的任何文件；
+ * - 被移出的对象若日后再次投递，宿主按内容寻址命中同一 attachmentId，
+ *   会作为新条目重新记账（bytes 与当时一致，不会重复占用磁盘）；
+ * - `retentionMs <= 0` 表示不回收（保持旧行为：只增不减）。
  * @param ledger - 就地更新的账本。
  * @param now - 当前时间戳（毫秒）。
- * @param retentionMs - 回收窗口（毫秒）；<=0 = 不回收，直接返回 0。
+ * @param retentionMs - 回收窗口（毫秒）；<=0 = 不回收。
  * @returns 被移出的条目数与释放的字节数。
  */
 export declare function pruneLedger(ledger: AttachLedger, now: number, retentionMs: number): {
     pruned: number;
     freedBytes: number;
 };
-/** 汇总容量统计（供 /storage 与 qq_storage_stats 使用）。 */
+/** 汇总容量统计（供 /storage 命令使用）。 */
 export declare function storageStats(mediaDir: string, attachmentsDir: string, policy: AttachPolicy): StorageStats;
 /** 投递结果：成功给出宿主引用，失败给出可观测原因（不抛，掉回文本路径）。 */
 export interface AttachResult {
@@ -142,6 +153,8 @@ export interface AttachResult {
     ref?: ImageAttachmentRef;
     /** 未投递的原因（成功时缺省）。 */
     skipped?: 'disabled' | 'too-large' | 'budget' | 'unsupported-type' | 'host-unavailable' | 'save-failed';
+    /** R-08：跳过时的原始原因（宿主异常信息/超时），供日志与 `/storage` 定位根因。 */
+    detail?: string;
     /** 本次是否命中去重（仅成功时有意义）。 */
     dedupHit?: boolean;
 }
@@ -163,7 +176,7 @@ export declare const MIB: number;
  * 边界处理：非正数（含负数、NaN）的字节上限统一按 0（不限）处理——配置写错
  * 成 -1 时若当上限用，会让**所有**图片都被拒，那比放开更糟。
  * @param config - 五项配置（enabled 直接取用；两个上限已是字节单位；
- *   `retentionMs` / `saveTimeoutMs` 为毫秒，<=0 = 关闭该机制）。
+ *   retentionMs / saveTimeoutMs 为毫秒，<=0 = 关闭该机制）。
  * @returns 归一化后的策略。
  */
 export declare function resolveAttachPolicy(config: {
@@ -191,7 +204,7 @@ export declare function resolveAttachPolicy(config: {
 export declare function deliverImage(attachments: unknown, path: string, policy: AttachPolicy, mediaDir: string): Promise<AttachResult>;
 /** 人类可读字节数（与 health.ts 的 formatBytes 同口径，避免跨模块耦合重复导入）。 */
 export declare function humanBytes(size: number): string;
-/** 人类可读时长（天/小时/分钟/毫秒，T18）；用于渲染账本回收窗口。 */
+/** 人类可读的时长（毫秒 → 天/小时/分钟），供 /storage 的回收窗口显示。 */
 export declare function humanDuration(ms: number): string;
 /** 把统计快照渲染成一段中文多行文本（/storage 与工具共用）。 */
 export declare function formatStorageStats(stats: StorageStats): string;

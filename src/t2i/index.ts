@@ -15,6 +15,12 @@ import { literalNToNewlines, parseBlocks } from './parser.js'
 /** Card geometry (fixed by the original renderer). */
 export const CARD_WIDTH = 800
 export const BODY_FONT_SIZE = 26
+/**
+ * R-05：卡片高度上限。高度随正文长度线性增长且原本无上限——一段超长回复会生成
+ * 十几万像素高的 PNG（同步编码占满主线程，且远超 QQ 图片尺寸限制）。超过上限直接
+ * 抛错，由调用方降级为纯文本（出站与 interim 小结都已按「t2i 失败 → 纯文本」处理）。
+ */
+export const MAX_CARD_HEIGHT = 12_000
 const TOPBAR_H = 82
 const FOOTER_H = 40
 
@@ -79,6 +85,9 @@ export function renderTextImage(text: string, options: RenderOptions = {}): Buff
   for (const el of blocks) total += elementHeight(el, ctx)
   total += 20 + FOOTER_H
   const height = Math.max(100, total)
+  if (height > MAX_CARD_HEIGHT) {
+    throw new Error('t2i: card too tall (' + height + 'px > ' + MAX_CARD_HEIGHT + 'px); fall back to plain text')
+  }
 
   const card = new CardCanvas(CARD_WIDTH, height, font)
   let y = 10

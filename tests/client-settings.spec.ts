@@ -361,9 +361,11 @@ describe('W6 诊断组 — 6 个观测/调试布尔键的文案契约（中文�
     const defaults = client.DEFAULTS as Record<string, unknown>
     expect(defaults.actionAuditEnabled).toBe(true)
     expect(defaults.injectDryRun).toBe(true)
-    for (const key of ['traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled']) {
+    for (const key of ['traceEnabled', 'recordInbound', 'injectEnabled']) {
       expect(defaults[key]).toBe(false)
     }
+    // S-07：录制脱敏改为默认开启（含媒体 URL 的 token/sign 参数剥离）。
+    expect(defaults.inboxRedact).toBe(true)
     expect(client.DEFAULTS).toEqual(SCHEMA_DEFAULTS) // 整表逐字一致（含 6 新键）
   })
 
@@ -443,10 +445,10 @@ describe('W6 失败守卫（客户端侧）— host edit-failed 中文错误可�
   it('host patch 白名单 38 键与 client patchSchema 同宽：新键可下发（契约同步核对）', () => {
     const updateSettings = descriptors[1] as { parameters: Array<{ codec: { schema: { parse(value: unknown): unknown } } }> }
     const patch = updateSettings.parameters[0].codec.schema.parse({
-      actionAuditEnabled: true, traceEnabled: false, recordInbound: true, inboxRedact: false, injectEnabled: false, injectDryRun: true,
+      actionAuditEnabled: true, traceEnabled: false, recordInbound: true, inboxRedact: true, injectEnabled: false, injectDryRun: true,
     })
     expect(patch).toEqual({
-      actionAuditEnabled: true, traceEnabled: false, recordInbound: true, inboxRedact: false, injectEnabled: false, injectDryRun: true,
+      actionAuditEnabled: true, traceEnabled: false, recordInbound: true, inboxRedact: true, injectEnabled: false, injectDryRun: true,
     })
   })
 })

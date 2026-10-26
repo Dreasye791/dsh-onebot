@@ -47,7 +47,7 @@
 import { dirname, isAbsolute, join } from 'node:path'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { isDeepStrictEqual } from 'node:util'
-import { QRCODE_TTL_MINUTES, diagnoseNapcat, formatDiagnosis } from './napcat-diagnose.js'
+import { diagnoseNapcat, formatDiagnosis } from './napcat-diagnose.js'
 
 import type { Context } from '@deepseek-ai/cordis'
 
@@ -588,17 +588,22 @@ export interface NapcatStatusResult {
   summary: string
   /** 多行明细（四阶段） */
   detail: string
-  /** 二维码 data URL；无文件或已过期（>5 分钟）为 null */
+  /** 二维码 data URL；已连接或没有文件时为 null（过期仍返回图，过期与否看 qrcodeAgeMinutes） */
   qrcodeDataUrl: string | null
   qrcodeAgeMinutes: number | null
 }
 
-/** 读出 5 分钟内的二维码并转成 data URL；过期的不返回（扫了也没用）。 */
+/**
+ * 读出 `cache/qrcode.png` 并转成 data URL。
+ *
+ * 这里**不做过期过滤**：过期与否由调用方结合年龄与文案判断。原因（2026-10-26 实测）：
+ * NapCat 不保证按时刷新这个文件，一旦超过 5 分钟就返回 null，面板会永久空白，
+ * 用户反而无处扫码；给图 + 明确标注「已过期」比什么都不给更有用。
+ */
 function readQrcodeDataUrl(napcatDir: string): string | null {
   const file = join(napcatDir, 'cache', 'qrcode.png')
   if (!existsSync(file)) return null
   try {
-    if (Date.now() - statSync(file).mtimeMs > 5 * 60_000) return null
     return `data:image/png;base64,${readFileSync(file).toString('base64')}`
   } catch {
     return null
@@ -625,11 +630,11 @@ export function buildNapcatStatus(launcher: string, port: number): NapcatStatusR
   const dir = dirname(trimmed)
   try {
     const diagnosis = diagnoseNapcat({ napcatDir: dir, port })
-    // 两种情况都不返回图：① 已连接（登录已完成，`cache/qrcode.png` 只是残留文件，
-    // 照读会让人以为还没登录）；② 超过 TTL（那张码扫了也没用）。此前面板无条件
-    // 读文件，出现过「登录成功 7 分钟后仍在展示过期二维码」。
+    // 已连接 = 登录已完成，`cache/qrcode.png` 只是残留文件，照读会让人以为还没登录。
+    // 未连接时**总是**返回图（含已过期）：NapCat 不保证按时刷新该文件，不返回图会让
+    // 面板永久空白、用户无处扫码；过期由 summary 与客户端文案标注，不吞掉图。
     const qrAge = diagnosis.qrcodeAgeMinutes
-    const showQr = !diagnosis.wsConnected && qrAge !== null && qrAge <= QRCODE_TTL_MINUTES
+    const showQr = !diagnosis.wsConnected && qrAge !== null
     return {
       stage: diagnosis.stage,
       summary: diagnosis.summary,

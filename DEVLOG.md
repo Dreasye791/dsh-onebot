@@ -958,4 +958,12 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **二维码 bug**：登录成功后 `cache/qrcode.png` 仍留在磁盘（登录成功不会删它），而 `buildNapcatStatus` 无条件读文件转 data URL、客户端只判断 `qrcodeDataUrl` 非空就渲染 → 面板在**已连接 7 分钟后**仍展示那张过期码，让人以为还没登录。修复：① 服务端在「已连接」或 `age > QRCODE_TTL_MINUTES(5)` 时不返回图（新增导出常量，与判定共用）；② 客户端再兜一层（`stage !== 'ok'` 才渲染）；③ 过期二维码的判定从 `not-connected`（会引导用户去查 url/token）改为 `not-logged-in` 并明说「已过期」，测试同步覆盖。
 - **控制台乱码定性**：插件拉起命令的 `chcp 65001 >nul` 与 `launcher-user.bat` 自带的 chcp，经实测**均生效**（`cmd /c "chcp 65001 >nul & chcp"` 返回 `Active code page: 65001`）。乱码窗口是 NapCat 注入 QQ 后新建/附着的控制台，代码页由**系统 OEM 码页（936）**决定，父进程 chcp 管不到；`napcat.mjs` 中也没有 `AllocConsole` / `SetConsoleOutputCP` 可用开关。可选方案：开系统「Unicode UTF-8」根治，或忽略窗口改看 `logs/*.log`（UTF-8）。已写入 `docs/napcat-launcher.md` 第 6 节。
 - **验证**：`tsc` exit 0；5 文件 79 用例全绿。
+
+## 2026-10-26 二维码展示修正：未连接时总能拿到图
+
+- **问题**：去掉 `-q` 走扫码登录时，设置页仍不显示二维码。根因是**两道过期判断叠加**——`readQrcodeDataUrl()` 内部先按 5 分钟过滤并 return null，`buildNapcatStatus` 外层又按 `QRCODE_TTL_MINUTES` 过滤；而 NapCat 并不保证按时刷新 `cache/qrcode.png`，一旦超过 5 分钟面板就**永久空白**，用户反而无处扫码。
+- **修正**：① `readQrcodeDataUrl` 只负责「读文件 + base64」，不再自做过期判断；② `buildNapcatStatus` 仅在**已连接**时隐藏图（登录完成，残留文件会误导），未连接时一律返回（过期也返回）；③ 客户端文案分两档：新鲜 →「扫上面这张码（N 分钟前生成）」；过期 →「这张码已过期（N 分钟前生成）：扫了不会生效，需重新触发登录（重启 NapCat，或 `napcatLauncherArgs` 配 `-q`）」。
+- **附注**：`cache/qrcode.png` 经核查是**有效的 147×147、1-bit 灰度 PNG**（601 字节），不是空图；NapCat WebUI 也在监听（6099、`accessControlMode: none`），后续若要「面板内点按钮刷新二维码」，可接 WebUI 的 `/RefreshQRcode`。
+- **易误判点**：去掉 `-q` **不等于**会走扫码——NapCat 只要存在快速登录记录（`getQQQuickLoginList()` 非空）就会自动尝试快速登录（`napcat.mjs` 的 `runWebUiConfigQuickFunction`）。所以「未跳过登录时」看到「已连接 + 无二维码」可能只是它又快速登录成功了；判断是否真在等扫码，看 `cache/qrcode.png` 的 mtime 是否在近 5 分钟内被刷新。
+- **验证**：`tsc` exit 0；5 文件 79 用例全绿。
 - **措辞修正（避免误导）**：`launcher-user.bat` 并非本机独有——它是 NapCat 发行包**自带的四个启动脚本之一**（`launcher-user` / `launcher-win10-user` / `launcher` / `launcher-win10`，差别只是「是否自提权」与「Win10 变体」），四者都设了 `chcp 65001` 与 5 个 `NAPCAT_*`。此前文档与设置页 hint 写死单一文件名，已改为「按目录里实际有的选一个」，并补三条容易踩的说明：① 末尾 `pause` 会在隐藏窗口留一个等待按键的 `cmd.exe`（属正常，会随 NapCat 一起退出）；② 面板是**每行一个参数**、patch 里是 YAML 数组，两种写法别混；③ `-q` 是传给 **NapCat** 而非 QQ 的参数，写成一行 `-q 123456` 或 `-q123456` 都无效（按 argv 全等匹配）。

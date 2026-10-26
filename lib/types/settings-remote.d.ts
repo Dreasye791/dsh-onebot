@@ -195,7 +195,7 @@ export interface NapcatStatusResult {
     summary: string;
     /** 多行明细（四阶段） */
     detail: string;
-    /** 二维码 data URL；无文件或已过期（>5 分钟）为 null */
+    /** 二维码 data URL；已连接或没有文件时为 null（过期仍返回图，过期与否看 qrcodeAgeMinutes） */
     qrcodeDataUrl: string | null;
     qrcodeAgeMinutes: number | null;
 }

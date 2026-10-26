@@ -927,3 +927,35 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **可测性**：判定抽成纯函数 `judgeNapcat(facts)`（不碰进程表），新增 `tests/napcat-diagnose.spec.ts` 覆盖 7 个分支（含本次事故场景）。
 - **设置页**：`lib/client.js` 的 stage 徽标加中文映射（`qq-conflict` → 「QQ 已占用」等），未知 slug 原样回退。
 - **验证**：`tsc` exit 0；`napcat-diagnose` 8/8、`plugin` 6/6、`config-ranges` 3/3 通过；`client-settings` 仍为既有 4 条（38 vs 40 键，与本批无关）。
+
+## 2026-10-26 napcatLauncherArgs：插件自己传 `-q`（免扫码 + 可自启）
+
+- **问题**：插件只会 `spawn` 一个 launcher **路径**、无法传参，而 NapCat 免扫码依赖 `-q <QQ号>`。用户被迫在 `NapCat.Shell\` 自建包装 bat；实测自建脚本漏了 `launcher-user.bat` 里那 5 个 `NAPCAT_*` 环境变量，导致 QQ 弹「**文件已损坏，请重新安装 QQ**」——QQ 文件实际完好（`resources\app\package.json` 的 `main` 未变），只是按 patch 找不到 NapCat 入口。
+- **改动**：新增配置 `napcatLauncherArgs: string[]`（默认 `[]`）。`NapcatWatch` 把参数拼进拉起命令，用户配 `['-q', '<QQ号>']` 即可，不再需要外部脚本，也就不会漏环境变量。
+- **转义**：参数来自 patch config（管理员手写）、最终交给 `cmd /c` 执行。新增纯函数 `buildLauncherCommand()`：含 `& | < > ^ % ! "` 的参数直接丢弃（fail-closed）并 warn，日志**不回显条目原文**；含空格的参数自动加引号；`chcp 65001` 固定前置（NapCat 输出 UTF-8，中文控制台默认 GBK 936 会乱码）。
+- **文档**：新增 `docs/napcat-launcher.md`（配置示例、为什么必须用 `launcher-user.bat`、`-q` 与位置参数的差别、包装脚本模板、开机自启三步、阶段排障对照）；README 配置表补 `napcatLauncher` / `napcatLauncherArgs` / `autoStartNapcat` 三行，NapCat 排障行补文档链接。
+- **验证**：`tsc` exit 0；新增 `tests/napcat-launcher-cmd.spec.ts` 6 条（chcp 保留、`-q` 两参、空格加引号、元字符丢弃、空参数跳过、顺序保持）；同批 `napcat-diagnose` 8 条 + `plugin` 6 条全绿（3 文件 20 用例）。
+- **未纳入设置页**：`napcatLauncherArgs` 属低频部署键，只走 patch config，不进 38 键设置页（避免动 `lib/client.js` descriptor 与既有键集断言）。
+
+## 2026-10-26 设置页补齐 NapCat 三项（并修好 4 条长期红的契约用例）
+
+- **现象**：设置页「NapCat/QQ 桥接参数」组里没有 `napcatLauncher` / `autoStartNapcat` 的输入框（新加的 `napcatLauncherArgs` 自然也没有），但下方 NapCat 状态卡片能正常显示诊断结论——看得见状态、改不了配置。
+- **根因**：本地补丁把 `napcatLauncher` / `autoStartNapcat` 加进了 `STRING_KEYS` / `BOOLEAN_KEYS`（因此进了 `ALL_KEYS` = 40），但**没加进 `SETTINGS_GROUPS` 与 `lib/client.js` 的 `GROUPS`**（两处仍是 38）。客户端按 groups 渲染 → 这两键没有控件；同时 `ALL_KEYS`(40) 与 `client.GROUPS`(38) 漂移，`tests/client-settings.spec.ts` 的 4 条断言长期红。
+- **修复**：三键（`napcatLauncher` / `napcatLauncherArgs` / `autoStartNapcat`）同时进 `SETTINGS_GROUPS.connection` 与客户端 `GROUPS[0].fields`，并补 `SCHEMA_DEFAULTS` / `client.DEFAULTS` / `STRING_ARRAY_KEYS`。键集 38 → 41。
+- **顺带**：4 条长期红的契约用例**全部转绿**——不是改数字绕过，而是补齐缺失分组后「服务端 ALL_KEYS 与客户端 GROUPS」自然一致；测试里的硬编码计数同步为 41 键 / connection 16 行 / 控件数 +3，并更新 5 处「41 键」口径与 README、`docs/settings-page-design.md` 的键数表述。
+- **验证**：`tsc` exit 0；`client-settings` 56/56、`plugin` 6/6、`config-ranges` 3/3、`napcat-diagnose` 8/8、`napcat-launcher-cmd` 6/6 → **5 文件 79 用例全绿**。
+
+## 2026-10-26 修复：插件拉起 NapCat 从未成功（Windows spawn 引号转义）
+
+- **真因**：`spawn('cmd.exe', ['/c', 'chcp 65001 >nul & "…launcher-user.bat"'], { windowsVerbatimArguments: false })` —— Node 在 Windows 上默认对 args 做引号转义（`"` → `\"`），cmd 收到的命令名成了字面量 `\"G:\…\launcher-user.bat\"`，直接报「不是内部或外部命令」。**launcher 一次都没真正执行过**。
+- **为何长期未发现**：`spawnLauncher` 原先 `stdio: 'ignore'`，输出全丢；而 `spawn` 事件一到就 `resolve(true)`，日志照打「NapCat 未运行，尝试启动第 N/2 次」，读起来像「拉起了但没连上」。本次给拉起器加 `napcat-launcher.log` 落盘后，第一行就暴露了 `'\"…bat\"' 不是内部或外部命令`。
+- **误判纠正**：此前把「拉起后仍不连」归因为「QQ 已占用导致注入失败」。该归因对**手动**启动成立，但插件自动拉起那几次连命令都没执行；16:39 那次成功是手动跑出来的。
+- **修复**：`spawn` 增加 `windowsVerbatimArguments: true`。实测对照（观察 cmd 实际收到的命令）：默认转义输出 `\\\"path\\\"`，verbatim 输出 `"path"`，且 `&` 之后的参数正常透传（`"path" -q 1354553622`）。
+- **验证**：`tsc` exit 0；5 文件 79 用例仍全绿；真机验证待重启宿主后确认 `napcat-launcher.log` 不再出现 `\"` 报错。
+
+## 2026-10-26 设置页二维码修复 + 控制台乱码定性
+
+- **二维码 bug**：登录成功后 `cache/qrcode.png` 仍留在磁盘（登录成功不会删它），而 `buildNapcatStatus` 无条件读文件转 data URL、客户端只判断 `qrcodeDataUrl` 非空就渲染 → 面板在**已连接 7 分钟后**仍展示那张过期码，让人以为还没登录。修复：① 服务端在「已连接」或 `age > QRCODE_TTL_MINUTES(5)` 时不返回图（新增导出常量，与判定共用）；② 客户端再兜一层（`stage !== 'ok'` 才渲染）；③ 过期二维码的判定从 `not-connected`（会引导用户去查 url/token）改为 `not-logged-in` 并明说「已过期」，测试同步覆盖。
+- **控制台乱码定性**：插件拉起命令的 `chcp 65001 >nul` 与 `launcher-user.bat` 自带的 chcp，经实测**均生效**（`cmd /c "chcp 65001 >nul & chcp"` 返回 `Active code page: 65001`）。乱码窗口是 NapCat 注入 QQ 后新建/附着的控制台，代码页由**系统 OEM 码页（936）**决定，父进程 chcp 管不到；`napcat.mjs` 中也没有 `AllocConsole` / `SetConsoleOutputCP` 可用开关。可选方案：开系统「Unicode UTF-8」根治，或忽略窗口改看 `logs/*.log`（UTF-8）。已写入 `docs/napcat-launcher.md` 第 6 节。
+- **验证**：`tsc` exit 0；5 文件 79 用例全绿。
+- **措辞修正（避免误导）**：`launcher-user.bat` 并非本机独有——它是 NapCat 发行包**自带的四个启动脚本之一**（`launcher-user` / `launcher-win10-user` / `launcher` / `launcher-win10`，差别只是「是否自提权」与「Win10 变体」），四者都设了 `chcp 65001` 与 5 个 `NAPCAT_*`。此前文档与设置页 hint 写死单一文件名，已改为「按目录里实际有的选一个」，并补三条容易踩的说明：① 末尾 `pause` 会在隐藏窗口留一个等待按键的 `cmd.exe`（属正常，会随 NapCat 一起退出）；② 面板是**每行一个参数**、patch 里是 YAML 数组，两种写法别混；③ `-q` 是传给 **NapCat** 而非 QQ 的参数，写成一行 `-q 123456` 或 `-q123456` 都无效（按 argv 全等匹配）。

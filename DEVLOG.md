@@ -914,3 +914,16 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **验证**：`tsc` exit 0；`tests/plugin.spec.ts` 6/6（原「恰好一条 warn」断言改为按内容筛选，新增「管理员已配置不提示」）；重启后 `startup-report.txt` 与 `onebot.log` 均输出预期内容，`admins=1`。
 - **已知遗留**：`tests/client-settings.spec.ts` 4 条失败 = 期望 40 键 / 实际 38 键，属 `a9ed1ab`（移植上游设置页、保留 38 键）遗留，本批未修。
 - **环境备注**：宿主 Node 为 v24.21.0（Electron 自带），仓库开发环境 node v22.18.0；涉及 Node 版本相关 API 时以宿主为准。
+
+## 2026-10-26 NapCat 诊断修复（三缺陷 + 说清「卡在哪一步」）
+
+**背景**：真实事故 —— QQ 于 12:25 被手动启动，插件 15:35 两次拉起注入器均失败；旧诊断只报「NapCat 根本没启动」，把真原因（QQ 已占用、注入器无法接管）完全盖住。配置侧已逐项排查无误（onebot11 反向 WS url/token/端口/格式全对，11:17 曾正常收发消息），NapCat 日志停在 11:19 的 `ECONNREFUSED`（当时插件正在重启，之后进程消失）。
+
+- **缺陷 1：`hosted` 判定恒 false**。`inspectQq()` 用 `wmic process ... get CommandLine` 匹配 napcat 关键字，而 Windows 11 已移除 WMIC（实测 `wmic /?` 退出码 255）→ `runLines` catch 返回空数组 → 只要 QQ 在跑就误报「普通 QQ 抢占实例」。**移除该判定**，改用两个可靠事实（注入器进程在不在 / QQ 进程在不在）推导，不猜托管。
+- **缺陷 2：`qqProcesses` 被当成实例数**。QQ NT 是 Electron 多进程，一个客户端就有 5~10+ 个 QQ.exe（实测 7 个 = 1 个实例）。文案改为「QQ 进程 N 个（一个 QQ 通常有多个进程，不代表多开）」。
+- **缺陷 3：拉起器输出被丢弃**。`spawnLauncher` 用 `stdio: 'ignore'`，而注入器在 QQ 已占用时会直接退出、连 NapCat 自己的日志都不写 → 失败无任何现场。改为追加写 `mediaDir/napcat-launcher.log`（每次拉起带时间戳分隔行），spawn 后关闭父进程句柄副本。
+- **新增阶段 `qq-conflict`**：`!napcatProcess && qqProcesses > 0` ⇒ 「QQ 已在运行，注入器无法接管已启动的 QQ，请先完全退出 QQ」。判定优先级改为：已连接 → 风控 → **QQ 占用** → 根本未启动 → 卡在扫码 → 卡在 OneBot 连接；每个阶段的 summary 都带一句可执行的下一步。
+- **不再做无效拉起**：`NapcatWatch.tick` 在 `qq-conflict` 时跳过 spawn（此前会白拉两次并静默失败，把真原因盖住），并追加一条说明「插件不会尝试拉起」。
+- **可测性**：判定抽成纯函数 `judgeNapcat(facts)`（不碰进程表），新增 `tests/napcat-diagnose.spec.ts` 覆盖 7 个分支（含本次事故场景）。
+- **设置页**：`lib/client.js` 的 stage 徽标加中文映射（`qq-conflict` → 「QQ 已占用」等），未知 slug 原样回退。
+- **验证**：`tsc` exit 0；`napcat-diagnose` 8/8、`plugin` 6/6、`config-ranges` 3/3 通过；`client-settings` 仍为既有 4 条（38 vs 40 键，与本批无关）。

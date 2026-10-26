@@ -189,7 +189,7 @@ export declare function validatePatch(patch: unknown): Record<string, unknown>;
 export declare function getSettings(editor: ConfigEditorLike, state: RevisionState): OnebotSettingsSnapshot;
 /** NapCat 状态（供设置页展示）：诊断结论 + 新鲜二维码的 data URL。 */
 export interface NapcatStatusResult {
-    /** 诊断阶段：ok / no-process / instance-conflict / not-logged-in / risk-control / unconfigured / error */
+    /** 诊断阶段：ok / qq-conflict / no-process / not-logged-in / not-connected / risk-control / unconfigured / error */
     stage: string;
     /** 一句话结论 */
     summary: string;

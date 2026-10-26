@@ -14,6 +14,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { appendFileSync, closeSync, openSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { diagnoseNapcat, formatDiagnosis } from './napcat-diagnose.js';
 import type { NapcatDiagnosis } from './napcat-diagnose.js';
@@ -42,6 +43,13 @@ export interface NapcatWatchOptions {
    * 挂在「确实没连上」的时刻才有信息量。
    */
   extraHint?: string;
+  /**
+   * 拉起器输出落盘路径（追加写）。留空 = 丢弃。
+   *
+   * 注入器在 QQ 已被占用时会**直接退出**，连 NapCat 自己的日志都不写 —— 输出一
+   * 丢，外部就只能看到「进程不在、没有日志」，无从判断失败原因（2026-10-26 实测）。
+   */
+  logFile?: string;
   log: WatchLog;
 }
 
@@ -105,8 +113,11 @@ export class NapcatWatch {
     // 实测出现两三个窗口互相覆盖二维码文件，登录反而更难成功。
     const diagnosis = this.diagnose();
     const alreadyRunning = diagnosis !== null && diagnosis.napcatProcess;
+    // QQ 已占用时注入器必然接管失败：此时不 spawn。否则只会在日志里留下两次无意义
+    // 的「尝试启动」然后静默消失（注入器直接退出、不写日志），把真原因盖住。
+    const qqConflict = diagnosis?.stage === 'qq-conflict';
 
-    if (canLaunch && !alreadyRunning && this.launches < max && !this.launching) {
+    if (canLaunch && !alreadyRunning && !qqConflict && this.launches < max && !this.launching) {
       this.launching = true;
       this.launches += 1;
       this.options.log('info', `NapCat 未运行，尝试启动第 ${this.launches}/${max} 次：${launcher}`);
@@ -131,6 +142,11 @@ export class NapcatWatch {
         this.options.log(
           'warn',
           '（检测到 NapCat 已在运行，插件不会重复启动，也不会终止任何进程）',
+        );
+      } else if (qqConflict) {
+        this.options.log(
+          'warn',
+          '（QQ 已在运行：插件不会尝试拉起 NapCat —— 已启动的 QQ 无法被注入接管，请先完全退出 QQ）',
         );
       } else if (canLaunch && this.launches >= max) {
         this.options.log(
@@ -165,10 +181,22 @@ export class NapcatWatch {
    */
   private spawnLauncher(launcher: string): Promise<boolean> {
     return new Promise((resolve) => {
+      const file = this.options.logFile?.trim() ?? '';
+      let out: number | 'ignore' = 'ignore';
+      if (file !== '') {
+        try {
+          out = openSync(file, 'a');
+          appendFileSync(out, `\n=== ${new Date().toISOString()} spawn launcher: ${launcher} ===\n`);
+        } catch {
+          out = 'ignore';
+        }
+      }
       try {
         const child = spawn('cmd.exe', ['/c', `chcp 65001 >nul & "${launcher}"`], {
           detached: true,
-          stdio: 'ignore',
+          // 落盘而不是丢弃：注入器在 QQ 已占用时会直接退出、连 NapCat 自己的日志
+          // 都不写，这里是判断失败原因的唯一现场。
+          stdio: ['ignore', out, out],
           windowsHide: true,
         });
         child.once('error', (error) => {
@@ -183,6 +211,11 @@ export class NapcatWatch {
       } catch (error) {
         this.options.log('warn', `NapCat 启动器无法执行：${String(error)}`);
         resolve(false);
+      } finally {
+        // 子进程已继承自己的句柄副本；父进程这份用完即关，否则每次拉起泄漏一个 fd。
+        if (out !== 'ignore') {
+          try { closeSync(out); } catch { /* 已失效 */ }
+        }
       }
     });
   }

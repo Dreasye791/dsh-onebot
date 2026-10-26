@@ -35,6 +35,13 @@ export interface NapcatWatchOptions {
      * 挂在「确实没连上」的时刻才有信息量。
      */
     extraHint?: string;
+    /**
+     * 拉起器输出落盘路径（追加写）。留空 = 丢弃。
+     *
+     * 注入器在 QQ 已被占用时会**直接退出**，连 NapCat 自己的日志都不写 —— 输出一
+     * 丢，外部就只能看到「进程不在、没有日志」，无从判断失败原因（2026-10-26 实测）。
+     */
+    logFile?: string;
     log: WatchLog;
 }
 export declare class NapcatWatch {

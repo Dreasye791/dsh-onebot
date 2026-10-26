@@ -444,6 +444,7 @@ chat 回退到下一条消息新建会话，不会卡死。损坏（碰撞/恢�
 | 症状 | 原因与处理 |
 |---|---|
 | 群聊不响应 | `requireMention: true` 时需 @ 或回复机器人的消息才触发；@ 检测 fail-closed——确认 botQQ 已从 meta 事件学习，或显式配置 |
+| NapCat 未连接 / QQ 机器人没反应 | 先看 `mediaDir/onebot.log` 与设置页「NapCat」卡片的阶段结论：**`QQ 已占用`** = QQ 先启动了，注入器无法接管已运行的 QQ（NapCat 要求由 launcher 独占拉起），请完全退出 QQ 后由 launcher 启动；**`等待扫码登录`** = 扫二维码（超过约 5 分钟失效）；**`端口未连接`** = 注入器在跑但 OneBot 没连上，核对 NapCat 的 onebot11 反向 WS 的 url/token；**`NapCat 未启动`** = 注入器与 QQ 都不在。拉起器的原始输出在 `mediaDir/napcat-launcher.log` |
 | 图片下载 403 | NapCat 会把 URL 中的 `&` 转成 `&amp;`（解析已自动反转义）；仍失败可查日志中 media 下载行 |
 | 文件接收失败 | 非本机部署 NapCat 时需开启「文件转 URL」开关，否则 get_file 返回容器内路径不可达；确认 dsh 与 NapCat 网络互通 |
 | 文字图中文豆腐块 | Linux 未装 CJK 字体：`apt install fonts-noto-cjk`，并用 `fontFiles` 指定 SC 字体文件 |

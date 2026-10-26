@@ -168,7 +168,7 @@ export interface RegistryDeps {
     onChatRemoved(chat: ChatAgent): void;
     /** Register the QQ platform prompt section + qq_* tools on a new agent's
      * own scope — bridge-owned because the tools call back into the bridge. */
-    installChannelScope(agentCtx: Context): void;
+    installChannelScope(agentCtx: Context, chatId: ChatId): void;
 }
 /**
  * The chat↔session registry: dual index, persistence pair, per-chat settings

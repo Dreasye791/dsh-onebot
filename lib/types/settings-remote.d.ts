@@ -89,6 +89,8 @@ export interface OnebotSettingsSnapshot {
     }>;
     groups: Record<string, string[]>;
     effect: typeof REMOTE_EFFECT;
+    /** NapCat 诊断（本地补丁，只读）；未配置 launcher 时为 unconfigured */
+    napcat: NapcatStatusResult;
 }
 /** §3.1 revision 计数器状态（内存态，随宿主进程/服务实例存续）。 */
 export interface RevisionState {
@@ -185,6 +187,25 @@ export declare function effectiveConfig(raw: Record<string, unknown>): Record<st
 export declare function validatePatch(patch: unknown): Record<string, unknown>;
 /** getSettings 实现（descriptor 方法体共用；descriptor 参数 0 个）。 */
 export declare function getSettings(editor: ConfigEditorLike, state: RevisionState): OnebotSettingsSnapshot;
+/** NapCat 状态（供设置页展示）：诊断结论 + 新鲜二维码的 data URL。 */
+export interface NapcatStatusResult {
+    /** 诊断阶段：ok / no-process / instance-conflict / not-logged-in / risk-control / unconfigured / error */
+    stage: string;
+    /** 一句话结论 */
+    summary: string;
+    /** 多行明细（四阶段） */
+    detail: string;
+    /** 二维码 data URL；无文件或已过期（>5 分钟）为 null */
+    qrcodeDataUrl: string | null;
+    qrcodeAgeMinutes: number | null;
+}
+/**
+ * 组装 NapCat 状态快照（只读）。
+ *
+ * 未配置 `napcatLauncher` 时不猜路径，直接返回 unconfigured —— 插件不假设
+ * NapCat 装在哪，也不主动探测文件系统。
+ */
+export declare function buildNapcatStatus(launcher: string, port: number): NapcatStatusResult;
 /** W6 错误归一：宿主 configEditor.edit 的原生失败（文件锁超时 / 活性检查 /
  *  schema 校验 / home-patch 守卫 / 激活失败回滚后 rethrow）按
  *  docs/m1-characterization/config-editor.md §3 矩阵归类，转成面板可直接渲染的

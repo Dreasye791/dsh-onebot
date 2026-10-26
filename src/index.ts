@@ -18,9 +18,11 @@ import type { ModelSelection } from '@deepseek-ai/dsh-agent'
 import type Z from '@deepseek-ai/schemastery'
 import type { OneBotEvent } from './connection.js'
 import type { BridgeDeps, WorkspaceRegistryLike } from './bridge.js'
+import { NapcatWatch } from './napcat-watch.js'
 import type { AccessPolicyConfig } from './chat.js'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { appendFileSync } from 'node:fs'
 
 // R1 部署加固：peer 依赖解析失败/关键模块缺失时必须显眼报错并 fail-loud，
 // 不能静默不挂载。静态 import 会在本模块任何代码运行之前就以晦涩的
@@ -132,6 +134,17 @@ export interface Config {
   adminUsers: string[]
   allowAllUsers: boolean
   ignoreSelf: boolean
+  /**
+   * NapCat 启动器路径（本地补丁，可选）。
+   *
+   * NapCat 是插件的**外部依赖**：插件在 8643 上监听，等它以反向 WebSocket
+   * 连进来。NapCat 没起来时通道静默不可用，只能靠翻它的日志猜。配上这个路径
+   * 后，插件能在检测到未连接时自己把 NapCat 拉起来（需配合 autoStartNapcat）。
+   * 留空 = 只在未连接时打印排查提示，不启动任何进程。
+   */
+  napcatLauncher: string
+  /** 是否允许插件在未连接时自动执行 napcatLauncher（默认 false，需显式开启） */
+  autoStartNapcat: boolean
   interimMessages: boolean
   /** Per-interim auto-recall delay (ms) from each interim's send completion. */
   interimRecallMs: number
@@ -294,6 +307,10 @@ export const Config: Z<Config> = z.object({
     .description('QQ 通道可调用的 MCP 工具白名单（默认空 = 禁用全部 MCP）。写法：* 表示全部；mcp__akasha__akasha_search 完整名；mcp__akasha__* 或 akasha 表示整台服务器；akasha_search 表示任意服务器下的同名工具。实际生效的条目为前 256 条、单条 ≤128 字符，超限条目会被忽略并记一条 warn（不影响插件启动）。非 MCP 工具（qq_* 与宿主内置）不受影响'),
   allowAllUsers: z.boolean().default(false)
     .description('放行所有用户（仅开发用；也可用 ONEBOT_ALLOW_ALL_USERS=true）'),
+  napcatLauncher: z.string().default('')
+    .description('NapCat 启动器路径（可选，如 NapCat.Shell\\launcher-user.bat）。留空则只在未连接时打印排查提示。配合 autoStartNapcat 使用'),
+  autoStartNapcat: z.boolean().default(false)
+    .description('未检测到 NapCat 连接时，是否自动执行 napcatLauncher（默认关闭；最多尝试 2 次，不会杀任何进程）'),
   ignoreSelf: z.boolean().default(true)
     .description('忽略机器人自己发出的消息（防自循环）'),
   interimMessages: z.boolean().default(true)
@@ -467,6 +484,16 @@ export function apply(ctx: Context, config: Config): void {
     if (level === 'error') console.error(prefix + message)
     else if (level === 'warn') console.warn(prefix + message)
     else console.log(prefix + message)
+    // 落盘（本地补丁）：dsh 桌面版是 GUI 进程，stdout 无处可看 —— 这一天里
+    // 「插件明明挂了却没有任何提示」的问题根源就在这里。NapCat 相关提示必须
+    // 能从文件读到，否则等于没做。写到 mediaDir/onebot.log，按天不轮转但量很小。
+    try {
+      appendFileSync(
+        join(mediaDir, 'onebot.log'),
+        new Date().toISOString() + ' [' + level + '] ' + message + '\n',
+        'utf8',
+      )
+    } catch { /* 日志写失败不影响主流程 */ }
   }
   // T20：MCP 白名单闸门依赖宿主的 tools.guard。若宿主没有这个能力，QQ 通道
   // 就没有任何 MCP 权限隔离（profile 根作用域上的全部 MCP 工具会原样交给群友）。
@@ -670,8 +697,23 @@ export function apply(ctx: Context, config: Config): void {
     bridge.start()
     connection.start()
     injectChannel?.start()
+    // NapCat 看护（本地补丁）：插件是 WebSocket**服务端**，NapCat 没起来时
+    // 通道静默不可用。这里在启动后与运行期定期检查连接状态：未连接则打印
+    // 可执行的排查提示；若配置了 napcatLauncher 且 autoStartNapcat 为真，
+    // 则尝试自动拉起（最多 2 次，不杀任何进程）。
+    const napcatWatch = new NapcatWatch({
+      launcher: config.napcatLauncher,
+      autoStart: config.autoStartNapcat,
+      // NapCat.Shell 目录由 launcher 的父目录推导；未配置 launcher 时留空，
+      // 诊断会退化成静态提示（不猜路径）。
+      port: config.port,
+      pollIntervalMs: 60_000,
+      log,
+    })
+    napcatWatch.start(() => connection.connected)
     // QQ 平台说明与 qq_* 工具现按会话 agent 注入（见 ChatBridge.installChannelScope）
     return async () => {
+      napcatWatch.stop()
       await injectChannel?.stop()
       await bridge.stop()
       await connection.stop()

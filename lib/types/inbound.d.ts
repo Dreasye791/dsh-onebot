@@ -4,8 +4,8 @@ import type { Transcriber } from './stt.js';
 import type { OneBotSegment, MediaRef } from './cq.js';
 import type { AccessPolicyConfig, ChatId, UserRole } from './chat.js';
 import type { BridgeConfig } from './bridge.js';
-import type { ChatSettings } from './registry.js';
 import type { ImageAttachmentRef } from './attach.js';
+import type { ChatSettings } from './registry.js';
 /**
  * The neutral shape normalizeOneBot11 extracts from one OneBot 11 message
  * event: exactly the fields the inbound pipeline consumes, with the event
@@ -107,6 +107,7 @@ export interface InboundContext {
     buildBody(text: string, media: MediaRef[], chatId: ChatId, images?: ImageAttachmentRef[]): Promise<string>;
     /** Quote (reply) expansion (bridge facade: overridable, see the pipeline-order test). */
     expandQuote(messageId: string): Promise<string>;
+    /** Turn dispatch — bridge-owned orchestration (ensureChat + per-turn prefixes). */
     /** Turn dispatch — bridge-owned orchestration (ensureChat + per-turn prefixes).
      *
      * `images` (T15)：本条消息的图片引用，按出现顺序。显式随调用链传递，不再
@@ -144,7 +145,9 @@ export declare const DEFAULT_DEDUP_WINDOW_SECONDS = 300;
 /** W2-②: max entries kept in the dedup window map (LRU-evicted beyond this)
  * so a flood of distinct message_ids cannot grow memory unbounded. */
 export declare const DEDUP_MAX_ENTRIES = 4096;
-/** Cap on the get_msg quote memo (text + author per quoted id); same LRU reasoning as DEDUP_MAX_ENTRIES. */
+/** Cap on the get_msg quote memo (text + author per quoted id). Same LRU
+ * reasoning as DEDUP_MAX_ENTRIES: an unbounded map would leak under a flood of
+ * distinct quoted ids. */
 export declare const QUOTE_MEMO_MAX_ENTRIES = 512;
 /** Constructor tuning knobs for the inbound pipeline (tests inject a fake
  * clock / a small LRU cap; production uses the defaults). */
@@ -197,7 +200,10 @@ export declare class InboundPipeline {
      * `attach` (T15): 图片走真图片块投递——成功时把引用压入调用方传入的
      * `images` 收集器、注解降级为 `[图片]`（像素已随 image 块送达，
      * 再重复一遍路径只会浪费 token）；未投递则保持 `[图片:<路径>]` 原样。命令
-     * 路由（/ocr 等）取注解时传 false，只关心路径、不必付附件投递的代价。 */
+     * 路由（/ocr 等）取注解时传 false，只关心路径、不必付附件投递的代价。
+     *
+     * T18：图片引用经形参传递，不再挂在 per-chat settings 上——`handleInbound`
+     * 是 fire-and-forget，同一会话并发处理两条消息时共享可变数组会互相取走。 */
     resolveMediaRef(ref: MediaRef, chatId: ChatId, attach?: boolean, images?: ImageAttachmentRef[]): Promise<string>;
     /** M3-D4c: transcribe in the background and deliver the labeled transcript
      * into the chat's turn (steer at the running turn's nearest step boundary,

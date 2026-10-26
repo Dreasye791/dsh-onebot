@@ -131,6 +131,17 @@ export interface Config {
     adminUsers: string[];
     allowAllUsers: boolean;
     ignoreSelf: boolean;
+    /**
+     * NapCat 启动器路径（本地补丁，可选）。
+     *
+     * NapCat 是插件的**外部依赖**：插件在 8643 上监听，等它以反向 WebSocket
+     * 连进来。NapCat 没起来时通道静默不可用，只能靠翻它的日志猜。配上这个路径
+     * 后，插件能在检测到未连接时自己把 NapCat 拉起来（需配合 autoStartNapcat）。
+     * 留空 = 只在未连接时打印排查提示，不启动任何进程。
+     */
+    napcatLauncher: string;
+    /** 是否允许插件在未连接时自动执行 napcatLauncher（默认 false，需显式开启） */
+    autoStartNapcat: boolean;
     interimMessages: boolean;
     /** Per-interim auto-recall delay (ms) from each interim's send completion. */
     interimRecallMs: number;

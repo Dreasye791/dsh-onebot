@@ -117,3 +117,27 @@ done
 | 0.3.0-alpha.1 | false | false（空） |
 
 对照：旧范围（前三分支）下 `0.2.0-rc.1 / 0.2.0 / 0.2.1` 均为 false（0.5.0 前缺陷坐实）。
+
+## 0.2.1 预发布分支补进 peer（2026-10-26）
+
+**问题**：`engines.dsh` 在 0.9.4 就补了 `|| >=0.2.1-0 <0.3.0-0`（提交 69d17f3），
+8 个 peer **漏改**。而实际宿主是 `0.2.1-rc.3`（桌面版 asar 内 6946 个
+`@deepseek-ai/*` 条目全部为该版本）——`>=0.2.0-rc.1 <0.3.0-0` 对 `0.2.1-rc.x`
+为 false，即 peer 声明不承认正在运行的宿主。
+
+**修改**：8 个 `@deepseek-ai/*` peer 追加同一分支，与 engines.dsh 对齐。
+
+**矩阵**（`semver.satisfies`，npm 自带 semver，2026-10-26 实测）：
+
+| 版本 | engines.dsh | 8 个 peer（补后） | 说明 |
+| --- | --- | --- | --- |
+| 0.2.0-rc.1 | true | true | 既有分支 |
+| 0.2.1-rc.2 | true | **true**（补前 false） | 本地 node_modules 副本版本 |
+| 0.2.1-rc.3 | true | **true**（补前 false） | 桌面版宿主实际版本 |
+| 0.2.1 | true | true | 既有分支 |
+| 0.2.2-rc.1 | false | false | 新元组，需另补 |
+| 0.3.0-0 | false | false | 上界仍生效 |
+
+**维护注意**：node-semver 只允许预发布版本命中「区间内存在同一 major.minor.patch
+元组且带预发布标签」的比较符，所以 `>=0.2.1-0` **不会**覆盖 `0.2.2-rc.1`（实测
+false）。宿主每进入一个新预发布元组，engines 与 8 个 peer 都要同时补一条。

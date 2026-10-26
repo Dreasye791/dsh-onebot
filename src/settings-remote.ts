@@ -44,8 +44,10 @@
  * dsh-expert-orchestrator/lib/remote.js 的降级骨架）。
  */
 
-import { isAbsolute } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { isDeepStrictEqual } from 'node:util'
+import { diagnoseNapcat, formatDiagnosis } from './napcat-diagnose.js'
 
 import type { Context } from '@deepseek-ai/cordis'
 
@@ -95,6 +97,9 @@ export const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>> = {
   workspacePath: '',
   // T12：表情包目录（schema 默认 ''，src/index.ts:318——留空 = 不注册 qq_send_meme）。
   memeDir: '',
+  // 本地补丁：NapCat 看护（schema 默认 ''/false；配置后设置页才能诊断与展示二维码）。
+  napcatLauncher: '',
+  autoStartNapcat: false,
   // T15：入站图片投递（schema 默认 true / 10 / 500 / 0 / 15000，src/index.ts T15 五键）。
   attachInboundImages: true,
   attachMaxImageMB: 10,
@@ -173,8 +178,14 @@ const NUMBER_RANGE: Readonly<Record<string, readonly [number, number | undefined
 const BOOLEAN_KEYS: readonly string[] = [
   'requireMention', 'allowAllUsers', 'interimMessages', 'interimRecall', 'sendErrorNotice', 'attachInboundImages',
   'actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun',
+  // 本地补丁：NapCat 看护开关（是否允许未连接时自动拉起）
+  'autoStartNapcat',
 ]
-const STRING_KEYS: readonly string[] = ['host', 'url', 'accessToken', 'botQQ', 'workspacePath', 'persona', 'memeDir']
+const STRING_KEYS: readonly string[] = [
+  'host', 'url', 'accessToken', 'botQQ', 'workspacePath', 'persona', 'memeDir',
+  // 本地补丁：NapCat 启动器路径（诊断据此推导 NapCat.Shell 目录）
+  'napcatLauncher',
+]
 /** 字符串键长度上限（T11：与 client patchSchema `vString(0, 20000)` 同宽，
  *  防止仅经 Remote 直连的调用方绕过面板写入无界大文本进 patch）。
  *  未列出的字符串键不设上限（保持 T1 既有行为）。 */
@@ -202,6 +213,8 @@ export interface OnebotSettingsSnapshot {
   secrets: Array<{ path: string[]; set: boolean }>
   groups: Record<string, string[]>
   effect: typeof REMOTE_EFFECT
+  /** NapCat 诊断（本地补丁，只读）；未配置 launcher 时为 unconfigured */
+  napcat: NapcatStatusResult
 }
 
 /** §3.1 revision 计数器状态（内存态，随宿主进程/服务实例存续）。 */
@@ -456,6 +469,13 @@ function buildSnapshot(entry: ConfigEditorEntry, state: RevisionState): OnebotSe
     secrets,
     groups: Object.fromEntries(Object.entries(SETTINGS_GROUPS).map(([group, keys]) => [group, [...keys]])),
     effect: REMOTE_EFFECT,
+    // NapCat 状态（本地补丁）：挂在既有 getSettings 的返回里，而不是新增一个
+    // Remote 方法 —— 网关的 methods 来自编译期 spec，运行时 markRemote 加的方法
+    // 不会出现在其中（实测 remote.methods 里没有新方法）。扩展返回结构则不受此限。
+    napcat: buildNapcatStatus(
+      typeof config.napcatLauncher === 'string' ? config.napcatLauncher : '',
+      typeof config.port === 'number' ? config.port : 8643,
+    ),
   }
 }
 
@@ -551,6 +571,69 @@ export function validatePatch(patch: unknown): Record<string, unknown> {
 /** getSettings 实现（descriptor 方法体共用；descriptor 参数 0 个）。 */
 export function getSettings(editor: ConfigEditorLike, state: RevisionState): OnebotSettingsSnapshot {
   return buildSnapshot(findEntry(editor), state)
+}
+
+/** NapCat 状态（供设置页展示）：诊断结论 + 新鲜二维码的 data URL。 */
+export interface NapcatStatusResult {
+  /** 诊断阶段：ok / no-process / instance-conflict / not-logged-in / risk-control / unconfigured / error */
+  stage: string
+  /** 一句话结论 */
+  summary: string
+  /** 多行明细（四阶段） */
+  detail: string
+  /** 二维码 data URL；无文件或已过期（>5 分钟）为 null */
+  qrcodeDataUrl: string | null
+  qrcodeAgeMinutes: number | null
+}
+
+/** 读出 5 分钟内的二维码并转成 data URL；过期的不返回（扫了也没用）。 */
+function readQrcodeDataUrl(napcatDir: string): string | null {
+  const file = join(napcatDir, 'cache', 'qrcode.png')
+  if (!existsSync(file)) return null
+  try {
+    if (Date.now() - statSync(file).mtimeMs > 5 * 60_000) return null
+    return `data:image/png;base64,${readFileSync(file).toString('base64')}`
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 组装 NapCat 状态快照（只读）。
+ *
+ * 未配置 `napcatLauncher` 时不猜路径，直接返回 unconfigured —— 插件不假设
+ * NapCat 装在哪，也不主动探测文件系统。
+ */
+export function buildNapcatStatus(launcher: string, port: number): NapcatStatusResult {
+  const trimmed = launcher.trim()
+  if (trimmed === '') {
+    return {
+      stage: 'unconfigured',
+      summary: '未配置 napcatLauncher：插件不诊断 NapCat 状态，也不自动启动。',
+      detail: '',
+      qrcodeDataUrl: null,
+      qrcodeAgeMinutes: null,
+    }
+  }
+  const dir = dirname(trimmed)
+  try {
+    const diagnosis = diagnoseNapcat({ napcatDir: dir, port })
+    return {
+      stage: diagnosis.stage,
+      summary: diagnosis.summary,
+      detail: formatDiagnosis(diagnosis),
+      qrcodeDataUrl: readQrcodeDataUrl(dir),
+      qrcodeAgeMinutes: diagnosis.qrcodeAgeMinutes,
+    }
+  } catch (error) {
+    return {
+      stage: 'error',
+      summary: `诊断失败：${String(error)}`,
+      detail: '',
+      qrcodeDataUrl: null,
+      qrcodeAgeMinutes: null,
+    }
+  }
 }
 
 /** W6 错误归一：宿主 configEditor.edit 的原生失败（文件锁超时 / 活性检查 /
@@ -701,11 +784,25 @@ if (protocol?.TypertRemoteService) {
     async listReasoningEfforts(): Promise<ReasoningEffortsResult> {
       return listReasoningEfforts(resolveLlmRuntime(this.ownerCtx), resolveDefaultModel(this.ownerCtx))
     }
+
+    /**
+     * NapCat 状态（本地补丁，只读）：让设置页能显示「卡在哪一步」并直接扫码，
+     * 从而不必盯着 NapCat 那个 GBK 乱码的控制台窗口。
+     *
+     * 只读诊断 + 读二维码文件；不启动、不终止任何进程。
+     */
+    async getNapcatStatus(): Promise<NapcatStatusResult> {
+      const snapshot = getSettings(this.configEditor(), this.state)
+      const launcher = typeof snapshot.config.napcatLauncher === 'string' ? snapshot.config.napcatLauncher : ''
+      const port = typeof snapshot.config.port === 'number' ? snapshot.config.port : 8643
+      return buildNapcatStatus(launcher, port)
+    }
   }
   markRemote(OnebotSettingsRemote, 'getSettings')
   markRemote(OnebotSettingsRemote, 'updateSettings')
   markRemote(OnebotSettingsRemote, 'listWorkspaces')
   markRemote(OnebotSettingsRemote, 'listReasoningEfforts')
+  markRemote(OnebotSettingsRemote, 'getNapcatStatus')
   OnebotSettingsService = OnebotSettingsRemote
 } else {
   console.warn('[dsh-onebot] @deepseek-ai/dsh-typert-protocol unavailable — onebotSettings remote degrades to a plain cordis service')

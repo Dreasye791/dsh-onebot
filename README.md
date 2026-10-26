@@ -192,7 +192,7 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `dmPolicy` | `open` | 私聊策略：`open`(仅管理员)/`allowlist`(白名单)/`disabled` |
 | `groupPolicy` | `open` | 群聊策略：`open`(所有人)/`allowlist`/`disabled` |
 | `restrictedMemberPrefix` | `true` | 群聊非管理员消息注入 `[受限用户:仅问答]` 前缀（软限制） |
-| `adminUsers` | `[]` | 管理员 QQ；也可用 `ONEBOT_ALLOWED_USERS` 环境变量。**必须至少设置一个**，否则私聊（dmPolicy=open）与斜杠命令无人可用 |
+| `adminUsers` | `[]` | 管理员 QQ；也可用 `ONEBOT_ALLOWED_USERS` 环境变量。**必须至少设置一个**，否则私聊（dmPolicy=open）与斜杠命令无人可用。为空且未开 `allowAllUsers` 时，插件会在启动期 warn 一次并说明后果 |
 | `allowFrom` / `groupAllowFrom` | `[]` | 白名单用户/群 |
 | `mcpToolAllow` | `[]` | QQ 通道 MCP 工具白名单（T20）：**留空（默认）= 禁用全部 MCP 工具**（刻意的 fail-closed 默认。MCP 服务器挂在 profile 根作用域上，QQ 通道与 Web GUI 继承同一套工具，等于把这些能力直接交给群友）。非空时按任一写法匹配、命中才放行：`mcp__akasha__akasha_search`（完整工具名，最精确）、`mcp__akasha__*`（该服务器全部工具）、`akasha`（服务器名简写）、`akasha_search`（任意服务器下同名工具）、`*`（全部 MCP 工具，慎用）。**通配只有 `*` 与 `mcp__<服务器>__*` 两种**，其它含 `*` 的写法（如 `akasha*`）会被忽略并记一条 warn，避免无意放大授权范围；服务器名与工具名一律整段全等比较，不做前缀/子串匹配。**`mcp__<服务器>__*` 只覆盖单段工具名**：服务器名自身含 `__`（如 `dbx__prod`）时，`mcp__dbx__*` 不会连带放行它的工具（否则一个泛化条目就能越权到别的服务器），必须写成 `mcp__dbx__prod__*` 或完整工具名。单项 ≤128 字符、最多 256 条（设置页与 schema 均限；读侧刻意放宽到 4096 字符，这样手改配置写了超长值只会让该项不生效，不会让整份设置解码失败、面板全空）。拒绝时只回「不在白名单内」，不回显白名单内容（避免模型把它转述到群里）。`qq_*` 工具与宿主内置工具（`read`/`bash` 等）**不受本项影响**。**只影响 QQ 通道，Web / GUI 会话不受影响**。设置页「权限」组可改，保存后由插件级热重启生效。 |
 | `interimMessages` | `true` | 工具调用之间的中间文本是否立即发送；`false` 只发最终回复 |
@@ -452,7 +452,8 @@ chat 回退到下一条消息新建会话，不会卡死。损坏（碰撞/恢�
 | 插件挂载失败 / peer 依赖解析失败 | 部署副本缺完整 node_modules 链接集：只复制 `lib/` 不够，运行时 peer 依赖 `@deepseek-ai/*` 需经 `scripts/link-host.sh` 链接到宿主安装；插件入口会 fail-loud 显式报「peer 依赖解析失败」，按报错补齐链接集后重启 |
 | `build.sh` 报 `cannot locate the dsh install` | 宿主无 `dsh` 在 PATH（如 fnOS 应用形态）且未找到 npx store：设 `DSH_ROOT=<宿主 node_modules 路径>` 后重跑 `./scripts/build.sh`（该目录下须有 `@deepseek-ai/`，设错路径会显式报错而非静默回退） |
 | 改了设置页 / patch 但不生效 | 按顺序排查：① 确认改的是**被监视的文件**——profile 层 `<DSH_HOME>/profiles/web/cordis.patch.yml` 或 home 层 `<DSH_HOME>/cordis.patch.yml`（仓库 patch 模板、部署副本、bundle 自带 patch 均不被监视，需同步到上述文件）；② 内容须真的变化（touch 同内容文件是 no-op）；③ 看宿主日志有无激活失败——insert 新增条目激活失败（如 peer 缺失）会显式报错、条目失活，等待重启重试；④ 设置页的持久层是 profile 层 `dsh-onebot` 覆盖行，改到别处（如已被宿主废弃改名的 settings.yaml）不会生效 |
-| 日志在哪 | dsh 宿主日志；插件历史根因与修复见 [DEVLOG.md](DEVLOG.md) |
+| 日志在哪 | dsh 宿主日志；桌面版（GUI 进程）里插件的 `mounted` 与连接日志同时落盘 `mediaDir/onebot.log`；插件历史根因与修复见 [DEVLOG.md](DEVLOG.md) |
+| 挂没挂上、用的是哪套宿主依赖 | 看 `mediaDir/startup-report.txt`（每次启动生成：插件版本、宿主 peer 版本与落点、Node/平台、传输、mediaDir、workspacePath、管理员数）或 `mediaDir/onebot.log` 的「宿主 peer 解析」行。落点写「宿主 asar 内」= 走宿主安装树（正常）；写「插件自带 node_modules」= 用了本包自带的 peer 副本，存在双包风险（通常是 `peerDependencies` 未声明该包，或本地残留了副本） |
 | 凭参考号查故障全过程 | 任何 `⚠️` 错误提示/连接故障日志尾部的参考号（`MF-…` 消息类 / `QQ-CONN-…` 连接类）都可在 `mediaDir/qq-trace.jsonl` 中检索：`grep <参考号> mediaDir/qq-trace.jsonl` 即列出该次故障的全部决策事件（stage/reason/耗时/traceId）。也可在 QQ 里发 `/doctor` 查看「最近故障参考号」节（含每号的 traceId 与阶段），或 `/doctor export <参考号>` 导出文件名含该号的脱敏诊断包离线分析。参考号仅在故障事件生成，正常流量零开销，不含用户消息正文 |
 
 ## 开发记录

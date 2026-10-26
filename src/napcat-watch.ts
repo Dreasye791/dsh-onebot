@@ -35,6 +35,13 @@ export interface NapcatWatchOptions {
   pollIntervalMs?: number;
   /** 最多自动拉起次数（避免无限重试） */
   maxLaunches?: number;
+  /**
+   * 额外提示（例如「只监听了环回地址」这类环境侧原因）。
+   *
+   * 只在首次告警时输出一次：这类提示做启动期 warn 会变成每次启动的噪声，
+   * 挂在「确实没连上」的时刻才有信息量。
+   */
+  extraHint?: string;
   log: WatchLog;
 }
 
@@ -116,6 +123,10 @@ export class NapcatWatch {
     if (!this.warned) {
       this.warned = true;
       this.options.log('warn', diagnosis !== null ? formatDiagnosis(diagnosis) : HINT);
+      const hint = this.options.extraHint?.trim() ?? '';
+      if (hint !== '') {
+        this.options.log('warn', hint);
+      }
       if (alreadyRunning) {
         this.options.log(
           'warn',

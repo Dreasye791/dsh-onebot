@@ -895,3 +895,22 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
   - 顺带修 `registry.ts` 的 `reasoningEffort` 与宿主 branded 类型不匹配（此前 `tsc` 实际有 1 个错误，一直被输出截断掩盖）。
 - **验证**：`npx tsc --noEmit` 0 错误；`vitest run` 40 spec / 588 用例 → 557 passed / 19 failed / 12 skipped；19 条全部为 Windows 平台差异（t2i 无 CJK 字体 10、8.3 短路径 9），Linux 预期全绿。
 - **未做**：`lib/` 中 6 个文件（`attach` / `commands` / `cq` / `inbound` / `mcp-gate` / `settings-remote`）发现原产物与 `src/` 存在历史漂移，本批次已回滚保持现状，留待单独一轮「产物重建 + 真机回归」。
+
+## 2026-10-26 启动自检第一批（preflight）+ peer 声明补 0.2.1 分支
+
+同一批里把部署形态从「实体拷贝副本」纠正为 junction 直连源码仓（见「部署」），运行时改动如下。
+
+- **peer 声明补分支**：8 个 `@deepseek-ai/*` peer 追加 `|| >=0.2.1-0 <0.3.0-0`，与 `engines.dsh` 对齐——后者在 0.9.4（`69d17f3`）就补了该分支，peer 漏改。semver 实测：补前 `0.2.1-rc.2` / `0.2.1-rc.3` 均 false（`0.2.1` 正式版才 true），补后 true 且 `0.2.2-rc.1` / `0.3.0-0` 仍 false（未过度放宽）。矩阵落 `docs/semver-matrix.md`。
+- **启动自检（第一批）**：
+  - `describeResolvedPeer()`：启动时取 `@deepseek-ai/dsh-agent/package.json` 的真实落点，日志与启动报告同时输出「版本 + 落点 + 完整路径」。落点分「宿主 asar 内 / 插件自带 node_modules / 未知位置」——这是判断是否双包的可靠依据（两处可能同版本，只打版本号区分不出来）。
+  - `mounted` 改走 `log()` 落盘并补 `host:port`：桌面版是 GUI 进程，stdout 无处可看，此前「挂没挂上」只能靠猜。
+  - `mediaDir/startup-report.txt`：插件版本、宿主 peer、Node/平台、传输、mediaDir、workspacePath、管理员数、日志级别。
+  - `adminUsers` 为空时启动期 warn（说清「无人能对话」的后果与两个出口）；此前只有 mounted 行里的 `admins=0`。
+  - 挂载失败文案拆分：单独探 `@napi-rs/canvas`，命中即追加「这不是 peer 依赖问题」——此前两类故障共用一句「补齐 link-host 链接集」，会把原生模块问题引向错误解法。
+  - `NapcatWatch.extraHint`：仅在 `reverse` 且监听环回地址时，随「确实没连上」的告警附加「跨机/Docker 需改 0.0.0.0」，不做启动期噪声。
+- **实测结论（重要）**：桌面版宿主把 53 个 `@deepseek-ai/*` 打在 `resources/app.asar` 内（0.2.1-rc.3）。junction + peer 声明之下，启动报告显示 `@deepseek-ai/dsh-agent 0.2.1-rc.3（宿主 asar 内）：F:\dsh\resources\app.asar\...` ⇒ **asar 形态下 peer 路由确实生效**，插件用的是宿主 rc.3，不是仓库 `node_modules` 的 rc.2，**无双包**。前提：`@deepseek-ai/*` 必须写在 `peerDependencies`（路由只认 peer 声明）。此前「设置页正常」的成因由此定性。
+- **部署形态**：`profiles/desktop/node_modules/dsh-onebot-qq` 由实体拷贝改为 junction → 源码仓；旧副本改名 `.bak-link-20261026` 留档。收益：改 `src/` → `tsc` → 重启即生效，不再需要「构建→复制→对齐」。
+- **产物**：本次 `tsc -p tsconfig.json` 全量重建 `lib/`，与上述 lib 漂移遗留一并收口（`lib/` 与 `src/` 同步入库）。
+- **验证**：`tsc` exit 0；`tests/plugin.spec.ts` 6/6（原「恰好一条 warn」断言改为按内容筛选，新增「管理员已配置不提示」）；重启后 `startup-report.txt` 与 `onebot.log` 均输出预期内容，`admins=1`。
+- **已知遗留**：`tests/client-settings.spec.ts` 4 条失败 = 期望 40 键 / 实际 38 键，属 `a9ed1ab`（移植上游设置页、保留 38 键）遗留，本批未修。
+- **环境备注**：宿主 Node 为 v24.21.0（Electron 自带），仓库开发环境 node v22.18.0；涉及 Node 版本相关 API 时以宿主为准。

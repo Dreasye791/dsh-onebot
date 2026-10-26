@@ -931,6 +931,14 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **README「安装-前置」补 NapCat 硬约束**：新增醒目一段——NapCat 注入要求 **QQ 在注入前未运行**，QQ 已开着（如开机自启）会被判为 `QQ 已占用` 且插件停止尝试，需先完全退出 QQ 再由 launcher 拉起。此前这条只写在排障表里，而它是整条链路上最容易踩的坑。
 - **验证**：`npm pack --dry-run` 清单正确（79 文件，含 docs）；本轮只动 `package.json` 与 `README.md`，不涉及 `src/`、`lib/`，无需重建与回归。
 
+## 2026-10-27 版本号加 fork 标识：0.9.6+dreasye.1
+
+- **选型**：与 upstream 保持同一条主线 `0.9.6`，另加 **build metadata** 后缀 `+dreasye.1`，而不是预发布后缀 `-dreasye.1`。依据 node-semver 两条规则：**预发布版本低于同版本正式版**（`0.9.6-x < 0.9.6`，不满足 `^0.9.6` / `>=0.9.6` / `~0.9.6`），**build metadata 不参与比较**（`0.9.6+x == 0.9.6`）。同一规则此前已由 `docs/semver-matrix.md` 的 `0.2.1-rc.x` 情形实测确认。
+- **代价（已知并接受）**：① 不能 `npm publish` —— registry 会规范化去掉 `+`，与 upstream 的 `0.9.6` 撞号；② `profiles/desktop/compatibility.json` 里 `dsh-onebot-qq@0.9.6` 这条豁免键将对不上，但 `engines.dsh` 已含 `>=0.2.1-0`，该豁免本就多余。
+- **产物**：`npm pack` → 392.8 kB / 79 文件；包内 `version` 已核为 `0.9.6+dreasye.1`，`main` 指向 `lib/index.js`，`docs/napcat-launcher.md` 与 `cordis.patch.yml` 均在。对外复制为 `dsh-onebot-qq-0.9.6-dreasye.1.tgz`（名字里不带 `+`，规避 URL path 中 `+` 被部分代理转成空格），包内 version 不变 —— pnpm 读的是包内 `package.json`。
+- **同步**：`dsh.plugin.json` 的 `version`、`package-lock.json` 顶部与 `packages[""]` 两处一并改，避免清单与 lock 漂移（`npm ci` 会比对）。
+- **分发方式**：GitHub Release（tarball spec）/ `git+https://…#<commit>` / 本地 `file:`。三条都不经过 registry。
+
 ## 2026-10-26 NapCat 诊断修复（三缺陷 + 说清「卡在哪一步」）
 
 **背景**：真实事故 —— QQ 于 12:25 被手动启动，插件 15:35 两次拉起注入器均失败；旧诊断只报「NapCat 根本没启动」，把真原因（QQ 已占用、注入器无法接管）完全盖住。配置侧已逐项排查无误（onebot11 反向 WS url/token/端口/格式全对，11:17 曾正常收发消息），NapCat 日志停在 11:19 的 `ECONNREFUSED`（当时插件正在重启，之后进程消失）。

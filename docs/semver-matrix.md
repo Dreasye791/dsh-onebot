@@ -140,4 +140,12 @@ done
 
 **维护注意**：node-semver 只允许预发布版本命中「区间内存在同一 major.minor.patch
 元组且带预发布标签」的比较符，所以 `>=0.2.1-0` **不会**覆盖 `0.2.2-rc.1`（实测
-false）。宿主每进入一个新预发布元组，engines 与 8 个 peer 都要同时补一条。
+false）。宿主每进入一个新预发布元组，`engines.dsh` 与 7 个 `@deepseek-ai/dsh-*` peer
+都要同时补一条；`tests/config-ranges.spec.ts` 在这三处（`engines.dsh` /
+`dsh.plugin.json` 的 engines / 7 个 dsh-* peer）不一致时报红（已用「临时删一条分支」
+反向验证：删后红、还原后绿）。
+
+**例外：`@deepseek-ai/schemastery` 不走 dsh 版本线。** 它的版本是 3.18.x（宿主 asar 内
+3.18.5），误套 dsh 的 `>=0.1.5-rc.1 …` 区间会让 `npm install` 直接 `ETARGET`（2026-10-26
+实测），锁文件也生成不出来——此前该 peer 就是这么写的，功能没坏只是因为宿主 peer 路由
+**只认名字、不看版本**。已改为 `^3.18.0`，与 dependencies 里的 `schemastery` 同宽。

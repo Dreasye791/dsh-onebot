@@ -225,6 +225,9 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `agentPreset` | 空 | 会话挂载的 agent preset（留空=默认） |
 | `workspacePath` | 空 | 会话挂载的工作区（留空=宿主进程 cwd；未配置时插件启动会 warn 一次建议显式配置——宿主未提供可编程查询的默认工作区）。`/workspace` 的 per-chat 覆盖已持久化进映射文件，重启不丢 |
 | `chatIdleEvictDays` | `7` | 会话空闲淘汰天数：chat 超过该天数无任何活动时，在下一条入站消息处理前清理其内存态 agent（会话先 flush 落盘、映射保留，同一 chat 之后再发消息可 resume 恢复原会话）；`0` = 禁用 |
+| `napcatLauncher` | 空 | NapCat 启动器路径（可选）。留空则只在未连接时打印排查提示；配合 `autoStartNapcat` 使用。**用 NapCat 自带的启动脚本**（`launcher-user.bat` / `launcher-win10-user.bat` / `launcher.bat` / `launcher-win10.bat`，任选其一）：它们都带 `chcp 65001` 与 5 个 `NAPCAT_*` 环境变量；自建脚本漏环境变量会让 QQ 报「文件已损坏」。末尾 `pause` 会留一个隐藏的 cmd 进程，属正常 |
+| `napcatLauncherArgs` | `[]` | 传给 `napcatLauncher` 的参数（给 **NapCat** 的，不是给 QQ 的）。免扫码登录：patch 里写 `['-q', '<机器人QQ号>']`，设置页面板里**每行一个**（`-q` 一行、号码一行）。写成一行 `-q 123456` 或 `-q123456` 都无效——NapCat 按 argv 全等匹配 `-q`，会退回二维码。参数含 shell 元字符（`&` `\|` `<` `>` `^` `%` `!` 双引号）会被忽略并记 warn，条目原文不打印 |
+| `autoStartNapcat` | `false` | 未检测到 NapCat 连接时是否自动执行 `napcatLauncher`（最多 2 次，不杀任何进程）。诊断为 `QQ 已占用`（QQ 先启动）时不会尝试拉起——已运行的 QQ 无法被注入接管。详见 [docs/napcat-launcher.md](docs/napcat-launcher.md) |
 
 > ⚠️ **BREAKING（M0 安全加固）**：reverse 模式下 `accessToken` 留空会拒绝启动（fail-closed）；`host` 默认从 `0.0.0.0` 改为 `127.0.0.1`（仅本机监听），跨机部署需显式配置 `host: 0.0.0.0`。
 
@@ -265,7 +268,7 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 dsh Web GUI 的设置页提供本插件的可视化配置（host-plane Remote `onebotSettings`，写入 profile 层
 `cordis.patch.yml` 中 `dsh-onebot` 条目的 config 覆盖行——与手改 patch、宿主原生设置页是同一个持久层）。
 
-### 四组 38 键
+### 四组 41 键
 
 | 组 | 键 |
 |---|---|
@@ -279,7 +282,7 @@ dsh Web GUI 的设置页提供本插件的可视化配置（host-plane Remote `o
 ### 与 patch config 的优先级
 
 **schema 默认值 ← bundle/底层 patch（继承层） ← profile 覆盖行（设置页写这里）**；同一层内后写的 patch
-条目胜出。设置页键与手改 patch 是同一层的同一行，不存在两套优先级。四组 38 键之外的键
+条目胜出。设置页键与手改 patch 是同一层的同一行，不存在两套优先级。四组 41 键之外的键
 （media/STT/性能/`agentPreset` 等低频键）不设 UI，仍在同一行 config 手改 patch。
 
 ### 生效方式
@@ -444,7 +447,7 @@ chat 回退到下一条消息新建会话，不会卡死。损坏（碰撞/恢�
 | 症状 | 原因与处理 |
 |---|---|
 | 群聊不响应 | `requireMention: true` 时需 @ 或回复机器人的消息才触发；@ 检测 fail-closed——确认 botQQ 已从 meta 事件学习，或显式配置 |
-| NapCat 未连接 / QQ 机器人没反应 | 先看 `mediaDir/onebot.log` 与设置页「NapCat」卡片的阶段结论：**`QQ 已占用`** = QQ 先启动了，注入器无法接管已运行的 QQ（NapCat 要求由 launcher 独占拉起），请完全退出 QQ 后由 launcher 启动；**`等待扫码登录`** = 扫二维码（超过约 5 分钟失效）；**`端口未连接`** = 注入器在跑但 OneBot 没连上，核对 NapCat 的 onebot11 反向 WS 的 url/token；**`NapCat 未启动`** = 注入器与 QQ 都不在。拉起器的原始输出在 `mediaDir/napcat-launcher.log` |
+| NapCat 未连接 / QQ 机器人没反应 | 先看 `mediaDir/onebot.log` 与设置页「NapCat」卡片的阶段结论：**`QQ 已占用`** = QQ 先启动了，注入器无法接管已运行的 QQ（NapCat 要求由 launcher 独占拉起），请完全退出 QQ 后由 launcher 启动；**`等待扫码登录`** = 扫二维码（超过约 5 分钟失效）；**`端口未连接`** = 注入器在跑但 OneBot 没连上，核对 NapCat 的 onebot11 反向 WS 的 url/token；**`NapCat 未启动`** = 注入器与 QQ 都不在。拉起器的原始输出在 `mediaDir/napcat-launcher.log`。免扫码、开机自启与包装脚本模板见 [docs/napcat-launcher.md](docs/napcat-launcher.md) |
 | 图片下载 403 | NapCat 会把 URL 中的 `&` 转成 `&amp;`（解析已自动反转义）；仍失败可查日志中 media 下载行 |
 | 文件接收失败 | 非本机部署 NapCat 时需开启「文件转 URL」开关，否则 get_file 返回容器内路径不可达；确认 dsh 与 NapCat 网络互通 |
 | 文字图中文豆腐块 | Linux 未装 CJK 字体：`apt install fonts-noto-cjk`，并用 `fontFiles` 指定 SC 字体文件 |

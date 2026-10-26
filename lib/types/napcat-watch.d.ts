@@ -16,6 +16,14 @@ export type WatchLog = (level: 'info' | 'warn' | 'error' | 'debug', message: str
 export interface NapcatWatchOptions {
     /** 该 launcher 可执行文件路径；未配置则只提示，不拉起 */
     launcher?: string;
+    /**
+     * 传给 launcher 的额外参数（`napcatLauncherArgs`）。
+     *
+     * 存在的理由：NapCat 的免扫码依赖 `-q <QQ号>`，而插件原先只会 spawn 一个
+     * 路径、无法传参 —— 用户被迫在 NapCat 目录自建包装 bat，且容易漏掉
+     * launcher-user.bat 里那组 `NAPCAT_*` 环境变量（漏了 QQ 会报「文件已损坏」）。
+     */
+    launcherArgs?: readonly string[];
     /** 是否允许自动拉起（只有配置了 launcher 才有意义） */
     autoStart: boolean;
     /** NapCat.Shell 目录；缺省由 launcher 的父目录推导，用于读二维码与日志 */
@@ -44,6 +52,18 @@ export interface NapcatWatchOptions {
     logFile?: string;
     log: WatchLog;
 }
+/**
+ * 把 launcher 路径与参数拼成一条 `cmd /c` 命令。
+ *
+ * 参数来自 patch config（管理员手写），必须做转义：含 `& | < > ^ % !"`
+ * 的参数会被 cmd 当作命令分隔/重定向/变量展开 —— 轻则拉起失败，重则执行配置里
+ * 根本没写的命令。这类参数直接丢弃（fail-closed），`dropped` 交给调用方 warn；
+ * 日志里不回显条目原文（防把 token 类内容写进日志，与 mcpToolAllow 同口径）。
+ */
+export declare function buildLauncherCommand(launcher: string, args?: readonly string[]): {
+    command: string;
+    dropped: string[];
+};
 export declare class NapcatWatch {
     private readonly options;
     private timer;

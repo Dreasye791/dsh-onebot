@@ -156,6 +156,15 @@ export interface Config {
    * 留空 = 只在未连接时打印排查提示，不启动任何进程。
    */
   napcatLauncher: string
+  /**
+   * 传给 launcher 的额外参数（如 `['-q', '1354553622']` 走快速登录免扫码）。
+   *
+   * NapCat 只认独立的 `-q` 参数（其 launcher 示例脚本里的「launcher 123456」位置
+   * 参数无效，仍会出二维码）。有了这一项，用户不必在 NapCat 目录自建包装 bat，
+   * 也就不会再漏掉 launcher-user.bat 里那组 `NAPCAT_*` 环境变量（漏了 QQ 会报
+   * 「文件已损坏」）。
+   */
+  napcatLauncherArgs: string[]
   /** 是否允许插件在未连接时自动执行 napcatLauncher（默认 false，需显式开启） */
   autoStartNapcat: boolean
   interimMessages: boolean
@@ -321,7 +330,9 @@ export const Config: Z<Config> = z.object({
   allowAllUsers: z.boolean().default(false)
     .description('放行所有用户（仅开发用；也可用 ONEBOT_ALLOW_ALL_USERS=true）'),
   napcatLauncher: z.string().default('')
-    .description('NapCat 启动器路径（可选，如 NapCat.Shell\\launcher-user.bat）。留空则只在未连接时打印排查提示。配合 autoStartNapcat 使用'),
+    .description('NapCat 启动器路径（可选）。用 NapCat 自带的 launcher-user.bat / launcher-win10-user.bat / launcher.bat / launcher-win10.bat（任选其一：它们已设好 chcp 65001 与 5 个 NAPCAT_* 环境变量，自建脚本漏掉会让 QQ 报「文件已损坏」；末尾 pause 会留一个隐藏 cmd 进程，属正常）。留空则只在未连接时打印排查提示。配合 autoStartNapcat 使用'),
+  napcatLauncherArgs: z.array(z.string()).default([])
+    .description('传给 napcatLauncher 的额外参数（默认空）。免扫码登录填 ["-q", "<机器人QQ号>"]——NapCat 只认独立的 -q 参数，launcher 示例里的「launcher 123456」位置参数无效；参数中含 shell 元字符（& | < > ^ % ! 双引号）会被忽略并记一条 warn，条目原文不打印'),
   autoStartNapcat: z.boolean().default(false)
     .description('未检测到 NapCat 连接时，是否自动执行 napcatLauncher（默认关闭；最多尝试 2 次，不会杀任何进程）'),
   ignoreSelf: z.boolean().default(true)
@@ -776,6 +787,7 @@ export function apply(ctx: Context, config: Config): void {
     // 则尝试自动拉起（最多 2 次，不杀任何进程）。
     const napcatWatch = new NapcatWatch({
       launcher: config.napcatLauncher,
+      launcherArgs: config.napcatLauncherArgs,
       autoStart: config.autoStartNapcat,
       // NapCat.Shell 目录由 launcher 的父目录推导；未配置 launcher 时留空，
       // 诊断会退化成静态提示（不猜路径）。

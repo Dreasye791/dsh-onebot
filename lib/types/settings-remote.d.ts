@@ -72,7 +72,7 @@ export declare const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>
 export declare const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>>;
 /** 快照返回侧脱敏的键（T1 §3 敏感字段行；写入侧明文落盘属宿主既有行为）。 */
 export declare const SECRET_KEYS: readonly string[];
-/** 全部 38 键（校验与快照的唯一键集；7 枚举 + 8 数字 + 12 布尔 + 7 字符串 + 4 字符串数组）。 */
+/** 全部 41 键（校验与快照的唯一键集；7 枚举 + 8 数字 + 13 布尔 + 8 字符串 + 5 字符串数组）。 */
 export declare const ALL_KEYS: readonly string[];
 /** OnebotSettingsSnapshot（T1 §3 快照结构）。 */
 export interface OnebotSettingsSnapshot {

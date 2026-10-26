@@ -41,6 +41,14 @@ export interface NapcatDiagnosis extends NapcatFacts {
     /** 一句话结论：说清卡在哪一步 + 下一步该做什么 */
     summary: string;
 }
+/**
+ * NapCat 登录二维码有效期（分钟）。
+ *
+ * NapCat 每约 5 分钟刷新一次二维码，超过这个时长 `cache/qrcode.png` 里的图
+ * 已不可用 —— 面板若继续展示，用户扫了也没反应（2026-10-26 实测：登录成功
+ * 7 分钟后设置页仍在显示那张旧码）。
+ */
+export declare const QRCODE_TTL_MINUTES = 5;
 export interface DiagnoseOptions {
     /** NapCat.Shell 目录（含 cache/ 与 logs/） */
     napcatDir: string;

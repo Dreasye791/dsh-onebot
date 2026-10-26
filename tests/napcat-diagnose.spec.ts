@@ -49,11 +49,12 @@ describe('judgeNapcat — 卡在哪一步', () => {
     expect(result.summary).toContain('扫码')
   })
 
-  it('注入器在跑 + 二维码过期 → not-connected（卡在 OneBot 配置）', () => {
+  it('注入器在跑 + 二维码过期 → not-logged-in，且明说「已过期」而不是引去查 url/token', () => {
     const result = judge({ napcatProcess: true, qrcodeAgeMinutes: 12 })
-    expect(result.stage).toBe('not-connected')
-    expect(result.summary).toContain('8643')
-    expect(result.summary).toContain('token')
+    expect(result.stage).toBe('not-logged-in')
+    expect(result.summary).toContain('已过期')
+    // 过期码与 OneBot 配置无关，文案不能把用户引到 token/url 上
+    expect(result.summary).not.toContain('token')
   })
 
   it('注入器在跑 + 无二维码 → not-connected', () => {

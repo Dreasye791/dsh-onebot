@@ -140,6 +140,15 @@ export interface Config {
      * 留空 = 只在未连接时打印排查提示，不启动任何进程。
      */
     napcatLauncher: string;
+    /**
+     * 传给 launcher 的额外参数（如 `['-q', '1354553622']` 走快速登录免扫码）。
+     *
+     * NapCat 只认独立的 `-q` 参数（其 launcher 示例脚本里的「launcher 123456」位置
+     * 参数无效，仍会出二维码）。有了这一项，用户不必在 NapCat 目录自建包装 bat，
+     * 也就不会再漏掉 launcher-user.bat 里那组 `NAPCAT_*` 环境变量（漏了 QQ 会报
+     * 「文件已损坏」）。
+     */
+    napcatLauncherArgs: string[];
     /** 是否允许插件在未连接时自动执行 napcatLauncher（默认 false，需显式开启） */
     autoStartNapcat: boolean;
     interimMessages: boolean;

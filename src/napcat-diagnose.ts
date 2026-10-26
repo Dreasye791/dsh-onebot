@@ -55,6 +55,15 @@ export interface NapcatDiagnosis extends NapcatFacts {
   summary: string;
 }
 
+/**
+ * NapCat 登录二维码有效期（分钟）。
+ *
+ * NapCat 每约 5 分钟刷新一次二维码，超过这个时长 `cache/qrcode.png` 里的图
+ * 已不可用 —— 面板若继续展示，用户扫了也没反应（2026-10-26 实测：登录成功
+ * 7 分钟后设置页仍在显示那张旧码）。
+ */
+export const QRCODE_TTL_MINUTES = 5;
+
 /** 风控相关关键词：命中任意一个就提示「疑似风控」，不改判定为 not-logged-in。 */
 const RISK_WORDS = [
   '风控', '风险', '限制登录', '冻结', '封禁', '验证码', '需要验证',
@@ -187,11 +196,20 @@ export function judgeNapcat(facts: NapcatFacts): { stage: NapcatStage; summary: 
       summary: 'NapCat 注入器没有运行，QQ 也没在运行：NapCat 根本没启动。请运行 launcher（必要时前台跑一次以看到报错）。',
     };
   }
-  if (qrcodeAgeMinutes !== null && qrcodeAgeMinutes <= 5) {
+  if (qrcodeAgeMinutes !== null && qrcodeAgeMinutes <= QRCODE_TTL_MINUTES) {
     return {
       stage: 'not-logged-in',
       summary: 'NapCat 注入器在运行，但 QQ 尚未登录（二维码 ' + qrcodeAgeMinutes + ' 分钟前生成）：卡在扫码，'
-        + '请用手机 QQ 扫设置页或 NapCat 窗口里的二维码（超过约 5 分钟失效）。',
+        + '请用手机 QQ 扫设置页或 NapCat 窗口里的二维码（超过约 ' + QRCODE_TTL_MINUTES + ' 分钟失效）。',
+    };
+  }
+  if (qrcodeAgeMinutes !== null) {
+    // 过期二维码不能归到「OneBot 配置问题」：那会把用户引去查 url/token，
+    // 实际问题是他手上那张码早就失效了。
+    return {
+      stage: 'not-logged-in',
+      summary: 'NapCat 注入器在运行，但二维码已过期（' + qrcodeAgeMinutes + ' 分钟前生成，有效期约 '
+        + QRCODE_TTL_MINUTES + ' 分钟）：卡在登录 —— 需重新触发登录（重启 NapCat，或用 napcatLauncherArgs 配 `-q <QQ号>` 走快速登录）。',
     };
   }
   return {

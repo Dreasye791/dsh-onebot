@@ -165,7 +165,7 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `host` / `port` | `127.0.0.1` / `8643` | reverse 监听；跨机部署（NapCat 从其他机器拨入）需显式改为 `0.0.0.0` |
 | `url` | `ws://127.0.0.1:3001` | forward 目标 |
 | `reconnectMaxAttempts` | `100` | 自动重连放弃上限：连续失败达到该次数后停止重连，日志输出上限值与恢复指引；`0` = 无限重连（退避封顶 60s） |
-| `accessToken` | 空 | OneBot token；**reverse 模式必填**，留空插件拒绝启动（fail-closed）；forward 可为空 |
+| `accessToken` | 空 | OneBot token；**reverse 模式必填**，留空插件拒绝启动（fail-closed），启动期会先给一条点名 token 的中文处置提示（不再只报「peer 依赖解析失败」）；forward 可为空。它同时是 NapCat 侧 `onebot11_<QQ号>.json` 的 `websocketClients[].token`，两侧必须一致 |
 | `botQQ` | 空 | 机器人 QQ（空=自动学习） |
 | `ignoreSelf` | `true` | 忽略机器人自己发出的消息（防自循环） |
 | `requireMention` | `true` | 群聊需 @ 或回复机器人的消息才响应（回复他人消息不触发）。回复判定走一次 `get_msg` 取被回复消息的作者 QQ 来比对（OneBot 的 reply 段只带 message_id、不带 qq）；被回复消息已撤回/查不到/机器人 QQ 未知时一律视为**未提及**（fail-closed，宁可不答也不误答）。`botQQ` 为空时会被动从 meta 事件学习 |
@@ -227,7 +227,7 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `chatIdleEvictDays` | `7` | 会话空闲淘汰天数：chat 超过该天数无任何活动时，在下一条入站消息处理前清理其内存态 agent（会话先 flush 落盘、映射保留，同一 chat 之后再发消息可 resume 恢复原会话）；`0` = 禁用 |
 | `napcatLauncher` | 空 | NapCat 启动器路径（可选）。留空则只在未连接时打印排查提示；配合 `autoStartNapcat` 使用。**用 NapCat 自带的启动脚本**（`launcher-user.bat` / `launcher-win10-user.bat` / `launcher.bat` / `launcher-win10.bat`，任选其一）：它们都带 `chcp 65001` 与 5 个 `NAPCAT_*` 环境变量；自建脚本漏环境变量会让 QQ 报「文件已损坏」。末尾 `pause` 会留一个隐藏的 cmd 进程，属正常 |
 | `napcatLauncherArgs` | `[]` | 传给 `napcatLauncher` 的参数（给 **NapCat** 的，不是给 QQ 的）。免扫码登录：patch 里写 `['-q', '<机器人QQ号>']`，设置页面板里**每行一个**（`-q` 一行、号码一行）。写成一行 `-q 123456` 或 `-q123456` 都无效——NapCat 按 argv 全等匹配 `-q`，会退回二维码。参数含 shell 元字符（`&` `\|` `<` `>` `^` `%` `!` 双引号）会被忽略并记 warn，条目原文不打印 |
-| `autoStartNapcat` | `false` | 未检测到 NapCat 连接时是否自动执行 `napcatLauncher`（最多 2 次，不杀任何进程）。诊断为 `QQ 已占用`（QQ 先启动）时不会尝试拉起——已运行的 QQ 无法被注入接管。详见 [docs/napcat-launcher.md](docs/napcat-launcher.md) |
+| `autoStartNapcat` | `false` | 未检测到 NapCat 连接时是否自动执行 `napcatLauncher`（最多 2 次，不杀任何进程）。**默认 `false` = 插件不启动任何进程，NapCat 完全由你手动管理**；它与 `napcatLauncher` 独立——配了路径但此项为 `false` 时，路径只用于诊断。诊断为 `QQ 已占用`（QQ 先启动）时即使开启也不会拉起——已运行的 QQ 无法被注入接管。详见 [docs/napcat-launcher.md](docs/napcat-launcher.md) |
 
 > ⚠️ **BREAKING（M0 安全加固）**：reverse 模式下 `accessToken` 留空会拒绝启动（fail-closed）；`host` 默认从 `0.0.0.0` 改为 `127.0.0.1`（仅本机监听），跨机部署需显式配置 `host: 0.0.0.0`。
 
@@ -272,7 +272,7 @@ dsh Web GUI 的设置页提供本插件的可视化配置（host-plane Remote `o
 
 | 组 | 键 |
 |---|---|
-| connection（连接） | `mode`、`host`、`port`、`url`、`accessToken`、`botQQ`、`workspacePath`、`memeDir`、`attachInboundImages`、`attachMaxImageMB`、`attachmentBudgetMB`、`attachmentRetentionHours`、`attachmentSaveTimeoutMs` |
+| connection（连接） | `mode`、`host`、`port`、`url`、`accessToken`、`botQQ`、`workspacePath`、`memeDir`、`attachInboundImages`、`attachMaxImageMB`、`attachmentBudgetMB`、`attachmentRetentionHours`、`attachmentSaveTimeoutMs`、`napcatLauncher`、`napcatLauncherArgs`、`autoStartNapcat` |
 | permissions（权限） | `requireMention`、`adminUsers`、`dmPolicy`、`groupPolicy`、`allowAllUsers`、`allowFrom`、`groupAllowFrom`、`mcpToolAllow` |
 | behavior（行为） | `interimMessages`、`interimRecall`、`interimRecallMs`、`sendErrorNotice`、`unknownCommand`、`rateLimitPerMinute`、`newMessagePolicy`、`autoSteerPolicy`、`deferredTimeoutMs`、`reasoningEffort`、`persona` |
 | diagnostics（诊断） | `actionAuditEnabled`、`traceEnabled`、`recordInbound`、`inboxRedact`、`injectEnabled`、`injectDryRun` |

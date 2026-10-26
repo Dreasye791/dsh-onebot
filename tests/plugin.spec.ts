@@ -136,6 +136,23 @@ describe('plugin entry', () => {
     }
   })
 
+  it('reverse + 空 accessToken：先给中文处置提示，再 fail-closed 抛错', () => {
+    const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-plugin-'))
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      const ctx = makeCtx()
+      expect(() => apply(ctx.ctx as never, Config({
+        mediaDir, port: 0, accessToken: '', botQQ: '10002', sttEnabled: false,
+        sensitivePatterns: [], workspacePath: mediaDir, adminUsers: ['10001'],
+      }))).toThrow()
+      // 只有「peer 依赖解析失败」会把空 token 引去查依赖链接集 —— 必须有一条点名 token 的提示。
+      const lines = error.mock.calls.map(call => String(call[0]))
+      expect(lines.some(line => line.includes('reverse 模式必须配置 accessToken'))).toBe(true)
+    } finally {
+      error.mockRestore()
+    }
+  })
+
   it('宿主缺少 tools.guard 时启动期就停用通道（不进入每会话抛错循环）', () => {
     const mediaDir = mkdtempSync(join(tmpdir(), 'onebot-plugin-'))
     // 只提供 register，不提供 guard —— 模拟旧版/裁剪过的宿主。

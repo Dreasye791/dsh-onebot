@@ -915,6 +915,15 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **已知遗留**：`tests/client-settings.spec.ts` 4 条失败 = 期望 40 键 / 实际 38 键，属 `a9ed1ab`（移植上游设置页、保留 38 键）遗留，本批未修。
 - **环境备注**：宿主 Node 为 v24.21.0（Electron 自带），仓库开发环境 node v22.18.0；涉及 Node 版本相关 API 时以宿主为准。
 
+## 2026-10-26 token 空值的 fail-loud 提示 + autoStartNapcat 语义澄清
+
+- **问题**：`mode: reverse` + `accessToken: ''` 时 `connection.startReverseServer()` 抛错，但该错误落进入口的通用 catch，被归成「挂载失败：peer 依赖解析失败或关键模块缺失 —— 部署副本必须带完整 node_modules 链接集」。用户会去查依赖链接集，真因只是没填 token（与 canvas 那次同类误报）。
+- **修复**：`apply()` 的 preflight 增加一条 `log('error', …)`，在 `connection.start()` 之前点名说清——reverse 必须填 token、它同时是 NapCat 侧 `websocketClients[].token`、两侧必须一致、怎么改、以及不要鉴权可改 `forward`。抛错行为不变（仍 fail-closed）。
+- **测试**：`tests/plugin.spec.ts` 新增「reverse + 空 accessToken：先给中文处置提示，再 fail-closed 抛错」，断言 error 日志出现点名 token 的那句。
+- **`autoStartNapcat` 语义澄清（默认值未变，仍是 `false`）**：schema description / 设置页 label+hint / README 三处统一为「默认关闭 = 插件不启动任何进程，NapCat 完全手动管理；它与 `napcatLauncher` 独立，配了路径但此项 `false` 时路径只用于诊断」。此前 hint 只写「开启后如何」，没写「关闭等于什么」，容易被误读成「配了路径就会拉起」。
+- **README 漂移修正**：设置页分组表（`connection` 组）此前仍列 38 键、缺 `napcatLauncher` / `napcatLauncherArgs` / `autoStartNapcat`，与已实现的 41 键不一致，已补齐。
+- **验证**：`tsc` exit 0；`plugin.spec` + `client-settings.spec` + `config-ranges.spec` 共 66 用例全绿。
+
 ## 2026-10-26 NapCat 诊断修复（三缺陷 + 说清「卡在哪一步」）
 
 **背景**：真实事故 —— QQ 于 12:25 被手动启动，插件 15:35 两次拉起注入器均失败；旧诊断只报「NapCat 根本没启动」，把真原因（QQ 已占用、注入器无法接管）完全盖住。配置侧已逐项排查无误（onebot11 反向 WS url/token/端口/格式全对，11:17 曾正常收发消息），NapCat 日志停在 11:19 的 `ECONNREFUSED`（当时插件正在重启，之后进程消失）。

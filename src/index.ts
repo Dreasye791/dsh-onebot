@@ -334,7 +334,7 @@ export const Config: Z<Config> = z.object({
   napcatLauncherArgs: z.array(z.string()).default([])
     .description('传给 napcatLauncher 的额外参数（默认空）。免扫码登录填 ["-q", "<机器人QQ号>"]——NapCat 只认独立的 -q 参数，launcher 示例里的「launcher 123456」位置参数无效；参数中含 shell 元字符（& | < > ^ % ! 双引号）会被忽略并记一条 warn，条目原文不打印'),
   autoStartNapcat: z.boolean().default(false)
-    .description('未检测到 NapCat 连接时，是否自动执行 napcatLauncher（默认关闭；最多尝试 2 次，不会杀任何进程）'),
+    .description('未检测到 NapCat 连接时，是否自动执行 napcatLauncher（默认 false = 插件不启动任何进程，NapCat 完全由你手动管理；开启后最多尝试 2 次，不会杀任何进程）。注意它与 napcatLauncher 是独立的：配了路径但此项为 false 时，路径只用于诊断，不会被拉起'),
   ignoreSelf: z.boolean().default(true)
     .description('忽略机器人自己发出的消息（防自循环）'),
   interimMessages: z.boolean().default(true)
@@ -585,6 +585,14 @@ export function apply(ctx: Context, config: Config): void {
   // WorkspaceRegistry has no default getter and the session controller's
   // defaultCwd is assembly-internal — so the unconfigured fallback stays the
   // host process cwd. Say so once at mount so a /root surprise is explainable.
+  // reverse 模式空 token 会让 connection.start() 抛错，而那个错误会落进入口的通用
+  // catch、被归成「peer 依赖解析失败或关键模块缺失」——把用户引去查依赖链接集
+  // （与 canvas 那次同类误报）。这里前移成明确中文提示：说清约束、怎么改、有没有替代。
+  if (config.mode === 'reverse' && config.accessToken === '') {
+    log('error', 'reverse 模式必须配置 accessToken（当前为空，插件将拒绝启动）：它同时是 NapCat 侧 onebot11 反向 WS 的鉴权令牌，'
+      + '两侧必须一致。处置：填一个非空字符串，并把 NapCat 的 config/onebot11_<QQ号>.json 中 websocketClients[].token 改成同一个值；'
+      + '若确实不需要鉴权，可改用 mode: forward（由 NapCat 开正向 WS 服务端）。')
+  }
   if (config.workspacePath === '') {
     log('warn', '未配置 workspacePath：QQ 会话默认目录将使用宿主进程工作目录 ' + process.cwd() + '，建议在配置中设置 workspacePath，避免会话工作区落在宿主启动目录')
   }

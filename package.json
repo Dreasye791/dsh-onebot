@@ -36,16 +36,17 @@
   "files": [
     "lib",
     "!lib/*.bak-*",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "docs/napcat-launcher.md"
   ],
   "license": "BSD-3-Clause",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mario841859784/dsh-onebot.git"
+    "url": "git+https://github.com/Dreasye791/dsh-onebot.git"
   },
-  "homepage": "https://github.com/mario841859784/dsh-onebot#readme",
+  "homepage": "https://github.com/Dreasye791/dsh-onebot#readme",
   "bugs": {
-    "url": "https://github.com/mario841859784/dsh-onebot/issues"
+    "url": "https://github.com/Dreasye791/dsh-onebot/issues"
   },
   "engines": {
     "dsh": ">=0.1.5-rc.1 <0.1.6-0 || >=0.1.6-alpha.1 <0.1.7-0 || >=0.1.7-alpha.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0 || >=0.2.1-0 <0.3.0-0",

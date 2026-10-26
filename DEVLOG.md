@@ -924,6 +924,13 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **README 漂移修正**：设置页分组表（`connection` 组）此前仍列 38 键、缺 `napcatLauncher` / `napcatLauncherArgs` / `autoStartNapcat`，与已实现的 41 键不一致，已补齐。
 - **验证**：`tsc` exit 0；`plugin.spec` + `client-settings.spec` + `config-ranges.spec` 共 66 用例全绿。
 
+## 2026-10-27 发布元数据与安装前置修正
+
+- **`files` 补 `docs/napcat-launcher.md`**：此前 `files` 只有 `lib` + `cordis.patch.yml`，而 README 多处链到该文档 → npm 用户点进去是 **404**；而那份文档正是「QQ 必须先退出、`-q` 免扫码、开机自启、控制台乱码」的唯一说明。`npm pack --dry-run` 复核：包内文件 78 → 79，`docs/napcat-launcher.md`（8.2 kB）已在列，`cordis.patch.yml` 未受影响。
+- **`repository` / `homepage` / `bugs` 改指 fork**（`Dreasye791/dsh-onebot`）：此前全部指向 upstream `mario841859784`，导致 npm 页面的「Repository」「Issues」都会把用户带到原作者仓库。不影响运行时，但影响问题上报与包溯源。
+- **README「安装-前置」补 NapCat 硬约束**：新增醒目一段——NapCat 注入要求 **QQ 在注入前未运行**，QQ 已开着（如开机自启）会被判为 `QQ 已占用` 且插件停止尝试，需先完全退出 QQ 再由 launcher 拉起。此前这条只写在排障表里，而它是整条链路上最容易踩的坑。
+- **验证**：`npm pack --dry-run` 清单正确（79 文件，含 docs）；本轮只动 `package.json` 与 `README.md`，不涉及 `src/`、`lib/`，无需重建与回归。
+
 ## 2026-10-26 NapCat 诊断修复（三缺陷 + 说清「卡在哪一步」）
 
 **背景**：真实事故 —— QQ 于 12:25 被手动启动，插件 15:35 两次拉起注入器均失败；旧诊断只报「NapCat 根本没启动」，把真原因（QQ 已占用、注入器无法接管）完全盖住。配置侧已逐项排查无误（onebot11 反向 WS url/token/端口/格式全对，11:17 曾正常收发消息），NapCat 日志停在 11:19 的 `ECONNREFUSED`（当时插件正在重启，之后进程消失）。

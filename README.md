@@ -63,6 +63,8 @@
 
 **前置**：dsh（≥0.1.5-rc.1）在 PATH 上；NapCat 或其他 OneBot 11 实现已运行。
 
+> ⚠️ **NapCat 用户必读**：NapCat 的注入方式要求 **QQ 在注入前未运行**。若 QQ 已经开着（例如开了开机自启），注入器无法接管它，插件会判为 `QQ 已占用` 并停止尝试。请先**完全退出 QQ**（托盘退出），再由 `launcher-user.bat` 拉起，届时它自己会启动被注入的 QQ。免扫码、开机自启与排障见 [docs/napcat-launcher.md](docs/napcat-launcher.md)。
+
 ### npm 安装（发布通道，与下方源码安装二选一，勿混装）
 
 ```sh

@@ -967,3 +967,11 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **易误判点**：去掉 `-q` **不等于**会走扫码——NapCat 只要存在快速登录记录（`getQQQuickLoginList()` 非空）就会自动尝试快速登录（`napcat.mjs` 的 `runWebUiConfigQuickFunction`）。所以「未跳过登录时」看到「已连接 + 无二维码」可能只是它又快速登录成功了；判断是否真在等扫码，看 `cache/qrcode.png` 的 mtime 是否在近 5 分钟内被刷新。
 - **验证**：`tsc` exit 0；5 文件 79 用例全绿。
 - **措辞修正（避免误导）**：`launcher-user.bat` 并非本机独有——它是 NapCat 发行包**自带的四个启动脚本之一**（`launcher-user` / `launcher-win10-user` / `launcher` / `launcher-win10`，差别只是「是否自提权」与「Win10 变体」），四者都设了 `chcp 65001` 与 5 个 `NAPCAT_*`。此前文档与设置页 hint 写死单一文件名，已改为「按目录里实际有的选一个」，并补三条容易踩的说明：① 末尾 `pause` 会在隐藏窗口留一个等待按键的 `cmd.exe`（属正常，会随 NapCat 一起退出）；② 面板是**每行一个参数**、patch 里是 YAML 数组，两种写法别混；③ `-q` 是传给 **NapCat** 而非 QQ 的参数，写成一行 `-q 123456` 或 `-q123456` 都无效（按 argv 全等匹配）。
+
+## 2026-10-26 设置页 NapCat 卡片加「刷新」按钮
+
+- **为什么不是新 Remote 方法**：`settings-remote.ts` 已记录过实测结论——网关的 methods 来自编译期 spec，运行时 `markRemote` 新增的方法不会出现在 `remote.methods` 里（`getNapcatStatus` 就是这么加的、实测未生效）。所以「刷新」走**已有** `getSettings`：面板本就有 `refetch()`（顶部「重新加载」用的就是它），只是离卡片远、语义不明确。
+- **改动（仅客户端）**：`renderNapcatCard` 增加 `onRefresh` 参数，卡片头部放一个「刷新」按钮，点击走既有 `handleReload`（有未保存修改时仍先 confirm，避免刷新丢草稿）。
+- **能力边界（写进按钮注释与文档）**：该按钮只重拉快照并重新读取 `cache/qrcode.png`，**不命令 NapCat 换码**。NapCat 的登录服务约每 5 分钟自行换码，所以「过期后点一下」通常就能拿到新码；若十几分钟都是同一张，说明 NapCat 卡住，需重启 NapCat（插件不终止任何进程）。
+- **探测记录（供将来需要真刷新时参考）**：NapCat WebUI 在监听（6099），API 前缀 `/api`；即使 `accessControlMode: none`，`/api/RefreshQRcode` 仍返回 `{"code":-1,"message":"Unauthorized"}`，需要 `Authorization: Bearer base64(凭据)`，而 `webui.json` 里的 `token` 是登录密码而非凭据（`/api/auth/login` 的请求体协议未能从产物确证，实测返回 `An unknown error occurred.`）。故「强制换码」暂不实现。
+- **验证**：`tsc` exit 0；5 文件 79 用例全绿（`client.js` 的 `new Function` 解析与渲染契约均在 `client-settings.spec` 覆盖内）。

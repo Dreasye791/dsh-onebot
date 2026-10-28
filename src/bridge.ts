@@ -1355,7 +1355,12 @@ export class ChatBridge {
       // 重复注册而抛错，第二个 agent（群聊／另一个私聊）就建不起来。
       name: `channel:dsh-onebot:${chatId}`,
       order: 90,
-      text: buildPlatformPrompt(this.deps.config.restrictedMemberPrefix, this.deps.config.persona),
+      text: buildPlatformPrompt(
+        this.deps.config.restrictedMemberPrefix,
+        this.deps.config.persona,
+        // 记忆工具未启用时不提它们：否则模型会去调不存在的工具并报错。
+        this.deps.config.memoryEnabled === true,
+      ),
     })
     registerTools(agentCtx, this, this.deps.connection, {
       maxImageBytes: this.deps.config.maxImageBytes,

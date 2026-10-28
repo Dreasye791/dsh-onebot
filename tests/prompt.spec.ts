@@ -17,4 +17,23 @@ describe('buildPlatformPrompt', () => {
     expect(buildPlatformPrompt(false)).not.toContain('来自受限用户')
     expect(buildPlatformPrompt(true)).toContain('来自受限用户')
   })
+
+  it('只有启用记忆时才提记忆工具（否则模型会去调不存在的工具）', () => {
+    // 默认参数（未传）与显式 false 都必须沉默
+    expect(buildPlatformPrompt(false)).not.toContain('qq_memory_recall')
+    expect(buildPlatformPrompt(false, '', false)).not.toContain('qq_memory_recall')
+    const on = buildPlatformPrompt(false, '', true)
+    expect(on).toContain('qq_memory_remember')
+    expect(on).toContain('qq_memory_recall')
+    // 三条关键行为必须写进 prompt，否则模型不会主动 recall
+    expect(on).toContain('先 recall')
+    expect(on).toContain('仅管理员回合可用')
+    expect(on).toContain('字面匹配')
+  })
+
+  it('记忆提示与人设层共存，且人设仍在最前', () => {
+    const text = buildPlatformPrompt(false, '你说话简短', true)
+    expect(text.indexOf('## 角色设定')).toBe(0)
+    expect(text).toContain('qq_memory_recall')
+  })
 })

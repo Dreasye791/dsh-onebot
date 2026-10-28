@@ -17,7 +17,7 @@ import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import type { ChatBridge } from './bridge.js'
 import type { OneBotConnection } from './connection.js'
 import { fileToBase64, isUrl } from './media.js'
-import { appendMemory, readMemories, searchMemories, trimMemories } from './memory.js'
+import { appendMemory, findSensitive, readAllMemories, readMemories, searchMemories, selectForRecall, trimMemories } from './memory.js'
 import { splitChatId } from './chat.js'
 import type { OneBotSegment } from './cq.js'
 import { parseMessage, cqUnescape } from './cq.js'
@@ -302,8 +302,19 @@ export function registerTools(
   options: {
     memeDir?: string
     mediaDir?: string
-    /** 频道记忆（第一批）：`enabled` 为 false 时两个记忆工具都不注册。 */
-    memory?: { enabled: boolean; dir: string; maxEntriesPerChat: number; recallTopK: number }
+    /**
+     * 频道记忆：`enabled` 为 false 时两个记忆工具都不注册。
+     *
+     * `profileScope` 控制「成员画像」能在哪写：`'dm'`（默认，只有私聊）、
+     * `'all'`（群聊也允许，但仍需管理员显式给 subject）、`'off'`（完全关闭）。
+     */
+    memory?: {
+      enabled: boolean
+      dir: string
+      maxEntriesPerChat: number
+      recallTopK: number
+      profileScope: 'dm' | 'all' | 'off'
+    }
   } = {},
 ): () => void {
   const disposers: Array<() => void> = []
@@ -619,23 +630,36 @@ export function registerTools(
     const memoryDir = memory.dir
     const cap = Math.max(1, Math.floor(memory.maxEntriesPerChat))
     const defaultTopK = Math.max(1, Math.min(20, Math.floor(memory.recallTopK)))
+    const profileScope = memory.profileScope
+    /** 私聊会话的主体就是对方本人；群聊取不到（需显式 subject）。 */
+    const dmSubject = (chatId: string): string | undefined =>
+      chatId.startsWith('private:') ? chatId.slice('private:'.length) : undefined
 
     register(defineTool({
       name: 'qq_memory_remember',
       description: '把一条值得长期记住的信息写进当前会话的记忆（按 chat 隔离，跨群/跨私聊不共享，重启不丢）。'
-        + '适合记：重要约定、用户偏好、待办线索、需要反复引用的结论。'
-        + '不适合记：一次性闲聊，或当前上下文里已经明确可见的内容。'
-        + '注意：仅管理员回合可用；受限成员调用会被拒绝（只读的 qq_memory_recall 不受此限制）。',
+        + '两种 kind：note（默认，会话公共记忆）与 profile（某个成员的特征画像：称呼、偏好、习惯）。'
+        + '适合记：重要约定、用户偏好、待办线索、需要反复引用的结论。不建议记：一次性闲聊、当前上下文已可见的内容、'
+        + '对别人的负面评价（「他很烦」这类）、手机号/身份证/银行卡等敏感信息（会被直接拒绝）。'
+        + '写之前建议先 qq_memory_recall 看有没有重复，避免同一事实反复记。',
       parameters: {
         text: {
           type: 'string',
           required: true,
           description: '要记住的内容，一句话为宜（超过 500 字会被截断）',
         },
+        kind: {
+          type: 'string',
+          description: 'note（默认）= 会话公共记忆；profile = 某个成员的特征画像',
+        },
+        subject: {
+          type: 'string',
+          description: '画像主体 QQ 号。私聊可省略（默认就是对方本人）；群聊记 profile 必须显式指定，且仅管理员可用',
+        },
         tags: {
           type: 'array',
           items: { type: 'string' },
-          description: '可选标签（如 偏好 / 待办 / 事实），参与后续检索打分，最多 8 个',
+          description: '可选标签（偏好 / 待办 / 事实），参与检索打分，也决定保留时长：待办 14 天、偏好不过期、事实 365 天、无标签 90 天',
         },
         chat_id: {
           type: 'string',
@@ -645,38 +669,83 @@ export function registerTools(
       output: {
         schema: { type: 'json' as const },
         render: (_args: unknown, value: unknown) => {
-          const v = value as { stored?: unknown }
+          const v = value as { stored?: unknown; kind?: unknown }
           const stored = typeof v.stored === 'number' ? v.stored : 0
-          return [{ type: 'text' as const, text: '已记住（当前会话共 ' + stored + ' 条记忆）' }]
+          return [{ type: 'text' as const, text: '已记住（' + (v.kind === 'profile' ? '画像' : '记忆') + '，当前会话共 ' + stored + ' 条）' }]
         },
       },
       // 写入是追加 + 可能重写裁剪，不做并发安全标记
       isConcurrencySafe: () => false,
       execute: async (args, exec) => {
-        const a = args as { text?: unknown; tags?: unknown; chat_id?: unknown }
+        const a = args as { text?: unknown; tags?: unknown; chat_id?: unknown; kind?: unknown; subject?: unknown }
         const text = typeof a.text === 'string' ? a.text.trim() : ''
         if (text === '') throw new Error('qq_memory_remember: text 不能为空')
         const clipped = text.length > 500 ? text.slice(0, 500) : text
         const tags = Array.isArray(a.tags)
           ? a.tags.filter((t): t is string => typeof t === 'string' && t.trim() !== '').slice(0, 8)
           : undefined
+        // 敏感信息先拦：记忆以明文落盘，宁可拦错也不能把手机号/身份证写进文件。
+        const sensitive = findSensitive(clipped)
+        if (sensitive !== null) {
+          throw new Error('qq_memory_remember: 内容疑似包含' + sensitive + '，已拒绝写入。'
+            + '记忆是明文 JSONL 存盘，请不要记录手机号 / 身份证 / 银行卡等敏感信息。')
+        }
         const chatId = resolveChat(bridge, exec, a.chat_id)
+        const role = bridge.canEditFiles(String(exec.agent?.session.id ?? '')) ? 'admin' as const : 'member' as const
+        const dm = dmSubject(chatId)
+        const kind = a.kind === 'profile' ? 'profile' as const : 'note' as const
+
+        let subject: string | undefined
+        if (kind === 'profile') {
+          if (profileScope === 'off') {
+            throw new Error('qq_memory_remember: 当前未启用成员画像（memoryProfileScope=off）。'
+              + '如果这是会话公共信息，请改用 kind: note。')
+          }
+          const explicit = typeof a.subject === 'string' ? a.subject.trim() : ''
+          if (dm !== undefined) {
+            // 私聊：主体默认就是对方；要记别人只有管理员可以
+            subject = explicit === '' ? dm : explicit
+            if (subject !== dm && role !== 'admin') {
+              throw new Error('qq_memory_remember: 私聊里只能记录对方本人的画像；要记其他人请让管理员操作。')
+            }
+          } else {
+            // 群聊：拿不到「当前发言者」，只能靠显式 subject，且仅管理员 —— 否则任何人都能
+            // 给别人贴标签（工具侧无法校验 subject 是不是发言者自己）。
+            if (profileScope !== 'all') {
+              throw new Error('qq_memory_remember: 群聊里默认不建个人画像（memoryProfileScope=' + profileScope + '）。'
+                + '如果这是本群公共信息，请改用 kind: note；需要群内画像请让管理员把 memoryProfileScope 设为 all。')
+            }
+            if (role !== 'admin') {
+              throw new Error('qq_memory_remember: 群聊里记录某人画像仅管理员可用（无法校验你记的是不是自己）。')
+            }
+            if (explicit === '') {
+              throw new Error('qq_memory_remember: 群聊里记录画像必须显式传 subject（消息前缀 [HH:MM 昵称(QQ)] 里的 QQ 号）。')
+            }
+            subject = explicit
+          }
+        }
+
         appendMemory(memoryDir, chatId, {
           ts: Date.now(),
           text: clipped,
           ...(tags !== undefined && tags.length > 0 ? { tags } : {}),
+          ...(kind === 'profile' && subject !== undefined ? { kind: 'profile' as const, subject } : {}),
+          ...(dm !== undefined ? { by: dm } : {}),
+          role,
         })
         const dropped = trimMemories(memoryDir, chatId, cap)
         const stored = readMemories(memoryDir, chatId, cap).length
-        return { ok: true, stored, dropped }
+        return { ok: true, stored, dropped, kind }
       },
     }))
 
     register(defineTool({
       name: 'qq_memory_recall',
       description: '按关键词检索当前会话的记忆，返回最相关的若干条（含写入时间）。'
+        + '范围是「本会话的公共记忆」+「当前用户自己的画像」—— 别人的画像不会被返回。'
         + '当需要引用「之前记过什么」时先调用它，不要凭空猜测。只读，不修改记忆。'
-        + '注意这是字面匹配（中文按 2-gram、英文按词）：问法换个词可能搜不到。',
+        + '注意这是字面匹配（中文按 2-gram、英文按词）：问法换个词可能搜不到；'
+        + '超过保留时长的条目也不会再返回。',
       parameters: {
         query: { type: 'string', required: true, description: '检索关键词' },
         limit: {
@@ -691,16 +760,22 @@ export function registerTools(
       output: {
         schema: { type: 'json' as const },
         render: (_args: unknown, value: unknown) => {
-          const v = value as { hits?: Array<{ text?: unknown; ts?: unknown }> }
+          const v = value as { hits?: Array<{ text?: unknown; ts?: unknown; kind?: unknown }> }
           const hits = Array.isArray(v.hits) ? v.hits : []
           if (hits.length === 0) return [{ type: 'text' as const, text: '（没有匹配的记忆）' }]
-          const lines = hits.map((hit, index) => {
+          const fmt = (list: ReadonlyArray<{ text?: unknown; ts?: unknown }>): string => list.map((hit, index) => {
             const when = typeof hit.ts === 'number' && hit.ts > 0
               ? new Date(hit.ts).toISOString().slice(0, 16).replace('T', ' ')
               : '时间未知'
             return (index + 1) + '. [' + when + '] ' + String(hit.text ?? '')
-          })
-          return [{ type: 'text' as const, text: lines.join('\n') }]
+          }).join('\n')
+          const notes = hits.filter((hit) => hit.kind !== 'profile')
+          const profiles = hits.filter((hit) => hit.kind === 'profile')
+          const parts: string[] = []
+          if (notes.length > 0) parts.push('相关记忆：\n' + fmt(notes))
+          // 画像单独成段并标注「仅供参考」：它是观察不是定论，别让模型拿它当事实断言。
+          if (profiles.length > 0) parts.push('关于当前用户的观察（画像，仅供参考，不要当定论）：\n' + fmt(profiles))
+          return [{ type: 'text' as const, text: parts.join('\n\n') }]
         },
       },
       isConcurrencySafe: () => true,
@@ -711,15 +786,17 @@ export function registerTools(
         const rawLimit = typeof a.limit === 'number' && Number.isFinite(a.limit) ? Math.floor(a.limit) : defaultTopK
         const topK = Math.max(1, Math.min(20, rawLimit))
         const chatId = resolveChat(bridge, exec, a.chat_id)
-        const entries = readMemories(memoryDir, chatId, cap)
-        const hits = searchMemories(entries, query, topK)
+        // 先按范围过滤（过期条目 / 别人的画像），再打分 —— 否则 top-k 会被不可见的条目占满。
+        const visible = selectForRecall(readAllMemories(memoryDir, chatId), { speaker: dmSubject(chatId) })
+        const hits = searchMemories(visible, query, topK)
         return {
-          total: entries.length,
+          total: visible.length,
           hits: hits.map((hit) => ({
             ts: hit.entry.ts,
             text: hit.entry.text,
             tags: hit.entry.tags ?? [],
             score: hit.score,
+            kind: hit.entry.kind ?? 'note',
           })),
         }
       },

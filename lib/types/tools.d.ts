@@ -23,11 +23,17 @@ export declare function registerTools(ctx: Context, bridge: ChatBridge, connecti
 }, options?: {
     memeDir?: string;
     mediaDir?: string;
-    /** 频道记忆（第一批）：`enabled` 为 false 时两个记忆工具都不注册。 */
+    /**
+     * 频道记忆：`enabled` 为 false 时两个记忆工具都不注册。
+     *
+     * `profileScope` 控制「成员画像」能在哪写：`'dm'`（默认，只有私聊）、
+     * `'all'`（群聊也允许，但仍需管理员显式给 subject）、`'off'`（完全关闭）。
+     */
     memory?: {
         enabled: boolean;
         dir: string;
         maxEntriesPerChat: number;
         recallTopK: number;
+        profileScope: 'dm' | 'all' | 'off';
     };
 }): () => void;

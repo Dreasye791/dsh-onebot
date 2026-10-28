@@ -5,7 +5,7 @@
  * @module dsh-onebot/tests/commands
  */
 import { describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, realpathSync } from 'node:fs'
+import { mkdtempSync, readFileSync, realpathSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -15,8 +15,10 @@ import { MediaStore } from '../src/media.js'
 import { makeCmdHarness } from './helpers/bridge-harness.js'
 
 describe('commands', () => {
-  it('packageVersion resolves 0.9.6 under ESM (no "?")', () => {
-    expect(packageVersion()).toBe('0.9.6')
+  it('packageVersion resolves the package.json version under ESM (no "?")', () => {
+    // 与 package.json 对齐而不是写死版本号：fork 版本带 build metadata（如 0.9.6+dreasye.1），
+    // 写死会让每次发版都要改测试。
+    expect(packageVersion()).toBe(JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')).version)
   })
 
   it('routes slash commands before the model: /new opens a fresh session', async () => {
@@ -656,16 +658,17 @@ describe('commands', () => {
     await h.connection.stop()
   }, 60_000)
 
-  it('command table registers exactly the 19 routed commands, one row each, and /help renders the grouped card from the table (D1-PR1)', () => {
+  it('command table registers exactly the 20 routed commands, one row each, and /help renders the grouped card from the table (D1-PR1)', () => {
     // Row order = the /help line order inside each group; the router matches
     // by name so ordering is routing-neutral. Adding a command is exactly one
     // row here (group + usage-style help) — /help picks it up for free.
     // 19 条：18 条 D1-PR1 基线 + T15 的 /storage（附件账本与配额查看，插在 status 之后）。
-    expect(COMMANDS.map(c => c.name)).toEqual(['new', 'stop', 'steer', 'model', 'workspace', 'preset', 'session', 'status', 'storage', 'doctor', 'retry', 'id', 'ver', 'ocr', 'mode', 'plan', 'permission', 'goal', 'help'])
-    expect(COMMANDS).toHaveLength(19)
-    expect(new Set(COMMANDS.map(c => c.name)).size).toBe(19)
+    expect(COMMANDS.map(c => c.name)).toEqual(['new', 'stop', 'steer', 'model', 'workspace', 'preset', 'session', 'status', 'storage', 'memory', 'doctor', 'retry', 'id', 'ver', 'ocr', 'mode', 'plan', 'permission', 'goal', 'help'])
+    expect(COMMANDS).toHaveLength(20)
+    expect(new Set(COMMANDS.map(c => c.name)).size).toBe(20)
     for (const c of COMMANDS) {
-      expect(c.adminOnly).toBe(true)
+      // /memory 是唯一对成员开放的斜杠命令（查看/删除自己的画像，隐私权利）
+      if (c.name !== 'memory') expect(c.adminOnly).toBe(true)
       expect(c.help).not.toContain('\n')
       expect(c.help.trim()).not.toBe('')
       expect(c.group).toBeDefined()
@@ -675,7 +678,7 @@ describe('commands', () => {
     // Every routed command must appear exactly once in the card body.
     const card = helpText()
     expect(card).toBe([
-      '可用命令（仅管理员）：',
+      '可用命令：',
       '▍会话',
       '/new 开启新会话（清空上下文）',
       '/workspace [路径|序号|list] 查看或切换工作区',
@@ -688,6 +691,7 @@ describe('commands', () => {
       '▍查询',
       '/status 会话全景',
       '/storage 存储占用（媒体目录 / 附件库 / 本插件贡献 / 软上限）',
+      '/memory [forget] 查看本会话记忆与你的画像（forget = 删除你的全部画像；所有成员可用）',
       '/doctor [export [参考号]] 运行体检（export [参考号] 导出脱敏诊断包，文件名含参考号）',
       '/id 会话标识（session/chat）',
       '/ver 插件版本',

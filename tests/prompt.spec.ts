@@ -27,8 +27,11 @@ describe('buildPlatformPrompt', () => {
     expect(on).toContain('qq_memory_recall')
     // 三条关键行为必须写进 prompt，否则模型不会主动 recall
     expect(on).toContain('先 recall')
-    expect(on).toContain('仅管理员回合可用')
     expect(on).toContain('字面匹配')
+    // 内容边界：负评/敏感信息不记，画像只当观察
+    expect(on).toContain('负面评判')
+    expect(on).toContain('观察')
+    expect(on).toContain('群聊里默认不建画像')
   })
 
   it('记忆提示与人设层共存，且人设仍在最前', () => {

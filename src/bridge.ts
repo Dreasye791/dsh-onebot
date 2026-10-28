@@ -27,6 +27,7 @@ import { buildChatId, classifyUserRole, splitChatId } from './chat.js'
 import type { AccessPolicyConfig } from './chat.js'
 import { buildPlatformPrompt } from './prompt.js'
 import { registerTools } from './tools.js'
+import { forgetProfiles, readAllMemories, selectForRecall } from './memory.js'
 import { makeMcpToolGuard, describeDroppedEntries } from './mcp-gate.js'
 import { tryHandleCommand as routeCommand, STEER_ACCEPTED_NOTICE, type CommandContext } from './commands.js'
 import { relayHostCards as relayCards, type CardRelayContext } from './card-relay.js'
@@ -149,6 +150,8 @@ export interface BridgeConfig {
   memoryMaxEntriesPerChat?: number
   /** `qq_memory_recall` 默认返回条数。 */
   memoryRecallTopK?: number
+  /** 成员画像能在哪写：`'dm'`（默认，仅私聊）/ `'all'`（群聊也允许，但需管理员显式给 subject）/ `'off'`。 */
+  memoryProfileScope?: 'dm' | 'all' | 'off'
   /** T2 (P1): how a new ordinary message is handled while the chat's task
    * (agent turn) is running; absent → 'queue' (the default). 'queue' = the
    * message keeps the 0.8.1 dispatch path (agent.followup queues it as the
@@ -334,9 +337,11 @@ export interface BridgeDeps {
 const MEMBER_ALLOWED_TOOL_NAMES: ReadonlySet<string> = new Set([
   'qq_send_image', 'qq_send_voice', 'qq_send_video', 'qq_send_file',
   'qq_send_forward', 'qq_send_meme', 'qq_group_history',
-  // 频道记忆（第一批）：recall 只读、且只读调用者自己的会话，成员可用；
-  // remember 会写持久化数据，**不**放行 —— 否则任何群友都能往记忆里塞内容。
-  'qq_memory_recall',
+  // 频道记忆：两个都放行。note 写的是**本会话自己的**记忆（chat_id 跨会话仍限管理员），
+  // 与已放行的 qq_send_file（能往群里发任意文件）相比风险更低；早期的「只让管理员写」
+  // 一刀切会让记忆在群里完全失效。profile 的额外限制在 tools.ts（群聊需显式 subject
+  // 且仅管理员）。
+  'qq_memory_recall', 'qq_memory_remember',
   'web_search', 'web_fetch',
   'ask_user_question', 'exit_plan_mode', 'todo_write',
   // 只读浏览类（2026-10-24 补）：受限成员的边界是「能看不能改」，
@@ -551,6 +556,51 @@ export class ChatBridge {
   /** Map an agent session id back to its chat (for model tools). */
   chatForSession(sessionId: string): ChatId | undefined {
     return this.bySession.get(sessionId)
+  }
+
+  /** 记忆目录（与 tools.ts 里 registerTools 用的同一处）。 */
+  private memoryDir(): string {
+    return join(this.deps.config.mediaDir, 'memory')
+  }
+
+  /**
+   * `/memory`：本会话记忆统计 + 调用者**自己的**画像。
+   *
+   * 只算调用者可见的条目（`selectForRecall` 会滤掉过期与别人的画像），所以
+   * 「公共 3 / 你的画像 2」这类数字不会泄露别人的画像条数。
+   */
+  private memoryReport(chatId: ChatId, userId: string): string {
+    if (this.deps.config.memoryEnabled !== true) {
+      return '⚠️ 频道记忆未启用（设置页「启用频道记忆」打开后可用）。'
+    }
+    const dir = this.memoryDir()
+    const visible = selectForRecall(readAllMemories(dir, chatId), { speaker: userId })
+    const notes = visible.filter((entry) => (entry.kind ?? 'note') === 'note')
+    const profiles = visible.filter((entry) => entry.kind === 'profile')
+    const lines = ['🧠 本会话记忆：' + visible.length + ' 条（公共 ' + notes.length + ' / 你的画像 ' + profiles.length + '）']
+    if (profiles.length === 0) {
+      lines.push('（还没有关于你的画像）')
+      return lines.join('\n')
+    }
+    lines.push('')
+    lines.push('关于你的画像（别人看不到）：')
+    for (const entry of profiles.slice(-10)) {
+      const day = entry.ts > 0 ? new Date(entry.ts).toISOString().slice(0, 10) : '时间未知'
+      lines.push('- [' + day + '] ' + entry.text)
+    }
+    if (profiles.length > 10) lines.push('…（仅显示最近 10 条）')
+    lines.push('')
+    lines.push('发 /memory forget 可删除你自己的全部画像。')
+    return lines.join('\n')
+  }
+
+  /** `/memory forget`：删掉调用者本人的全部画像（note 与别人的画像不受影响）。 */
+  private memoryForget(chatId: ChatId, userId: string): string {
+    if (this.deps.config.memoryEnabled !== true) {
+      return '⚠️ 频道记忆未启用（设置页「启用频道记忆」打开后可用）。'
+    }
+    const removed = forgetProfiles(this.memoryDir(), chatId, userId)
+    return removed > 0 ? '🧹 已删除关于你的 ' + removed + ' 条画像。' : '没有找到关于你的画像，无需删除。'
   }
 
   /** Whether a caller backing an agent session may perform file edits. QQ chats
@@ -889,6 +939,9 @@ export class ChatBridge {
           saveTimeoutMs: bridge.deps.config.attachmentSaveTimeoutMs ?? 0,
         }),
       )),
+      // 频道记忆：/memory 与 /memory forget（后者对成员开放 —— 被记录的人要能自己删）。
+      memoryReport: (chatId, userId) => bridge.memoryReport(chatId, userId),
+      memoryForget: (chatId, userId) => bridge.memoryForget(chatId, userId),
       // T4 (P3): export takes an optional trigger reference (file-name stamp).
       exportDiagnostics: triggerRef => bridge.exportDiagnosticsPackage(triggerRef),
       // T4 (P3): command-plane failures (/retry) mint an MF- reference through
@@ -1376,6 +1429,7 @@ export class ChatBridge {
         dir: join(this.deps.config.mediaDir, 'memory'),
         maxEntriesPerChat: this.deps.config.memoryMaxEntriesPerChat ?? 200,
         recallTopK: this.deps.config.memoryRecallTopK ?? 5,
+        profileScope: this.deps.config.memoryProfileScope ?? 'dm',
       },
     })
     // T20：MCP 工具闸门。profile 里的 MCP 服务器把工具注册在根作用域，作用域

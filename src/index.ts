@@ -179,6 +179,15 @@ export interface Config {
   memoryMaxEntriesPerChat: number
   /** `qq_memory_recall` 的默认返回条数（调用方可用 limit 覆盖，硬上限 20）。 */
   memoryRecallTopK: number
+  /**
+   * 成员画像能在哪写：`'dm'`（默认，只有私聊）/ `'all'`（群聊也允许，但需管理员显式给
+   * subject）/ `'off'`（完全关闭）。
+   *
+   * 为什么群聊默认关：群里给某人建画像容易被当成「议论别人」；而且工具侧拿不到当前
+   * 发言者（`dispatchFollowup` 没有发送者参数），无法校验 subject 是不是本人，只能
+   * 要求管理员显式指定。
+   */
+  memoryProfileScope: 'dm' | 'all' | 'off'
   interimMessages: boolean
   /** Per-interim auto-recall delay (ms) from each interim's send completion. */
   interimRecallMs: number
@@ -353,6 +362,8 @@ export const Config: Z<Config> = z.object({
     .description('单个会话保留的记忆条数上限（超出按时间丢弃最旧，每次写入后裁剪）。每个 chat 独立计算；非整数在工具侧向下取整'),
   memoryRecallTopK: z.number().min(1).max(20).default(5)
     .description('qq_memory_recall 的默认返回条数；调用时可用 limit 覆盖，硬上限 20'),
+  memoryProfileScope: z.union([z.const('dm'), z.const('all'), z.const('off')]).default('dm')
+    .description('成员画像（kind: profile）能在哪写：dm（默认，只有私聊，主体自动取对话对方）/ all（群聊也允许，但必须由管理员显式指定 subject）/ off（关闭画像）。群聊默认关是因为工具侧拿不到当前发言者、无法校验 subject 是否本人，放开等于允许任何人给别人贴标签'),
   ignoreSelf: z.boolean().default(true)
     .description('忽略机器人自己发出的消息（防自循环）'),
   interimMessages: z.boolean().default(true)

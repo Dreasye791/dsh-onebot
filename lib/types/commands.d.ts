@@ -105,6 +105,10 @@ export interface CommandContext {
      * Returns ready-to-send text: the command layer stays free of fs/attach
      * dependencies and only forwards the rendered report. */
     storageReport?: (() => string) | undefined;
+    /** `/memory`：本会话记忆统计 + 调用者自己的画像（absent = 记忆未启用）。 */
+    memoryReport?: ((chatId: ChatId, userId: string) => string) | undefined;
+    /** `/memory forget`：删除调用者本人的画像（absent = 记忆未启用）。 */
+    memoryForget?: ((chatId: ChatId, userId: string) => string) | undefined;
     /** W1/T5 /healthcheck export: pack the redacted diagnostics archive,
      * returning its path. T4 (P3): the optional trigger reference is stamped
      * into the archive file name (absent = the bridge's latest fault reference,

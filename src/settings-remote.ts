@@ -86,8 +86,8 @@ export const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>> = {
     'napcatLauncher', 'napcatLauncherArgs', 'autoStartNapcat'],
   permissions: ['requireMention', 'adminUsers', 'dmPolicy', 'groupPolicy', 'allowAllUsers', 'allowFrom', 'groupAllowFrom', 'mcpToolAllow'],
   behavior: ['interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'reasoningEffort', 'persona',
-    // 频道记忆（第一批）：开关与两个上限。关闭时不注册任何记忆工具。
-    'memoryEnabled', 'memoryMaxEntriesPerChat', 'memoryRecallTopK'],
+    // 频道记忆：开关、两个上限、画像范围。关闭时不注册任何记忆工具。
+    'memoryEnabled', 'memoryMaxEntriesPerChat', 'memoryRecallTopK', 'memoryProfileScope'],
   diagnostics: ['actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun'],
 }
 
@@ -107,10 +107,11 @@ export const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>> = {
   napcatLauncher: '',
   napcatLauncherArgs: [],
   autoStartNapcat: false,
-  // 频道记忆（第一批）：默认关闭；两个上限与 src/index.ts schema 默认值一致。
+  // 频道记忆：默认关闭；上限与画像范围均与 src/index.ts schema 默认值一致。
   memoryEnabled: false,
   memoryMaxEntriesPerChat: 200,
   memoryRecallTopK: 5,
+  memoryProfileScope: 'dm',
   // T15：入站图片投递（schema 默认 true / 10 / 500 / 0 / 15000，src/index.ts T15 五键）。
   attachInboundImages: true,
   attachMaxImageMB: 10,
@@ -166,6 +167,8 @@ const ENUM_KEYS: Readonly<Record<string, readonly string[]>> = {
   // 思考强度覆盖：''=继承宿主 agent-default-model（默认）；其余档位只影响 QQ 通道。
   // 值是 pi-ai 的档位名，关闭思考写作 off（不是 none——none 只是上游 wire 拼写）。
   reasoningEffort: ['', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+  // 频道记忆：成员画像能在哪写。dm=仅私聊（默认）；all=群聊也允许（需管理员显式 subject）；off=关闭。
+  memoryProfileScope: ['dm', 'all', 'off'],
 }
 const NUMBER_KEYS: readonly string[] = ['port', 'interimRecallMs', 'rateLimitPerMinute', 'deferredTimeoutMs', 'attachMaxImageMB', 'attachmentBudgetMB', 'attachmentRetentionHours', 'attachmentSaveTimeoutMs',
   // 频道记忆（第一批）：单会话条数上限与召回条数。
@@ -216,7 +219,7 @@ const STRING_ARRAY_KEYS: readonly string[] = ['adminUsers', 'allowFrom', 'groupA
 const STRING_ARRAY_ITEM_MAX_LEN: Readonly<Record<string, number>> = { mcpToolAllow: MCP_ALLOW_ITEM_MAX_LEN }
 /** 字符串数组键的条目数上限（T20：防止 patch 里塞进无界的白名单）。 */
 const STRING_ARRAY_MAX_ITEMS: Readonly<Record<string, number>> = { mcpToolAllow: MCP_ALLOW_MAX_ENTRIES }
-/** 全部 44 键（校验与快照的唯一键集；7 枚举 + 10 数字 + 14 布尔 + 8 字符串 + 5 字符串数组）。 */
+/** 全部 45 键（校验与快照的唯一键集；8 枚举 + 10 数字 + 14 布尔 + 8 字符串 + 5 字符串数组）。 */
 export const ALL_KEYS: readonly string[] = [
   ...Object.keys(ENUM_KEYS), ...NUMBER_KEYS, ...BOOLEAN_KEYS, ...STRING_KEYS, ...STRING_ARRAY_KEYS,
 ]

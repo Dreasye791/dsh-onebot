@@ -31,7 +31,7 @@
 | 文字图 | t2i 卡片渲染器（@napi-rs/canvas）：标题/粗斜体/删除线/引用/列表/代码块/表格/行内 code 胶囊/彩色 emoji/中文标点禁则；与 Hermes 原版同款数值（800px/26px/禁则集合/右缘 790） |
 | 出站 | 正文 ≤ `textImageThreshold`（默认 150）字符单条发送、**超过阈值渲染 t2i 文字图卡片**（AstrBot 风格：标题/引用/列表/表格/代码块/彩色 emoji；渲染失败、PNG 超 `outboundImageMaxBytes` 或 `<=0` 禁用卡片时回退单条纯文本）、Markdown 剥离为 QQ 纯文本、[[qq_forward]] 合并转发（群/私聊）、**实时中间消息**（interimMessages：每条中间文本立即发出、实时可见；各自在 `interimRecallMs`（默认 90s）后自动单独撤回；回合结束时先把整轮中间消息渲染成一张 **t2i 小结卡**、立即撤回仍在屏幕上的原文、再发送最终回复——不用回合末合并转发，避免长回合「原文超 2 分钟撤不回+转发卡重复」；`interimRecall: false` 时降级为只发不撤（无小结卡、不撤回））、**宿主「计划书/提问卡」自动中继**（模型调用 exit_plan_mode / ask_user_question 时把计划全文/问题选项发到 QQ）、正在输入提示（set_input_status，仅私聊） |
 | 命令 | 斜杠命令（仅管理员）：`/new` 开新会话、`/stop` 停止生成、`/steer <补充内容>` 向运行中的任务补充指令（无运行任务时回用法提示；详见下方命令表与 `newMessagePolicy` 配置）、`/model` 查看或切换当前会话模型（`--default` 修改部署默认；无参输出两级序号列表，回复序号选 provider → 再回复序号选模型）、`/workspace` 查看或切换工作区（无参编号列表，回复序号即选）、`/preset` 查看或切换 agent 预设（无参编号列表，回复序号即选）、`/session` 查看可切回历史会话并按序号切回（`/new`、`/workspace`、`/preset` 切换下来的旧会话进列表，可来回切，历史上下文恢复）、`/status` 会话全景、`/storage` 存储占用（媒体目录 / 附件库 / 本插件贡献 / 软上限）、`/doctor [export [参考号]]`（别名 `/healthcheck`）运行体检（export [参考号] 导出脱敏诊断包 qq-diagnostics-*.zip，文件名含触发参考号）、`/retry` 重跑上一条、`/id` 会话标识、`/ver` 版本、`/ocr` 识别最近图片、`/mode` 切换出站模式（跨重启持久化）、`/plan` 计划模式、`/permission` 切换宿主权限预设（QQ 别名 `w`=工作区可写+需审批、`f`=全权+免审批；完整预设名照传，未知名由宿主报错并回显可用列表；无参查看当前与可用列表，序号按 available 顺序）、`/goal` 目标记录（跨重启持久化）、`/help` 帮助；未知斜杠命令默认拦截并提示相近命令（`unknownCommand: passthrough` 改为透传给模型） |
-| 工具 | `qq_send_image`（≤9 张，路径或 URL）、`qq_send_voice`、`qq_send_video`、`qq_send_file`、`qq_send_forward`、`qq_send_meme`（配 `memeDir` 后出现，按情绪/关键词抽预置表情包）、`qq_napcat_api`（15 个白名单 action，仅管理员可调用上传/写群类；`file` 只收 file_id 或 `base64://`）、`qq_group_history`、`qq_memory_remember` / `qq_memory_recall`（配 `memoryEnabled` 后出现；按 chat 分区、关键词检索，`remember` 仅管理员回合）（文件编辑工具 `code_safe_edit` 等已拆至独立插件 dsh-safe-edit，见下文「安全编辑」） |
+| 工具 | `qq_send_image`（≤9 张，路径或 URL）、`qq_send_voice`、`qq_send_video`、`qq_send_file`、`qq_send_forward`、`qq_send_meme`（配 `memeDir` 后出现，按情绪/关键词抽预置表情包）、`qq_napcat_api`（15 个白名单 action，仅管理员可调用上传/写群类；`file` 只收 file_id 或 `base64://`）、`qq_group_history`、`qq_memory_remember` / `qq_memory_recall`（配 `memoryEnabled` 后出现；按 chat 分区、关键词检索；`remember` 支持会话公共记忆 `note` 与成员画像 `profile`，note 所有成员可写、画像默认只在私聊、敏感信息会被拒绝）（文件编辑工具 `code_safe_edit` 等已拆至独立插件 dsh-safe-edit，见下文「安全编辑」） |
 | 权限 | 管理员白名单（`ONEBOT_ALLOWED_USERS`）、dm/group 策略（open/allowlist/disabled）、群聊 @提及 gating、受限用户 [受限用户:仅问答] 软限制、出站敏感内容审计 |
 | 会话 | 每个 QQ 会话一个持久 Agent（session id 稳定派生），重启后自动 resume；按 `agentPreset`/`workspacePath` 挂载到 preset 与工作区；每轮结束 flush 落盘 |
 | 运维 | 热加载：profile 层 patch 的 **config 覆盖**与 **insert 新增/删除**均热生效——插件 fiber 秒级原地重启（宿主进程不重启；代价：QQ 桥一次秒级重连、在途回合中断）；touch/内容未变不触发任何动作；bundle 自带 patch、仓库模板、部署副本的 patch 文件与根配置 `cordis.yml` 的改动**不**热生效；临时媒体 TTL 过期清理 |
@@ -193,6 +193,8 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `memoryEnabled` | `false` | 频道记忆（第一批）总开关：开启后模型可用 `qq_memory_remember`（写一条记忆）与 `qq_memory_recall`（按关键词检索）。记忆按 chat 分区存到 `mediaDir/memory/<chat>.jsonl`，跨群/跨私聊不共享、重启不丢。**本版是关键词检索**（中文 2-gram + 英文按词），没有 embedding —— 换个说法可能搜不到，语义化召回属于第二批。只提供显式工具，不会自动改写每轮 prompt；启用后平台提示词会**额外注入一段记忆使用指引**（被问「之前说过什么」时先 `recall`），未启用则完全不出现，避免模型去调不存在的工具；受限成员可调 `recall`（只读自己会话），`remember` 仅管理员回合 |
 | `memoryMaxEntriesPerChat` | `200` | 单个会话保留的记忆条数上限（1–5000）：每次写入后裁剪，超出按时间丢弃最旧；每个 chat 独立计算。设置页 behavior 组可改 |
 | `memoryRecallTopK` | `5` | `qq_memory_recall` 的默认返回条数（1–20），调用时可用 `limit` 覆盖。设置页 behavior 组可改 |
+| `memoryProfileScope` | `dm` | 成员画像（`kind: profile`）能在哪写：`dm`（默认，只有私聊，主体自动取对话对方）/ `all`（群聊也允许，但必须由管理员显式指定 `subject`）/ `off`（关闭画像）。群聊默认关是因为工具拿不到「当前发言者」（`dispatchFollowup` 没有发送者参数），无法校验 `subject` 是否本人，放开等于允许任何人给别人贴标签。设置页 behavior 组可改 |
+| 保留时长（按 `tags`） | — | 不单独配置：`待办` 14 天、`偏好` 不过期、`事实` 365 天、无标签 90 天。**绝对过期**（从写入时刻起算，被 recall 多少次都不续期）；过期只是不再被检索，文件里的原文保留（软过期），可用 `/memory forget` 真删 |
 | `memeDir` | `''` | 表情包目录（T12）：按 `<目录>/<情绪标签>/<图片>` 组织的图库，与 dsh-meme 图库同构，可直接把它的 pack 目录拷进来。配置后本通道 agent 多一个 `qq_send_meme` 工具——按情绪标签随机抽一张，或按关键词（文件名/标签子串，空格分隔多词、整词不中自动拆词）搜一张发到 QQ。留空（默认）=不注册该工具，模型看不到它。**只影响 QQ 通道**。目录必须位于 `mediaDir` 之内**且不能等于 `mediaDir`**（后者会让工具把 `mediaDir` 根下别的会话的入站临时图当表情发出去）；两个条件都在**注册阶段**用 `realpath` 校验并判定，不满足则工具直接不注册（不会出现「看到工具但发不出」）。可在设置面板「连接」组配置，也可在 patch config 手改。 |
 | `dmPolicy` | `open` | 私聊策略：`open`(仅管理员)/`allowlist`(白名单)/`disabled` |
 | `groupPolicy` | `open` | 群聊策略：`open`(所有人)/`allowlist`/`disabled` |
@@ -279,7 +281,7 @@ dsh Web GUI 的设置页提供本插件的可视化配置（host-plane Remote `o
 |---|---|
 | connection（连接） | `mode`、`host`、`port`、`url`、`accessToken`、`botQQ`、`workspacePath`、`memeDir`、`attachInboundImages`、`attachMaxImageMB`、`attachmentBudgetMB`、`attachmentRetentionHours`、`attachmentSaveTimeoutMs`、`napcatLauncher`、`napcatLauncherArgs`、`autoStartNapcat` |
 | permissions（权限） | `requireMention`、`adminUsers`、`dmPolicy`、`groupPolicy`、`allowAllUsers`、`allowFrom`、`groupAllowFrom`、`mcpToolAllow` |
-| behavior（行为） | `interimMessages`、`interimRecall`、`interimRecallMs`、`sendErrorNotice`、`unknownCommand`、`rateLimitPerMinute`、`newMessagePolicy`、`autoSteerPolicy`、`deferredTimeoutMs`、`reasoningEffort`、`persona`、`memoryEnabled`、`memoryMaxEntriesPerChat`、`memoryRecallTopK` |
+| behavior（行为） | `interimMessages`、`interimRecall`、`interimRecallMs`、`sendErrorNotice`、`unknownCommand`、`rateLimitPerMinute`、`newMessagePolicy`、`autoSteerPolicy`、`deferredTimeoutMs`、`reasoningEffort`、`persona`、`memoryEnabled`、`memoryMaxEntriesPerChat`、`memoryRecallTopK`、`memoryProfileScope` |
 | diagnostics（诊断） | `actionAuditEnabled`、`traceEnabled`、`recordInbound`、`inboxRedact`、`injectEnabled`、`injectDryRun` |
 
 `accessToken` 在设置页做密码型输入，快照返回侧脱敏（不回显明文）；写入侧仍在 patch 文件明文落盘。
@@ -328,6 +330,7 @@ dsh Web GUI 的设置页提供本插件的可视化配置（host-plane Remote `o
 | `/session [序号]` | 查看本会话可切回的历史会话（无参编号列表，每项含内容预览、建立时间与退休时间，id 截短显示；日志不可读的项显示「（内容不可读）」且不影响其余项），回复序号切回：当前会话退休进列表、目标会话恢复其历史上下文（含 per-chat 设置），支持来回切换；列表跨重启保留（switchable-sessions.json，每 chat 上限 20 条） |
 | `/status` | 会话全景：chat/session/preset/model/cwd/出站模式/agent/可切回数 状态 |
 | `/storage` | 存储占用：`mediaDir` 总占用与文件数、本插件在宿主附件库里的贡献（`/storage` 会实时遍历附件库按本插件的写入路径统计）、`attachmentBudgetMB` 软上限与百分比、`attachmentRetentionHours` 回收窗口（未启用时会显式标注「记账只增不减」） |
+| `/memory [forget]` | **所有成员可用**（目前唯一非管理员命令）：查看本会话记忆条数 + 关于你自己的画像（别人的画像看不到）；`forget` 删除你自己的全部画像。这是隐私兜底 —— 被记录的人要能自己查、自己删 |
 | `/doctor [export [参考号]]` | 运行体检（别名 `/healthcheck`）：连接/工具/存储/最近故障参考号全景；`export` 导出脱敏诊断包 `qq-diagnostics-*.zip`（文件名带触发参考号），非法参考号回用法提示且不落盘 |
 | `/retry` | 重跑上一条用户消息（上一轮出错后重试） |
 | `/id` | 只看 chat/session/cwd（排查用） |

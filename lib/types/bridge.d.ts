@@ -121,6 +121,8 @@ export interface BridgeConfig {
     memoryMaxEntriesPerChat?: number;
     /** `qq_memory_recall` 默认返回条数。 */
     memoryRecallTopK?: number;
+    /** 成员画像能在哪写：`'dm'`（默认，仅私聊）/ `'all'`（群聊也允许，但需管理员显式给 subject）/ `'off'`。 */
+    memoryProfileScope?: 'dm' | 'all' | 'off';
     /** T2 (P1): how a new ordinary message is handled while the chat's task
      * (agent turn) is running; absent → 'queue' (the default). 'queue' = the
      * message keeps the 0.8.1 dispatch path (agent.followup queues it as the
@@ -353,6 +355,17 @@ export declare class ChatBridge {
     stop(): Promise<void>;
     /** Map an agent session id back to its chat (for model tools). */
     chatForSession(sessionId: string): ChatId | undefined;
+    /** 记忆目录（与 tools.ts 里 registerTools 用的同一处）。 */
+    private memoryDir;
+    /**
+     * `/memory`：本会话记忆统计 + 调用者**自己的**画像。
+     *
+     * 只算调用者可见的条目（`selectForRecall` 会滤掉过期与别人的画像），所以
+     * 「公共 3 / 你的画像 2」这类数字不会泄露别人的画像条数。
+     */
+    private memoryReport;
+    /** `/memory forget`：删掉调用者本人的全部画像（note 与别人的画像不受影响）。 */
+    private memoryForget;
     /** Whether a caller backing an agent session may perform file edits. QQ chats
      * require the currently running turn's initiator to be an admin (role frozen
      * from the dispatch queue at turn/start); non-QQ sessions (Web and other

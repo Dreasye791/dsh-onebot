@@ -986,6 +986,24 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **改动面**：`registry.ts`（2 字段 + 初始化）、`bridge.ts`（签名/入队/出队/`speakerFor` + 两处 ctx 转发）、`inbound.ts`（接口 + 2 处调用）、`commands.ts`（接口）、`tools.ts`（取值顺序）。
 - **验证**：`tsc` exit 0；7 文件 161 用例全绿（含 commands 20 条命令、memory 35 条、client-settings 45 键）。
 
+## 2026-10-28 记忆管理卡片：设置页查看/编辑画像（按需加载）
+
+- **面板位置**：**独立卡片**（与 NapCat 状态卡片并列），不塞进任何配置分组 —— 它管的是数据，不是开关。
+- **四个 Remote 方法**：`listMemoryChats` / `readMemoryEntries` / `updateMemoryEntry` / `deleteMemoryEntry`。
+  必须**同时**在服务端 `markRemote` 与 `lib/client.js` 的 `ONEBOT_SETTINGS_DESCRIPTORS` 声明：
+  `listReasoningEfforts` 是能工作的先例，而 `getNapcatStatus` 只做了服务端 —— 网关不认，这就是反例。
+- **性能三条**：
+  1. 记忆**不进** `getSettings` 快照（否则每次面板刷新都解析全部 JSON）；
+  2. 卡片**默认不请求**，点「加载」才 `listMemoryChats`（只 `readdir` + `stat`，不解析内容）；
+  3. `readMemoryEntries` 只读选中的那个文件，服务端分页（默认 50，上限 200），前端不做全量拉取。
+- **写入门禁**：面板保存同样过 `findSensitive`（手机号/身份证/银行卡）与 500 字上限 —— 与模型写入同一道闸，避免「面板能写进去、工具写不进去」的割裂。
+- **原子替换**：`updateMemory` / `deleteMemory` 走「写 `.tmp` + `rename`」，面板保存时模型正好在追加也不会读到半个文件。
+- **路径口径**：新增 `src/paths.ts`（`dshHome` / `defaultMediaDir` / `resolveMediaDir` / `memoryDirFor`），
+  插件入口与设置页服务共用同一份 —— 两处各写一份会出现「模型写 A 目录、面板读 B 目录」的静默错位，且不报错。
+- **边界**：编辑只改正文与标签；`ts` / `kind` / `subject` 是身份字段，面板不可改（避免把画像改成别人的）。
+- **验证**：`tsc` exit 0；`memory.spec` 43 条（新增 8 条：文件名逆解析 / 枚举忽略非记忆文件 / 更新命中与未命中 / 空标签移除 / 删除命中与未命中）；
+  `client-settings` 契约覆盖 8 个方法（参数全 positional + schema 可解析）；5 文件全绿。
+
 ## 2026-10-26 NapCat 诊断修复（三缺陷 + 说清「卡在哪一步」）
 
 **背景**：真实事故 —— QQ 于 12:25 被手动启动，插件 15:35 两次拉起注入器均失败；旧诊断只报「NapCat 根本没启动」，把真原因（QQ 已占用、注入器无法接管）完全盖住。配置侧已逐项排查无误（onebot11 反向 WS url/token/端口/格式全对，11:17 曾正常收发消息），NapCat 日志停在 11:19 的 `ECONNREFUSED`（当时插件正在重启，之后进程消失）。

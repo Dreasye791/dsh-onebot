@@ -1,7 +1,7 @@
 /**
  * OneBot 11 message parsing: CQ-code unescaping, segment-array → text/media
- * extraction, mention detection, and face-id → emoji mapping. Ported from the
- * Hermes onebot_utils.py (CQ parsing half). Pure functions, no I/O.
+ * extraction, mention detection, and face-id → readable label mapping. Ported
+ * from the Hermes onebot_utils.py (CQ parsing half). Pure functions, no I/O.
  * @module dsh-onebot/cq
  */
 /** One OneBot 11 message segment. */
@@ -39,8 +39,18 @@ export interface ParsedMessage {
  * @returns unescaped value.
  */
 export declare function cqUnescape(value: string): string;
-/** Map a QQ face id to an emoji, with a fallback for unknown ids. */
-export declare function faceToEmoji(id: string): string;
+/** QQ face id → emoji (common set; unknown ids fall back to a neutral face). */
+/**
+ * Map a QQ face id to a readable inbound label.
+ *
+ * The id is the QQ panel slot (NapCat's `QSid`), so the name has to come from
+ * `face-names.ts` — generated from NapCat's own qface asset. There is
+ * deliberately no emoji guess: a wrong emoji reads as the sender's mood, and an
+ * id=289 「睁眼」 used to arrive as 🐛 for exactly that reason. An unknown id
+ * keeps its raw value so a missing table row stays diagnosable instead of
+ * collapsing into a neutral face.
+ */
+export declare function faceToLabel(id: string): string;
 /**
  * Detect whether the message mentions the bot. Prefers the segment array;
  * falls back to CQ-string scanning. @-detection stays fail-closed: with an

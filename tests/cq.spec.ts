@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cqUnescape, parseMessage, detectMention, parseCqString, faceToEmoji } from '../src/cq.js'
+import { cqUnescape, parseMessage, detectMention, parseCqString, faceToLabel } from '../src/cq.js'
 
 describe('cqUnescape', () => {
   it('reverses CQ attribute escaping', () => {
@@ -27,7 +27,7 @@ describe('parseMessage', () => {
   it('falls back to CQ string parsing', () => {
     const parsed = parseMessage(undefined, 'hi [CQ:face,id=0] [CQ:image,url=https://x/y.png]')
     expect(parsed.text).toContain('hi')
-    expect(parsed.text).toContain('😀')
+    expect(parsed.text).toContain('[表情:惊讶]')
     expect(parsed.media).toHaveLength(1)
   })
 
@@ -111,9 +111,15 @@ describe('detectMention', () => {
   })
 })
 
-describe('faceToEmoji', () => {
-  it('maps known and unknown ids', () => {
-    expect(faceToEmoji('0')).toBe('😀')
-    expect(faceToEmoji('999999')).toBe('😀')
+describe('faceToLabel', () => {
+  it('names the id from the QQ panel table', () => {
+    // id=289 是「睁眼」——旧表把同一 id 映射成 🐛，这条用例守住那次回归。
+    expect(faceToLabel('289')).toBe('[表情:睁眼]')
+    expect(faceToLabel('0')).toBe('[表情:惊讶]')
+    expect(faceToLabel('14')).toBe('[表情:微笑]')
+  })
+  it('keeps an unknown id diagnosable instead of guessing a face', () => {
+    expect(faceToLabel('999999')).toBe('[表情:id=999999]')
+    expect(faceToLabel('')).toBe('[表情]')
   })
 })

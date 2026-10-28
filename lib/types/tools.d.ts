@@ -23,4 +23,11 @@ export declare function registerTools(ctx: Context, bridge: ChatBridge, connecti
 }, options?: {
     memeDir?: string;
     mediaDir?: string;
+    /** 频道记忆（第一批）：`enabled` 为 false 时两个记忆工具都不注册。 */
+    memory?: {
+        enabled: boolean;
+        dir: string;
+        maxEntriesPerChat: number;
+        recallTopK: number;
+    };
 }): () => void;

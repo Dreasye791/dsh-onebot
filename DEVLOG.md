@@ -939,6 +939,18 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **同步**：`dsh.plugin.json` 的 `version`、`package-lock.json` 顶部与 `packages[""]` 两处一并改，避免清单与 lock 漂移（`npm ci` 会比对）。
 - **分发方式**：GitHub Release（tarball spec）/ `git+https://…#<commit>` / 本地 `file:`。三条都不经过 registry。
 
+## 2026-10-28 频道记忆第一批：显式 remember / recall（关键词检索）
+
+**为什么先做这一层**：宿主 `@deepseek-ai/dsh-llm` **不提供 embedding**（`lib/types/*.d.ts` 里没有 embed；`LlmRuntimeLike` 只有 `resolveModelInfo`），向量化必须自带服务或本地模型。先用零依赖的关键词召回验证「记忆内容本身是否有用」，再接向量 —— 检索接口保持不变，换实现即可。
+
+- **存储**：`mediaDir/memory/<chat>.jsonl`，一行一条 `{ts,text,tags?}`。**不引 better-sqlite3** —— 本项目已因 `@napi-rs/canvas` 这类原生模块踩过平台绑定的坑，记忆是增强功能，不值得再背一个原生依赖。
+- **检索**：`tokenize()` 中文出 2-gram + 整段、英文/数字按片段；`searchMemories()` 用「命中词覆盖率 × 长度惩罚」打分并排序。这是**字面召回**（「辣的粉」搜不到「螺蛳粉」），语义化召回属第二批。
+- **工具**：`qq_memory_remember`（写，仅管理员回合）/ `qq_memory_recall`（读，成员可用，已列入 `MEMBER_ALLOWED_TOOL_NAMES`；写入**不**放行，避免群友往里塞内容）。**不做自动注入** —— 自动改写每轮 prompt 出问题难归因。
+- **配置**：`memoryEnabled`（默认 false）/ `memoryMaxEntriesPerChat`（200，1–5000）/ `memoryRecallTopK`（5，1–20）；三键进 behavior 组，设置页键集 41 → **44**（`lib/client.js` 的 GROUPS / DEFAULTS / NUMBER_RANGE 同步）。
+- **健壮性**：坏行跳过、目录自动创建、每次写入后裁剪（超限丢最旧）、非整数用 `Math.floor` 兜底。
+- **验证**：`tsc` exit 0；新增 `tests/memory.spec.ts` 16 条（命名/读写/坏行/裁剪/分词/召回）；`client-settings` 同步 44 键 / 16 文本框 / 14+1 勾选 / NUMBER_RANGE 两项 → **6 文件 96 用例全绿**。
+- **未做（第二批）**：embedding 接入（OpenAI 兼容端点，配置化）、自动召回注入、设置页召回预览、结构化记忆（用户画像/事实卡片）。
+
 ## 2026-10-26 NapCat 诊断修复（三缺陷 + 说清「卡在哪一步」）
 
 **背景**：真实事故 —— QQ 于 12:25 被手动启动，插件 15:35 两次拉起注入器均失败；旧诊断只报「NapCat 根本没启动」，把真原因（QQ 已占用、注入器无法接管）完全盖住。配置侧已逐项排查无误（onebot11 反向 WS url/token/端口/格式全对，11:17 曾正常收发消息），NapCat 日志停在 11:19 的 `ECONNREFUSED`（当时插件正在重启，之后进程消失）。
@@ -999,3 +1011,12 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **能力边界（写进按钮注释与文档）**：该按钮只重拉快照并重新读取 `cache/qrcode.png`，**不命令 NapCat 换码**。NapCat 的登录服务约每 5 分钟自行换码，所以「过期后点一下」通常就能拿到新码；若十几分钟都是同一张，说明 NapCat 卡住，需重启 NapCat（插件不终止任何进程）。
 - **探测记录（供将来需要真刷新时参考）**：NapCat WebUI 在监听（6099），API 前缀 `/api`；即使 `accessControlMode: none`，`/api/RefreshQRcode` 仍返回 `{"code":-1,"message":"Unauthorized"}`，需要 `Authorization: Bearer base64(凭据)`，而 `webui.json` 里的 `token` 是登录密码而非凭据（`/api/auth/login` 的请求体协议未能从产物确证，实测返回 `An unknown error occurred.`）。故「强制换码」暂不实现。
 - **验证**：`tsc` exit 0；5 文件 79 用例全绿（`client.js` 的 `new Function` 解析与渲染契约均在 `client-settings.spec` 覆盖内）。
+
+## 2026-10-28 表情 id 表改按 QSid 取名：修「睁眼」读成虫
+
+- **问题**：群友发 QQ 表情「睁眼」，机器人读到的是 🐛，回了句「？发个虫是啥意思」（会话 `onebot-group-160119378-mvrjwruu`，seq 46/47）。
+- **根因**：`src/cq.ts` 的 `FACE_EMOJI` 按 Unicode emoji 顺序编号，而 OneBot `face.id` 是 QQ 面板的 `QSid`，两套编号完全不同源 —— `id=289` 在 QQ 是「睁眼」，表里却是 🐛。整表错位：插件 295 条 vs QQ 真实 275 条，多 66 个不存在的 id、少 46 个真实 id（回落成 😀），只有 0/1 这种碰巧近似的才看不出问题。该表是早期从 Hermes 移植带过来的，从未与真实 id 对照。
+- **修法**：不再猜 emoji，改为输出可读标签 `[表情:睁眼]`；表中没有的 id 输出 `[表情:id=数字]`（保留诊断信息，不再塌成中性脸）。id→名称 由 `scripts/gen-face-table.mjs` 从 NapCat 的 `static/assets/qface-*.js` 生成到 `src/face-names.ts`（275 条，id 0–348），NapCat 升级后重跑一次即可。
+- **联动**：`src/prompt.ts` 平台说明补「表情标注为 [表情:名称]，是入站标记、回复时不要输出」；`tests/cq.spec.ts` 用 `id=289 → [表情:睁眼]` 守回归；`README.md` 三处占位符描述同步。
+- **坑**：qface 资产是 UTF-8，但 PowerShell 5.1 的 `Get-Content` 默认按 ANSI 读，会显示成「鐫佺溂」——照那个乱码建表会把名字再搞错一次。
+- **验证**：`npx tsc -p tsconfig.json` exit 0（`lib/cq.js`、`lib/face-names.js`、types 均已更新）；`tests/cq.spec.ts` 15 用例全绿。全量 `npm test` 仍有既有失败（settings-remote 的 ALL_KEYS 38→41、inbound 的 scope 名称、deferred/bridge/commands/session-switch 的慢用例超时），两次跑失败集合不一致属 flaky，与本次改动无交集。

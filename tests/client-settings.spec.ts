@@ -186,7 +186,7 @@ describe('T4 客户端 bundle — 四组 41 键（分组/键集/默认值 = T1 �
     expect(client.GROUP_KEYS).toEqual(SETTINGS_GROUPS)
     expect(groups.map((group) => group.id)).toEqual(['connection', 'permissions', 'behavior', 'diagnostics'])
     expect(allFields.map((field) => field.key).sort()).toEqual([...ALL_KEYS].sort())
-    expect(allFields).toHaveLength(41) // 上游 0.9.4 基线 29 键；T10/T11/T18/T20 扩到 38，NapCat 看护三项后为 41
+    expect(allFields).toHaveLength(44) // 上游 0.9.4 基线 29 键；T10/T11/T18/T20 扩到 38，NapCat 看护三项后 41，频道记忆三项后 44
   })
 
   it('默认值逐字对齐 host SCHEMA_DEFAULTS（重置按钮唯一来源）', () => {
@@ -244,7 +244,7 @@ describe('T4 客户端 bundle — 渲染函数模块级可测（renderGroup 纯�
     const titles = sections.map((section) => ((section.children[0] as StubElement).children[0] as string))
     expect(titles).toEqual(['连接', '权限', '行为', '诊断'])
     const fieldRows = sections.flatMap((section) => walk(section).filter((element) => element.type === 'div' && element.props.className === 'obx-field'))
-    expect(fieldRows).toHaveLength(41)
+    expect(fieldRows).toHaveLength(44)
   })
 
   it('persona 渲染为多行 textarea（rows 取字段声明，不能退化为单行 input）', () => {
@@ -266,8 +266,8 @@ describe('T4 客户端 bundle — 渲染函数模块级可测（renderGroup 纯�
     const textareas = elements.filter((element) => element.type === 'textarea')
     expect(selects).toHaveLength(7) // 6 上游枚举 + T10 reasoningEffort（按模型档位动态收窄）
     expect(textareas).toHaveLength(6) // 4 个 stringArray + T11 persona + napcatLauncherArgs（多行可编辑）
-    expect(inputs.filter((input) => input.props.type === 'checkbox')).toHaveLength(13 + 1) // 13 布尔（5 原有 + 6 W6 + T15 attachInboundImages + autoStartNapcat）+ secret 清除勾选
-    expect(inputs.filter((input) => input.props.type === 'text')).toHaveLength(14) // 41 键除去 7 枚举 / 13 布尔 / 6 多行 / 1 密码后的其余键（字符串 + 数字，以文本框渲染）
+    expect(inputs.filter((input) => input.props.type === 'checkbox')).toHaveLength(14 + 1) // 14 布尔（5 原有 + 6 W6 + T15 attachInboundImages + autoStartNapcat + memoryEnabled）+ secret 清除勾选
+    expect(inputs.filter((input) => input.props.type === 'text')).toHaveLength(16) // 44 键除去 7 枚举 / 14 布尔 / 6 多行 / 1 密码后的其余键（字符串 + 数字，以文本框渲染）
     expect(inputs.filter((input) => input.props.type === 'password')).toHaveLength(1)
   })
 
@@ -796,6 +796,8 @@ describe('T6 批 3 — 数字行内校验（UX §5.6：blur 触发、非法标�
       attachmentBudgetMB: [0, 1024 * 1024],
       attachmentRetentionHours: [0, 8760], // T18：0=不回收，上限一年
       attachmentSaveTimeoutMs: [0, 600_000], // 0=不超时，上限 10 分钟
+      memoryMaxEntriesPerChat: [1, 5000], // 频道记忆：条数上限
+      memoryRecallTopK: [1, 20], // 频道记忆：召回条数
     })
     expect(Object.keys(NUMBER_RANGE).sort()).toEqual(allFields.filter((field) => field.type === 'number').map((field) => field.key).sort())
     expect(CLIENT_SOURCE).toContain('src/settings-remote.ts L129-134') // 来源行号注明

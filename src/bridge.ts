@@ -14,6 +14,7 @@ import type { LlmModelInfo, LlmProviderInfo } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent, SessionId, SessionStore } from '@deepseek-ai/dsh-session'
 import type { Context } from '@deepseek-ai/cordis'
 import { realpath } from 'node:fs/promises'
+import { join } from 'node:path'
 
 
 import type { OneBotConnection, OneBotEvent } from './connection.js'
@@ -141,6 +142,13 @@ export interface BridgeConfig {
    * inbound message (0 disables; default 7). Evicted chats keep their
    * chat→session mapping, so a later message resumes the same session. */
   chatIdleEvictDays?: number
+  /** 频道记忆（第一批）：为 true 时注册 `qq_memory_remember` / `qq_memory_recall`。
+   * 三个字段都可选，缺席按「关闭 / 默认值」处理，不影响既有装配。 */
+  memoryEnabled?: boolean
+  /** 单会话记忆条数上限（每次写入后裁剪，超出丢最旧）。 */
+  memoryMaxEntriesPerChat?: number
+  /** `qq_memory_recall` 默认返回条数。 */
+  memoryRecallTopK?: number
   /** T2 (P1): how a new ordinary message is handled while the chat's task
    * (agent turn) is running; absent → 'queue' (the default). 'queue' = the
    * message keeps the 0.8.1 dispatch path (agent.followup queues it as the
@@ -326,6 +334,9 @@ export interface BridgeDeps {
 const MEMBER_ALLOWED_TOOL_NAMES: ReadonlySet<string> = new Set([
   'qq_send_image', 'qq_send_voice', 'qq_send_video', 'qq_send_file',
   'qq_send_forward', 'qq_send_meme', 'qq_group_history',
+  // 频道记忆（第一批）：recall 只读、且只读调用者自己的会话，成员可用；
+  // remember 会写持久化数据，**不**放行 —— 否则任何群友都能往记忆里塞内容。
+  'qq_memory_recall',
   'web_search', 'web_fetch',
   'ask_user_question', 'exit_plan_mode', 'todo_write',
   // 只读浏览类（2026-10-24 补）：受限成员的边界是「能看不能改」，
@@ -1350,7 +1361,18 @@ export class ChatBridge {
       maxImageBytes: this.deps.config.maxImageBytes,
       maxVoiceBytes: this.deps.config.maxVoiceBytes,
       maxFileBytes: this.deps.config.maxFileBytes,
-    }, { memeDir: this.deps.config.memeDir, mediaDir: this.deps.config.mediaDir })
+    }, {
+      memeDir: this.deps.config.memeDir,
+      mediaDir: this.deps.config.mediaDir,
+      // 频道记忆（第一批）：目录放 mediaDir/memory（与附件、表情包同源，
+      // 备份时一起带走）；未启用时不注册任何记忆工具。
+      memory: {
+        enabled: this.deps.config.memoryEnabled === true,
+        dir: join(this.deps.config.mediaDir, 'memory'),
+        maxEntriesPerChat: this.deps.config.memoryMaxEntriesPerChat ?? 200,
+        recallTopK: this.deps.config.memoryRecallTopK ?? 5,
+      },
+    })
     // T20：MCP 工具闸门。profile 里的 MCP 服务器把工具注册在根作用域，作用域
     // 视图沿链向下继承 ⇒ 本 agent 会自动获得全部 MCP 工具（实测 dbx 的 25 个
     // 数据库工具在每一个 QQ 会话里都可见）。宿主的 tools.restrict() 只能过滤

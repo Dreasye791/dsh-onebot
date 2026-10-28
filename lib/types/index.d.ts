@@ -151,6 +151,18 @@ export interface Config {
     napcatLauncherArgs: string[];
     /** 是否允许插件在未连接时自动执行 napcatLauncher（默认 false，需显式开启） */
     autoStartNapcat: boolean;
+    /**
+     * 频道记忆（第一批）：是否注册 `qq_memory_remember` / `qq_memory_recall`。
+     *
+     * 默认关闭 —— 记忆会改变模型可用的工具面，且写入的是持久化数据，应当由
+     * 使用者显式开启。按 chat 分区，跨会话不共享；本批只做显式工具，不做自动
+     * 召回（自动注入属于第二批，接 embedding 之后再说）。
+     */
+    memoryEnabled: boolean;
+    /** 单个会话保留的记忆条数上限（超出按时间丢弃最旧的；按 chat 独立计算）。 */
+    memoryMaxEntriesPerChat: number;
+    /** `qq_memory_recall` 的默认返回条数（调用方可用 limit 覆盖，硬上限 20）。 */
+    memoryRecallTopK: number;
     interimMessages: boolean;
     /** Per-interim auto-recall delay (ms) from each interim's send completion. */
     interimRecallMs: number;

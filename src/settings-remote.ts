@@ -85,7 +85,9 @@ export const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>> = {
     // SETTINGS_GROUPS(38) 漂移，tests/client-settings.spec.ts 有 4 条断言长期红。
     'napcatLauncher', 'napcatLauncherArgs', 'autoStartNapcat'],
   permissions: ['requireMention', 'adminUsers', 'dmPolicy', 'groupPolicy', 'allowAllUsers', 'allowFrom', 'groupAllowFrom', 'mcpToolAllow'],
-  behavior: ['interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'reasoningEffort', 'persona'],
+  behavior: ['interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'reasoningEffort', 'persona',
+    // 频道记忆（第一批）：开关与两个上限。关闭时不注册任何记忆工具。
+    'memoryEnabled', 'memoryMaxEntriesPerChat', 'memoryRecallTopK'],
   diagnostics: ['actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun'],
 }
 
@@ -105,6 +107,10 @@ export const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>> = {
   napcatLauncher: '',
   napcatLauncherArgs: [],
   autoStartNapcat: false,
+  // 频道记忆（第一批）：默认关闭；两个上限与 src/index.ts schema 默认值一致。
+  memoryEnabled: false,
+  memoryMaxEntriesPerChat: 200,
+  memoryRecallTopK: 5,
   // T15：入站图片投递（schema 默认 true / 10 / 500 / 0 / 15000，src/index.ts T15 五键）。
   attachInboundImages: true,
   attachMaxImageMB: 10,
@@ -161,7 +167,9 @@ const ENUM_KEYS: Readonly<Record<string, readonly string[]>> = {
   // 值是 pi-ai 的档位名，关闭思考写作 off（不是 none——none 只是上游 wire 拼写）。
   reasoningEffort: ['', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
 }
-const NUMBER_KEYS: readonly string[] = ['port', 'interimRecallMs', 'rateLimitPerMinute', 'deferredTimeoutMs', 'attachMaxImageMB', 'attachmentBudgetMB', 'attachmentRetentionHours', 'attachmentSaveTimeoutMs']
+const NUMBER_KEYS: readonly string[] = ['port', 'interimRecallMs', 'rateLimitPerMinute', 'deferredTimeoutMs', 'attachMaxImageMB', 'attachmentBudgetMB', 'attachmentRetentionHours', 'attachmentSaveTimeoutMs',
+  // 频道记忆（第一批）：单会话条数上限与召回条数。
+  'memoryMaxEntriesPerChat', 'memoryRecallTopK']
 /** 数字键取值范围（评审 B4：port 1–65535、时长/频控 ≥0；越界在 Remote 层拒绝，不再只依赖宿主回滚兜底）。 */
 const NUMBER_RANGE: Readonly<Record<string, readonly [number, number | undefined]>> = {
   port: [1, 65535],
@@ -175,6 +183,9 @@ const NUMBER_RANGE: Readonly<Record<string, readonly [number, number | undefined
   // 上限 10 分钟——再长就等于没超时了，这闸门存在的意义是别让临界区卡死。
   attachmentRetentionHours: [0, 8760],
   attachmentSaveTimeoutMs: [0, 600_000],
+  // 频道记忆：与 schema 的 1..5000 / 1..20 对齐（0 条/0 召回没有意义，下限 1）。
+  memoryMaxEntriesPerChat: [1, 5000],
+  memoryRecallTopK: [1, 20],
 }
 /** 布尔键白名单（T1 §4 + W6 扩展：W1/W2 观测/调试 6 键入列；顺序与
  *  SETTINGS_GROUPS.diagnostics 一致。数值键 dedupWindowSeconds/actionRatePerMinute/
@@ -185,6 +196,8 @@ const BOOLEAN_KEYS: readonly string[] = [
   'actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun',
   // 本地补丁：NapCat 看护开关（是否允许未连接时自动拉起）
   'autoStartNapcat',
+  // 频道记忆（第一批）总开关：关时两个记忆工具都不注册
+  'memoryEnabled',
 ]
 const STRING_KEYS: readonly string[] = [
   'host', 'url', 'accessToken', 'botQQ', 'workspacePath', 'persona', 'memeDir',
@@ -203,7 +216,7 @@ const STRING_ARRAY_KEYS: readonly string[] = ['adminUsers', 'allowFrom', 'groupA
 const STRING_ARRAY_ITEM_MAX_LEN: Readonly<Record<string, number>> = { mcpToolAllow: MCP_ALLOW_ITEM_MAX_LEN }
 /** 字符串数组键的条目数上限（T20：防止 patch 里塞进无界的白名单）。 */
 const STRING_ARRAY_MAX_ITEMS: Readonly<Record<string, number>> = { mcpToolAllow: MCP_ALLOW_MAX_ENTRIES }
-/** 全部 41 键（校验与快照的唯一键集；7 枚举 + 8 数字 + 13 布尔 + 8 字符串 + 5 字符串数组）。 */
+/** 全部 44 键（校验与快照的唯一键集；7 枚举 + 10 数字 + 14 布尔 + 8 字符串 + 5 字符串数组）。 */
 export const ALL_KEYS: readonly string[] = [
   ...Object.keys(ENUM_KEYS), ...NUMBER_KEYS, ...BOOLEAN_KEYS, ...STRING_KEYS, ...STRING_ARRAY_KEYS,
 ]

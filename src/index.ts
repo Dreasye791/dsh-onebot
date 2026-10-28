@@ -167,6 +167,18 @@ export interface Config {
   napcatLauncherArgs: string[]
   /** 是否允许插件在未连接时自动执行 napcatLauncher（默认 false，需显式开启） */
   autoStartNapcat: boolean
+  /**
+   * 频道记忆（第一批）：是否注册 `qq_memory_remember` / `qq_memory_recall`。
+   *
+   * 默认关闭 —— 记忆会改变模型可用的工具面，且写入的是持久化数据，应当由
+   * 使用者显式开启。按 chat 分区，跨会话不共享；本批只做显式工具，不做自动
+   * 召回（自动注入属于第二批，接 embedding 之后再说）。
+   */
+  memoryEnabled: boolean
+  /** 单个会话保留的记忆条数上限（超出按时间丢弃最旧的；按 chat 独立计算）。 */
+  memoryMaxEntriesPerChat: number
+  /** `qq_memory_recall` 的默认返回条数（调用方可用 limit 覆盖，硬上限 20）。 */
+  memoryRecallTopK: number
   interimMessages: boolean
   /** Per-interim auto-recall delay (ms) from each interim's send completion. */
   interimRecallMs: number
@@ -335,6 +347,12 @@ export const Config: Z<Config> = z.object({
     .description('传给 napcatLauncher 的额外参数（默认空）。免扫码登录填 ["-q", "<机器人QQ号>"]——NapCat 只认独立的 -q 参数，launcher 示例里的「launcher 123456」位置参数无效；参数中含 shell 元字符（& | < > ^ % ! 双引号）会被忽略并记一条 warn，条目原文不打印'),
   autoStartNapcat: z.boolean().default(false)
     .description('未检测到 NapCat 连接时，是否自动执行 napcatLauncher（默认 false = 插件不启动任何进程，NapCat 完全由你手动管理；开启后最多尝试 2 次，不会杀任何进程）。注意它与 napcatLauncher 是独立的：配了路径但此项为 false 时，路径只用于诊断，不会被拉起'),
+  memoryEnabled: z.boolean().default(false)
+    .description('是否启用频道记忆工具 qq_memory_remember / qq_memory_recall（默认 false）。记忆按 chat 分区存到 mediaDir/memory/<chat>.jsonl，跨会话不共享、重启不丢；本版是关键词检索（无 embedding），只提供显式工具，不会自动改写每轮 prompt'),
+  memoryMaxEntriesPerChat: z.number().min(1).max(5000).default(200)
+    .description('单个会话保留的记忆条数上限（超出按时间丢弃最旧，每次写入后裁剪）。每个 chat 独立计算；非整数在工具侧向下取整'),
+  memoryRecallTopK: z.number().min(1).max(20).default(5)
+    .description('qq_memory_recall 的默认返回条数；调用时可用 limit 覆盖，硬上限 20'),
   ignoreSelf: z.boolean().default(true)
     .description('忽略机器人自己发出的消息（防自循环）'),
   interimMessages: z.boolean().default(true)

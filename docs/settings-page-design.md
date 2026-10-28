@@ -6,7 +6,7 @@
 > 结论供 T2（README 措辞）、T3（host Remote）、T4（客户端 UI）、T5（双语文档）直接引用。
 
 > ⚠️ **2026-10-24 状态更新（审计 C-06）**：本文正文仍是 T1 定案时的「三组 19 键 / 2 个 descriptor 方法」。
-> 现实现已扩展到**四组 41 键 / 4 个方法**（新增 `diagnostics` 组、`listWorkspaces`、`listReasoningEfforts`）。
+> 现实现已扩展到**四组 44 键 / 4 个方法**（新增 `diagnostics` 组、`listWorkspaces`、`listReasoningEfforts`；键集随 NapCat 看护三项与频道记忆三项继续扩展）。
 > **键集与默认值的真相源是 `src/settings-remote.ts` 的 `SETTINGS_GROUPS` / `SCHEMA_DEFAULTS` / `ALL_KEYS`**；
 > 本文只作设计沿革阅读，两者不一致时以代码为准（`tests/settings-remote.spec.ts` 的 C-09 守卫会把漂移炸出来）。
 

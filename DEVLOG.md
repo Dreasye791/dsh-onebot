@@ -969,6 +969,23 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **`/memory` 是唯一对成员开放的命令**：router 的 admin 闸门前移到「命令是否存在」之后；命令不存在时对非管理员仍回「仅管理员可用」（不暴露命令表）。`/help` 标题因此从「仅管理员」改为「可用命令：」，`/memory` 行内标注「所有成员可用」。
 - **验证**：`tsc` exit 0；`memory.spec` 扩到 29 条（类型/来源字段、TTL 分档、召回范围、敏感拦截、删除画像）；`commands` 20 条命令 + `/help` 快照；`prompt` 内容边界断言；`client-settings` 45 键 / 8 枚举 → **8 文件 151 用例全绿**。
 
+### 更正：群聊也能自动定位发言者
+
+- **我最初的判断是错的**。上一节写「工具侧拿不到当前发言者（`dispatchFollowup` 没有发送者参数）」——这只对**工具参数**成立：`ToolRunContext` 里确实只有 `callId / name / arguments / agent / signal`。但入站文本里本来就有身份：`[11:30 昵称(10001)][@我] <user_message qq="10001" nickname="…">`，而 prompt 已声明「边界标签本身是可信元数据」。
+- **真正的通道**：`Session.ownEvents()` 能拿到会话事件，`'user/message'` 的 `data` 就是 `UserMessage`（content blocks）。于是加纯函数 `speakerFromUserEvents(events)`：取**最后一条** `user/message`，用 `/<user_message[^>]*\sqq="(\d+)"/` 取**第一个**匹配（引用展开会嵌套同名标签，第一个才是本体）；解析不到就返回 undefined，**不往前翻历史**（那会把上一轮发言者安到这一轮）。
+- **后果**：群聊写画像不再需要管理员手填 `subject`；`memoryProfileScope='all'` 从「仅管理员可写」变成「成员可写自己、管理员可写任何人」。私聊路径不变（仍从 `chatId` 直接取）。
+- **验证**：`memory.spec` 增加 6 条（标准格式 / 取最后一条 / 嵌套引用取本体 / 末条无 qq 不回溯 / content 为字符串 / 空与坏事件）→ 35 条全绿。
+
+### 改为 dispatch 直接记录发言者（用户选定方案 B）
+
+- **A 的短板**：`speakerFromUserEvents` 靠解析会话事件（`user/message` 的 content blocks）**反推**，宿主改事件形状就会失效。
+- **B 的做法**：`ChatAgent` 增加 `pendingTurnUsers: (string | undefined)[]`（与 `pendingTurnRoles` **并行的 FIFO**）与 `activeTurnUser`；`dispatchFollowup` 多收一个 `userId`，与角色同时入队；`turn/start` 同批出队。`bridge.speakerFor(sessionId)` 直接返回，O(1)。
+- **为什么必须是队列而不只存一个字段**：忙时消息会排队。若只记 `lastSpeaker`，A 排队后 B 又发一条 → A/B 两个回合都读到 B 的号，**画像会记到别人头上**。
+- **取值顺序**（tools.ts）：私聊 `chatId` → `bridge.speakerFor(sessionId)` → `speakerFromUserEvents(ownEvents())`。第三条兜底覆盖 `/retry` 重放、宿主直接输入等未走 dispatch 的回合。
+- **`/retry` 故意不传 `userId`**：它重放的是**上一轮**的文本（可能是别人说的），传管理员会把发言人记错；让它回落到读事件，读到的仍是那条文本自带的 qq。
+- **改动面**：`registry.ts`（2 字段 + 初始化）、`bridge.ts`（签名/入队/出队/`speakerFor` + 两处 ctx 转发）、`inbound.ts`（接口 + 2 处调用）、`commands.ts`（接口）、`tools.ts`（取值顺序）。
+- **验证**：`tsc` exit 0；7 文件 161 用例全绿（含 commands 20 条命令、memory 35 条、client-settings 45 键）。
+
 ## 2026-10-26 NapCat 诊断修复（三缺陷 + 说清「卡在哪一步」）
 
 **背景**：真实事故 —— QQ 于 12:25 被手动启动，插件 15:35 两次拉起注入器均失败；旧诊断只报「NapCat 根本没启动」，把真原因（QQ 已占用、注入器无法接管）完全盖住。配置侧已逐项排查无误（onebot11 反向 WS url/token/端口/格式全对，11:17 曾正常收发消息），NapCat 日志停在 11:19 的 `ECONNREFUSED`（当时插件正在重启，之后进程消失）。
@@ -1004,7 +1021,7 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **真因**：`spawn('cmd.exe', ['/c', 'chcp 65001 >nul & "…launcher-user.bat"'], { windowsVerbatimArguments: false })` —— Node 在 Windows 上默认对 args 做引号转义（`"` → `\"`），cmd 收到的命令名成了字面量 `\"G:\…\launcher-user.bat\"`，直接报「不是内部或外部命令」。**launcher 一次都没真正执行过**。
 - **为何长期未发现**：`spawnLauncher` 原先 `stdio: 'ignore'`，输出全丢；而 `spawn` 事件一到就 `resolve(true)`，日志照打「NapCat 未运行，尝试启动第 N/2 次」，读起来像「拉起了但没连上」。本次给拉起器加 `napcat-launcher.log` 落盘后，第一行就暴露了 `'\"…bat\"' 不是内部或外部命令`。
 - **误判纠正**：此前把「拉起后仍不连」归因为「QQ 已占用导致注入失败」。该归因对**手动**启动成立，但插件自动拉起那几次连命令都没执行；16:39 那次成功是手动跑出来的。
-- **修复**：`spawn` 增加 `windowsVerbatimArguments: true`。实测对照（观察 cmd 实际收到的命令）：默认转义输出 `\\\"path\\\"`，verbatim 输出 `"path"`，且 `&` 之后的参数正常透传（`"path" -q 1354553622`）。
+- **修复**：`spawn` 增加 `windowsVerbatimArguments: true`。实测对照（观察 cmd 实际收到的命令）：默认转义输出 `\\\"path\\\"`，verbatim 输出 `"path"`，且 `&` 之后的参数正常透传（`"path" -q <机器人QQ号>`）。
 - **验证**：`tsc` exit 0；5 文件 79 用例仍全绿；真机验证待重启宿主后确认 `napcat-launcher.log` 不再出现 `\"` 报错。
 
 ## 2026-10-26 设置页二维码修复 + 控制台乱码定性

@@ -35,10 +35,10 @@ NapCat 发行包自带**四个**（都在 `NapCat.Shell\` 根目录，任选其�
 
 | 位置 | 形态 |
 |---|---|
-| patch config（`cordis.patch.yml`） | YAML 数组：`napcatLauncherArgs: ['-q', '1354553622']` |
-| 设置页面板 | 多行文本框，**每行一个参数**：第一行 `-q`，第二行 `1354553622` |
+| patch config（`cordis.patch.yml`） | YAML 数组：`napcatLauncherArgs: ['-q', '<机器人QQ号>']` |
+| 设置页面板 | 多行文本框，**每行一个参数**：第一行 `-q`，第二行 `<机器人QQ号>` |
 
-写成一行 `-q 1354553622` 或 `-q1354553622` 都无效（NapCat 按 argv 全等匹配 `-q`），会退回二维码。
+写成一行 `-q <机器人QQ号>` 或 `-q<机器人QQ号>` 都无效（NapCat 按 argv 全等匹配 `-q`），会退回二维码。
 
 ### 其它两条
 

@@ -123,6 +123,19 @@ export declare function forgetProfiles(memoryDir: string, chatId: string, subjec
 /** 中文按 2-gram、英文/数字按连续片段切词；结果去重并小写。 */
 export declare function tokenize(text: string): string[];
 /**
+ * 从会话事件里取「本轮发言者」的 QQ 号。
+ *
+ * 入站文本形如 `[11:30 昵称(10001)][@我] <user_message qq="10001" nickname="…">…`，
+ * 而 prompt 已声明「边界标签本身是可信元数据」。所以只需要**最后一条** user/message：
+ * 解析不到就返回 undefined（不要往前翻历史 —— 那会把上一轮的发言者安到这一轮头上）。
+ *
+ * 为什么要取**第一个** `<user_message`：引用/转发展开会在内部再嵌一层同名标签，
+ * 第一个才是本体。
+ *
+ * 纯函数，便于单测（工具侧只负责把 `session.ownEvents()` 喂进来）。
+ */
+export declare function speakerFromUserEvents(events: readonly unknown[]): string | undefined;
+/**
  * 关键词召回：命中词数 / 查询词数，长词加权，长度做轻微惩罚。
  *
  * 这是「字面召回」——「辣的粉」搜不到「螺蛳粉」。第二批接 embedding 后可把

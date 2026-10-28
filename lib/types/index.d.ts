@@ -141,7 +141,7 @@ export interface Config {
      */
     napcatLauncher: string;
     /**
-     * 传给 launcher 的额外参数（如 `['-q', '1354553622']` 走快速登录免扫码）。
+     * 传给 launcher 的额外参数（如 `['-q', '<机器人QQ号>']` 走快速登录免扫码）。
      *
      * NapCat 只认独立的 `-q` 参数（其 launcher 示例脚本里的「launcher 123456」位置
      * 参数无效，仍会出二维码）。有了这一项，用户不必在 NapCat 目录自建包装 bat，
@@ -164,12 +164,11 @@ export interface Config {
     /** `qq_memory_recall` 的默认返回条数（调用方可用 limit 覆盖，硬上限 20）。 */
     memoryRecallTopK: number;
     /**
-     * 成员画像能在哪写：`'dm'`（默认，只有私聊）/ `'all'`（群聊也允许，但需管理员显式给
-     * subject）/ `'off'`（完全关闭）。
+     * 成员画像能在哪写：`'dm'`（默认，只有私聊）/ `'all'`（群聊也允许）/ `'off'`（关闭）。
      *
-     * 为什么群聊默认关：群里给某人建画像容易被当成「议论别人」；而且工具侧拿不到当前
-     * 发言者（`dispatchFollowup` 没有发送者参数），无法校验 subject 是不是本人，只能
-     * 要求管理员显式指定。
+     * 主体由「本轮发言者」决定：私聊取对话对方，群聊取会话最后一条 user/message 里的
+     * `<user_message qq="…">`（该边界标签在 prompt 里已声明为可信元数据）。非管理员
+     * 只能写自己。群聊默认关只是产品取舍 —— 群里给某人建画像容易被当成议论别人。
      */
     memoryProfileScope: 'dm' | 'all' | 'off';
     interimMessages: boolean;

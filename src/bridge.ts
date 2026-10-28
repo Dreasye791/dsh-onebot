@@ -150,7 +150,7 @@ export interface BridgeConfig {
   memoryMaxEntriesPerChat?: number
   /** `qq_memory_recall` 默认返回条数。 */
   memoryRecallTopK?: number
-  /** 成员画像能在哪写：`'dm'`（默认，仅私聊）/ `'all'`（群聊也允许，但需管理员显式给 subject）/ `'off'`。 */
+  /** 成员画像能在哪写：`'dm'`（默认，仅私聊）/ `'all'`（群聊也允许）/ `'off'`。主体由本轮发言者决定。 */
   memoryProfileScope?: 'dm' | 'all' | 'off'
   /** T2 (P1): how a new ordinary message is handled while the chat's task
    * (agent turn) is running; absent → 'queue' (the default). 'queue' = the
@@ -465,9 +465,9 @@ export class ChatBridge {
       tryHandleCommand: (chatId, text, userId, nickname) => this.tryHandleCommand(chatId, text, userId, nickname),
       buildBody: (text, media, chatId, images) => this.buildBody(text, media, chatId, images),
       expandQuote: messageId => this.expandQuote(messageId),
-      dispatchFollowup: (chatId, text, role, nickname, images) => this.dispatchFollowup(chatId, text, role, nickname, images),
+      dispatchFollowup: (chatId, text, role, nickname, images, userId) => this.dispatchFollowup(chatId, text, role, nickname, images, userId),
       deliverInboundImage: (path, chatId) => this.deliverInboundImage(path, chatId),
-      interceptBusyTurn: (chatId, text, role, nickname, plain, images) => this.interceptBusyTurn(chatId, text, role, nickname, plain, images),
+      interceptBusyTurn: (chatId, text, role, nickname, plain, images, userId) => this.interceptBusyTurn(chatId, text, role, nickname, plain, images, userId),
       sendToChat: (chatId, text) => this.sendToChat(chatId, text),
       log: (level, message) => this.deps.log(level, message),
       config: deps.config,
@@ -615,6 +615,20 @@ export class ChatBridge {
   }
 
   /**
+   * 当前回合发起者的 QQ 号 —— 记忆工具用它定位「这话是谁说的」。
+   *
+   * 与 `activeTurnRole` 同源（turn/start 时从派发队列冻结），所以两者永远指向同一轮。
+   * 返回 `undefined` 表示这轮不是插件派发的（宿主 Web 输入 / 重放），调用方应回落到
+   * 别的判断（读会话事件）或要求显式 `subject`。
+   */
+  speakerFor(sessionId: string | undefined): string | undefined {
+    if (sessionId === undefined) return undefined
+    const chatId = this.bySession.get(sessionId)
+    if (chatId === undefined) return undefined
+    return this.chats.get(chatId)?.activeTurnUser
+  }
+
+  /**
    * Outbound media fence roots for one agent session's current turn (M1-A3b):
    * the plugin media dir always, plus the chat's workspace directory when the
    * running turn's initiator is an admin. The role reuses the M1-A2 turn-level
@@ -753,9 +767,12 @@ export class ChatBridge {
   }
 
   /** Feed one user message into a chat's agent (create on demand). Records
-   * the base text for /retry, queues the initiator's turn role, and applies
-   * per-chat /goal + /plan prefixes. */
-  private async dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string, images: ImageAttachmentRef[] = []): Promise<void> {
+   * the base text for /retry, queues the initiator's turn role + QQ, and
+   * applies per-chat /goal + /plan prefixes.
+   *
+   * `userId` 与 `role` 一起入队（并行 FIFO）：记忆工具要靠它判断「这句话是谁说的」，
+   * 只存单个字段会在忙时排队时串号（A 排队、B 又发一条 → 两者都读到 B）。 */
+  private async dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string, images: ImageAttachmentRef[] = [], userId?: string): Promise<void> {
     const final = this.prefixTurn(chatId, text)
     const fallback = this.chats.get(chatId)?.lastNickname ?? ''
     const chat = await this.ensureChat(chatId, nickname ?? fallback)
@@ -769,6 +786,8 @@ export class ChatBridge {
     // the running turn's role (M1-A2). Push and followup happen synchronously,
     // so the role cannot interleave with another dispatch.
     chat.pendingTurnRoles.push(role)
+    // 发起者 QQ 与角色同队列（同一个 FIFO 语义，防止忙时串号）。
+    chat.pendingTurnUsers.push(userId)
     this.deps.log('info', 'followup from ' + chatId + ': ' + final.slice(0, 120))
     // T15：这条消息里已投递成功的图片按出现顺序跟在文本块后面（模型能看像素）。
     // 引用由调用方随消息传入（inbound pipeline 的局部数组），**不再**从 per-chat
@@ -873,7 +892,8 @@ export class ChatBridge {
       getChat: chatId => bridge.chats.get(chatId),
       hasChat: chatId => bridge.chats.has(chatId),
       resetChat: chatId => bridge.resetChat(chatId),
-      dispatchFollowup: (chatId, text, role, nickname) => bridge.dispatchFollowup(chatId, text, role, nickname),
+      // commands 不传 images（void 跳过），userId 走第 6 参
+      dispatchFollowup: (chatId, text, role, nickname, userId) => bridge.dispatchFollowup(chatId, text, role, nickname, undefined, userId),
       // T3 (P2): /stop 也显式终止该聊天的超时补发跟踪（其他聊天不受影响）。
       stopDeferredTracking: chatId => bridge.deferred.cancelChat(chatId),
       // T2 (P1): /steer — the bridge-owned steer core keeps the createUserMessage
@@ -1050,7 +1070,7 @@ export class ChatBridge {
    * authoritative signal /stop uses; chat.busy (turn/start..turn/end view)
    * can lag the host driver and is deliberately NOT consulted.
    */
-  private async interceptBusyTurn(chatId: ChatId, text: string, role: UserRole, nickname: string | undefined, plain: boolean, images: ImageAttachmentRef[] = []): Promise<boolean> {
+  private async interceptBusyTurn(chatId: ChatId, text: string, role: UserRole, nickname: string | undefined, plain: boolean, images: ImageAttachmentRef[] = [], userId?: string): Promise<boolean> {
     const chat = this.chats.get(chatId)
     if (chat === undefined || chat.agent.status !== 'running') return false
     // The restricted-member soft limit ([受限用户:仅问答]) is never widened by
@@ -1073,7 +1093,7 @@ export class ChatBridge {
       })
       return true
     }
-    await this.dispatchFollowup(chatId, text, role, nickname, images)
+    await this.dispatchFollowup(chatId, text, role, nickname, images, userId)
     currentTrace()?.emit('dispatch', { ok: true, reason: TRACE_REASONS.busyTurnQueued })
     if (!this.queueNoticeChats.has(chatId)) {
       this.queueNoticeChats.add(chatId)
@@ -1224,6 +1244,8 @@ export class ChatBridge {
       // (M1-A2): turns the plugin did not dispatch (host/web input) find an
       // empty queue and fail closed as member.
       chat.activeTurnRole = chat.pendingTurnRoles.shift() ?? 'member'
+      // 发起者 QQ 与角色同批出队；空队列 = 宿主直接输入（Web/重放），没有 QQ 身份。
+      chat.activeTurnUser = chat.pendingTurnUsers.shift()
       chat.lastActivityAt = Date.now()
       chat.busy = true
       // T3 (P2): arm the deferred silent-wait window for this turn（每次模型

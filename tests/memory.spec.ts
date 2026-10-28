@@ -15,6 +15,7 @@ import {
   readMemories,
   searchMemories,
   selectForRecall,
+  speakerFromUserEvents,
   tokenize,
   trimMemories,
   ttlDaysFor,
@@ -253,5 +254,49 @@ describe('memory: 删除画像', () => {
     const dir = makeDir()
     appendMemory(dir, 'group:1', { ts: 1, text: '群规' })
     expect(forgetProfiles(dir, 'group:1', '1001')).toBe(0)
+  })
+})
+
+describe('memory: 从会话事件取本轮发言者', () => {
+  const userEvent = (text: string) => ({ type: 'user/message', data: { content: [{ type: 'text', text }] } })
+
+  it('从 <user_message qq="…"> 取 QQ 号', () => {
+    const events = [
+      userEvent('[11:30 昵称(10001)][@我] <user_message qq="10001" nickname="昵称">\n@10002 🐛\n</user_message>'),
+    ]
+    expect(speakerFromUserEvents(events)).toBe('10001')
+  })
+
+  it('取最后一个 user/message，而不是更早的', () => {
+    const events = [
+      userEvent('<user_message qq="1001" nickname="A">old</user_message>'),
+      { type: 'assistant/message', data: {} },
+      userEvent('<user_message qq="2002" nickname="B">new</user_message>'),
+    ]
+    expect(speakerFromUserEvents(events)).toBe('2002')
+  })
+
+  it('引用展开的嵌套标签不会顶掉本体（取第一个）', () => {
+    const text = '<user_message qq="2002" nickname="B">看这条\n<user_message qq="1001" nickname="A">原文</user_message>\n</user_message>'
+    expect(speakerFromUserEvents([userEvent(text)])).toBe('2002')
+  })
+
+  it('最后一条 user/message 没有 qq 属性时返回 undefined（不往前翻历史）', () => {
+    const events = [
+      userEvent('<user_message qq="1001" nickname="A">上一轮</user_message>'),
+      userEvent('来自宿主 Web 的输入，没有 qq 属性'),
+    ]
+    expect(speakerFromUserEvents(events)).toBeUndefined()
+  })
+
+  it('content 是字符串时也能解析', () => {
+    const events = [{ type: 'user/message', data: { content: '<user_message qq="3003" nickname="C">hi</user_message>' } }]
+    expect(speakerFromUserEvents(events)).toBe('3003')
+  })
+
+  it('空事件、坏事件、无 user/message 时返回 undefined', () => {
+    expect(speakerFromUserEvents([])).toBeUndefined()
+    expect(speakerFromUserEvents([null, 42, { type: 'assistant/message' }])).toBeUndefined()
+    expect(speakerFromUserEvents([{ type: 'user/message', data: { content: [{ type: 'image' }] } }])).toBeUndefined()
   })
 })

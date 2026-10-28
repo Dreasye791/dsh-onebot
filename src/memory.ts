@@ -285,6 +285,45 @@ export function tokenize(text: string): string[] {
   return [...tokens]
 }
 
+/** 取一条 user/message 事件的纯文本（content 可能是字符串或 blocks 数组）。 */
+function textOfUserEvent(data: unknown): string | undefined {
+  if (data === null || typeof data !== 'object') return undefined
+  const content = (data as { content?: unknown }).content
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return undefined
+  const parts: string[] = []
+  for (const block of content) {
+    if (block === null || typeof block !== 'object') continue
+    const typed = block as { type?: unknown; text?: unknown }
+    if (typed.type === 'text' && typeof typed.text === 'string') parts.push(typed.text)
+  }
+  return parts.length > 0 ? parts.join('\n') : undefined
+}
+
+/**
+ * 从会话事件里取「本轮发言者」的 QQ 号。
+ *
+ * 入站文本形如 `[11:30 昵称(10001)][@我] <user_message qq="10001" nickname="…">…`，
+ * 而 prompt 已声明「边界标签本身是可信元数据」。所以只需要**最后一条** user/message：
+ * 解析不到就返回 undefined（不要往前翻历史 —— 那会把上一轮的发言者安到这一轮头上）。
+ *
+ * 为什么要取**第一个** `<user_message`：引用/转发展开会在内部再嵌一层同名标签，
+ * 第一个才是本体。
+ *
+ * 纯函数，便于单测（工具侧只负责把 `session.ownEvents()` 喂进来）。
+ */
+export function speakerFromUserEvents(events: readonly unknown[]): string | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index] as { type?: unknown; data?: unknown } | null | undefined
+    if (event === null || typeof event !== 'object') continue
+    if (event.type !== 'user/message') continue
+    const text = textOfUserEvent(event.data)
+    if (text === undefined) return undefined
+    return /<user_message[^>]*\sqq="(\d+)"/.exec(text)?.[1]
+  }
+  return undefined
+}
+
 /**
  * 关键词召回：命中词数 / 查询词数，长词加权，长度做轻微惩罚。
  *

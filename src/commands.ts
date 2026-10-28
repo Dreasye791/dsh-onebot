@@ -56,7 +56,7 @@ export interface CommandContext {
   hasChat(chatId: ChatId): boolean
   /** Registry capabilities the commands legitimately trigger. */
   resetChat(chatId: ChatId): Promise<void>
-  dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string): Promise<void>
+  dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string, userId?: string): Promise<void>
   /** T3 (P2): /stop — 显式终止该聊天的超时补发跟踪（pending 条目转
    * cancelled，其他聊天不受影响）。无补发条目时为 no-op。 */
   stopDeferredTracking(chatId: ChatId): void

@@ -121,7 +121,7 @@ export interface BridgeConfig {
     memoryMaxEntriesPerChat?: number;
     /** `qq_memory_recall` 默认返回条数。 */
     memoryRecallTopK?: number;
-    /** 成员画像能在哪写：`'dm'`（默认，仅私聊）/ `'all'`（群聊也允许，但需管理员显式给 subject）/ `'off'`。 */
+    /** 成员画像能在哪写：`'dm'`（默认，仅私聊）/ `'all'`（群聊也允许）/ `'off'`。主体由本轮发言者决定。 */
     memoryProfileScope?: 'dm' | 'all' | 'off';
     /** T2 (P1): how a new ordinary message is handled while the chat's task
      * (agent turn) is running; absent → 'queue' (the default). 'queue' = the
@@ -373,6 +373,14 @@ export declare class ChatBridge {
      * as member. */
     canEditFiles(sessionId: string): boolean;
     /**
+     * 当前回合发起者的 QQ 号 —— 记忆工具用它定位「这话是谁说的」。
+     *
+     * 与 `activeTurnRole` 同源（turn/start 时从派发队列冻结），所以两者永远指向同一轮。
+     * 返回 `undefined` 表示这轮不是插件派发的（宿主 Web 输入 / 重放），调用方应回落到
+     * 别的判断（读会话事件）或要求显式 `subject`。
+     */
+    speakerFor(sessionId: string | undefined): string | undefined;
+    /**
      * Outbound media fence roots for one agent session's current turn (M1-A3b):
      * the plugin media dir always, plus the chat's workspace directory when the
      * running turn's initiator is an admin. The role reuses the M1-A2 turn-level
@@ -434,8 +442,11 @@ export declare class ChatBridge {
     private beginInboundTrace;
     private processInbound;
     /** Feed one user message into a chat's agent (create on demand). Records
-     * the base text for /retry, queues the initiator's turn role, and applies
-     * per-chat /goal + /plan prefixes. */
+     * the base text for /retry, queues the initiator's turn role + QQ, and
+     * applies per-chat /goal + /plan prefixes.
+     *
+     * `userId` 与 `role` 一起入队（并行 FIFO）：记忆工具要靠它判断「这句话是谁说的」，
+     * 只存单个字段会在忙时排队时串号（A 排队、B 又发一条 → 两者都读到 B）。 */
     private dispatchFollowup;
     /** Prepend per-chat context directives (/goal reminder) to a turn's user
      * text. Plan mode is host-owned now (/plan forwards to the host command),

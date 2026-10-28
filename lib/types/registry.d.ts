@@ -124,6 +124,17 @@ export interface ChatAgent {
     /** Role of the currently running turn; stays 'member' (fail-closed) until a
      * turn/start assigns the head of pendingTurnRoles. */
     activeTurnRole: UserRole;
+    /**
+     * 每轮发起者的 QQ 号，与 `pendingTurnRoles` **并行**的 FIFO（turn/start 时一起出队）。
+     *
+     * 为什么要队列而不只存一个 `activeTurnUser`：忙时消息会排队，若只记最后一个，
+     * A 的消息排队后 B 又发一条，两者的回合都读到 B 的号 —— 记忆/画像会记到别人头上。
+     * `undefined` 表示该轮不是插件派发的（宿主 Web 输入、重放），与角色队列的
+     * 「空队列 fail-closed」同源。
+     */
+    pendingTurnUsers: (string | undefined)[];
+    /** 当前运行回合的发起者 QQ；插件未派发的回合为 undefined。 */
+    activeTurnUser: string | undefined;
     /** The last user message text actually fed to the agent (for /retry). */
     lastFollowup: string | undefined;
     /** Mutable per-agent model selection (installModelSelection-bound); the

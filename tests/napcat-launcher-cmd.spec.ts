@@ -19,8 +19,8 @@ describe('buildLauncherCommand', () => {
   })
 
   it('-q 与 QQ 号作为两个独立参数追加（NapCat 只认这种形态）', () => {
-    const { command, dropped } = buildLauncherCommand(LAUNCHER, ['-q', '1354553622'])
-    expect(command).toBe('chcp 65001 >nul & "' + LAUNCHER + '" -q 1354553622')
+    const { command, dropped } = buildLauncherCommand(LAUNCHER, ['-q', '10002'])
+    expect(command).toBe('chcp 65001 >nul & "' + LAUNCHER + '" -q 10002')
     expect(dropped).toEqual([])
   })
 
@@ -32,14 +32,14 @@ describe('buildLauncherCommand', () => {
   it('cmd 元字符参数被丢弃，且不进入命令（fail-closed）', () => {
     const { command, dropped } = buildLauncherCommand(LAUNCHER, [
       '-q',
-      '1354553622',
+      '10002',
       '& calc',
       'a|b',
       '>out.txt',
       '100%',
       'x!y',
     ])
-    expect(command).toBe('chcp 65001 >nul & "' + LAUNCHER + '" -q 1354553622')
+    expect(command).toBe('chcp 65001 >nul & "' + LAUNCHER + '" -q 10002')
     expect(dropped).toHaveLength(5)
     // 命令里绝不能出现被丢弃的片段
     expect(command).not.toContain('calc')

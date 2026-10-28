@@ -17,7 +17,7 @@ import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import type { ChatBridge } from './bridge.js'
 import type { OneBotConnection } from './connection.js'
 import { fileToBase64, isUrl } from './media.js'
-import { appendMemory, findSensitive, readAllMemories, readMemories, searchMemories, selectForRecall, trimMemories } from './memory.js'
+import { appendMemory, findSensitive, readAllMemories, readMemories, searchMemories, selectForRecall, speakerFromUserEvents, trimMemories } from './memory.js'
 import { splitChatId } from './chat.js'
 import type { OneBotSegment } from './cq.js'
 import { parseMessage, cqUnescape } from './cq.js'
@@ -654,7 +654,7 @@ export function registerTools(
         },
         subject: {
           type: 'string',
-          description: '画像主体 QQ 号。私聊可省略（默认就是对方本人）；群聊记 profile 必须显式指定，且仅管理员可用',
+          description: '画像主体 QQ 号。可省略：私聊默认取对话对方，群聊取本轮发言者（消息里的 qq 属性）。非管理员只能填自己，填别人会被拒绝',
         },
         tags: {
           type: 'array',
@@ -691,8 +691,18 @@ export function registerTools(
             + '记忆是明文 JSONL 存盘，请不要记录手机号 / 身份证 / 银行卡等敏感信息。')
         }
         const chatId = resolveChat(bridge, exec, a.chat_id)
-        const role = bridge.canEditFiles(String(exec.agent?.session.id ?? '')) ? 'admin' as const : 'member' as const
         const dm = dmSubject(chatId)
+        // 「本轮发言者」：私聊就是对方；群聊从会话最后一条 user/message 的
+        // `<user_message qq="…">` 里取（边界标签在 prompt 里已声明为可信元数据）。
+        // 这一步替代了此前「群聊靠管理员手填 subject」的限制。
+        // 取「本轮发言者」：私聊直接是对方；群聊**先问 bridge**（dispatch 时已把 QQ 与
+        // 角色一起入队，turn/start 冻结成 activeTurnUser —— O(1) 且不依赖事件形状），
+        // 拿不到再回落到读会话事件（覆盖 /retry 重放、宿主直接输入等未走 dispatch 的回合）。
+        const sessionId = exec.agent?.session.id
+        const speaker = dm
+          ?? bridge.speakerFor(sessionId === undefined ? undefined : String(sessionId))
+          ?? speakerFromUserEvents(exec.agent?.session?.ownEvents?.() ?? [])
+        const role = bridge.canEditFiles(String(exec.agent?.session.id ?? '')) ? 'admin' as const : 'member' as const
         const kind = a.kind === 'profile' ? 'profile' as const : 'note' as const
 
         let subject: string | undefined
@@ -701,27 +711,23 @@ export function registerTools(
             throw new Error('qq_memory_remember: 当前未启用成员画像（memoryProfileScope=off）。'
               + '如果这是会话公共信息，请改用 kind: note。')
           }
+          if (dm === undefined && profileScope !== 'all') {
+            throw new Error('qq_memory_remember: 群聊里默认不建个人画像（memoryProfileScope=' + profileScope + '）。'
+              + '如果这是本群公共信息，请改用 kind: note；需要群内画像请让管理员把 memoryProfileScope 设为 all。')
+          }
           const explicit = typeof a.subject === 'string' ? a.subject.trim() : ''
-          if (dm !== undefined) {
-            // 私聊：主体默认就是对方；要记别人只有管理员可以
-            subject = explicit === '' ? dm : explicit
-            if (subject !== dm && role !== 'admin') {
-              throw new Error('qq_memory_remember: 私聊里只能记录对方本人的画像；要记其他人请让管理员操作。')
-            }
-          } else {
-            // 群聊：拿不到「当前发言者」，只能靠显式 subject，且仅管理员 —— 否则任何人都能
-            // 给别人贴标签（工具侧无法校验 subject 是不是发言者自己）。
-            if (profileScope !== 'all') {
-              throw new Error('qq_memory_remember: 群聊里默认不建个人画像（memoryProfileScope=' + profileScope + '）。'
-                + '如果这是本群公共信息，请改用 kind: note；需要群内画像请让管理员把 memoryProfileScope 设为 all。')
-            }
-            if (role !== 'admin') {
-              throw new Error('qq_memory_remember: 群聊里记录某人画像仅管理员可用（无法校验你记的是不是自己）。')
-            }
-            if (explicit === '') {
-              throw new Error('qq_memory_remember: 群聊里记录画像必须显式传 subject（消息前缀 [HH:MM 昵称(QQ)] 里的 QQ 号）。')
+          if (explicit !== '') {
+            // 显式指定：非管理员只能写自己（防止给别人贴标签），管理员不受限。
+            if (role !== 'admin' && explicit !== speaker) {
+              throw new Error('qq_memory_remember: 只能记录你自己的画像（当前发言者 '
+                + (speaker ?? '未知') + '）；要记别人请让管理员操作。')
             }
             subject = explicit
+          } else if (speaker !== undefined) {
+            subject = speaker
+          } else {
+            throw new Error('qq_memory_remember: 取不到当前发言人（本轮消息里没有 qq 属性）。'
+              + '请在 subject 里显式指定 QQ 号（非管理员只能填自己）。')
           }
         }
 
@@ -730,7 +736,7 @@ export function registerTools(
           text: clipped,
           ...(tags !== undefined && tags.length > 0 ? { tags } : {}),
           ...(kind === 'profile' && subject !== undefined ? { kind: 'profile' as const, subject } : {}),
-          ...(dm !== undefined ? { by: dm } : {}),
+          ...(speaker !== undefined ? { by: speaker } : {}),
           role,
         })
         const dropped = trimMemories(memoryDir, chatId, cap)

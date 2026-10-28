@@ -112,7 +112,7 @@ export interface InboundContext {
      *
      * `images` (T15)：本条消息的图片引用，按出现顺序。显式随调用链传递，不再
      * 走 per-chat 的可变数组（见 buildBody 的说明）。 */
-    dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string, images?: ImageAttachmentRef[]): Promise<void>;
+    dispatchFollowup(chatId: ChatId, text: string, role: UserRole, nickname?: string, images?: ImageAttachmentRef[], userId?: string): Promise<void>;
     /** T15: 把一张已落盘的入站图片投递给宿主附件库，换回一个不变量引用（用于
      * content 里的 image 块）。返回 undefined = 未投递（未启用/超限/宿主不支持），
      * 调用方退回 `[图片:<路径>]` 文本注解。可选：测试装配可省略（等于关闭投递）。 */
@@ -126,7 +126,7 @@ export interface InboundContext {
      * carries no media, no quote and no forward (steer eligibility precondition:
      * media-bearing messages always queue, never steer). Optional: absent =
      * the pre-T2 pipeline (0.8.1 behavior for every message). */
-    interceptBusyTurn?(chatId: ChatId, text: string, role: UserRole, nickname: string | undefined, plain: boolean, images?: ImageAttachmentRef[]): Promise<boolean>;
+    interceptBusyTurn?(chatId: ChatId, text: string, role: UserRole, nickname: string | undefined, plain: boolean, images?: ImageAttachmentRef[], userId?: string): Promise<boolean>;
     /** Outbound facade (the B7 rate-limit notice). */
     sendToChat(chatId: ChatId, text: string): Promise<string[]>;
     /** Bridge log line callback. */

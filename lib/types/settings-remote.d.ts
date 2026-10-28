@@ -180,6 +180,56 @@ export interface ReasoningEffortsResult {
  *  reasoning。失败（服务缺席/无默认模型/无 reasoning 元数据/抛错）统一归一为
  *  available=false。 */
 export declare function listReasoningEfforts(llm: LlmRuntimeLike | undefined, defaultModel: DefaultModelLike | undefined, signal?: AbortSignal): Promise<ReasoningEffortsResult>;
+/** 面板用：一个会话的记忆概览。 */
+export interface MemoryChatSummary {
+    chatId: string;
+    /** 从 chatId 前缀判断，便于前端分组显示 */
+    kind: 'private' | 'group';
+    /** 文件字节数（不解析内容，仅展示与排序） */
+    bytes: number;
+    /** 文件最后修改时间（epoch ms） */
+    mtimeMs: number;
+}
+export interface MemoryChatsResult {
+    /** 记忆根目录（便于用户定位与备份） */
+    dir: string;
+    /** 记忆功能是否开启；关闭时列表仍可读（历史可见，只是不再写入） */
+    enabled: boolean;
+    chats: MemoryChatSummary[];
+}
+/** 面板用：一条记忆的视图。 */
+export interface MemoryEntryView {
+    ts: number;
+    text: string;
+    tags: string[];
+    kind: 'note' | 'profile';
+    subject?: string;
+    by?: string;
+    role?: string;
+    /** 已超保留时长：面板标注「已过期」，模型不再召回（文件未删） */
+    expired: boolean;
+}
+export interface MemoryEntriesResult {
+    chatId: string;
+    /** 过滤后的总数（分页前） */
+    total: number;
+    offset: number;
+    limit: number;
+    entries: MemoryEntryView[];
+}
+export interface MemoryMutationResult {
+    ok: boolean;
+    /** 变更后该会话的总条数 */
+    total: number;
+}
+/** 会话列表：只 stat 不解析，几百个文件也是毫秒级。 */
+export declare function listMemoryChats(editor: ConfigEditorLike): MemoryChatsResult;
+/** 分页读取某个会话的记忆（新→旧；给 query 时按相关度排序）。 */
+export declare function readMemoryEntries(editor: ConfigEditorLike, chatId: unknown, offset: unknown, limit: unknown, query: unknown): MemoryEntriesResult;
+/** 编辑一条记忆的正文/标签（身份字段 ts/kind/subject 不可改）。 */
+export declare function updateMemoryEntry(editor: ConfigEditorLike, chatId: unknown, ts: unknown, text: unknown, tags: unknown): MemoryMutationResult;
+/** 删除一条记忆（按 ts）。 */
+export declare function deleteMemoryEntry(editor: ConfigEditorLike, chatId: unknown, ts: unknown): MemoryMutationResult;
 /** 38 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
 export declare function effectiveConfig(raw: Record<string, unknown>): Record<string, unknown>;
 /** updateSettings 入参校验（T1 §4：32 键的任意子集，扁平 JSON）。未知键整单
@@ -237,6 +287,10 @@ export declare function createOnebotSettingsMethods(editor: ConfigEditorLike, st
     updateSettings(patch: unknown, expectedRevision?: number): Promise<OnebotSettingsSnapshot>;
     listWorkspaces(): Promise<WorkspaceListResult>;
     listReasoningEfforts(): Promise<ReasoningEffortsResult>;
+    listMemoryChats(): MemoryChatsResult;
+    readMemoryEntries(chatId: string, offset: number, limit: number, query: string): MemoryEntriesResult;
+    updateMemoryEntry(chatId: string, ts: number, text: string, tags: string[]): MemoryMutationResult;
+    deleteMemoryEntry(chatId: string, ts: number): MemoryMutationResult;
 };
 /** 服务装配：协议在位 → TypertRemoteService 子类（网关按 typertRemote 绑定 +
  *  原型 descriptor 发现）；否则降级为普通 cordis 服务（同名方法面，仅无网关

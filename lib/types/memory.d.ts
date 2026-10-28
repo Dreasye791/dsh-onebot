@@ -120,6 +120,30 @@ export declare function trimMemories(memoryDir: string, chatId: string, max: num
  * @returns 被删除的条数。
  */
 export declare function forgetProfiles(memoryDir: string, chatId: string, subject?: string): number;
+/** `private_123.jsonl` → `private:123`；不是记忆文件时返回 undefined（`memoryFileName` 的逆）。 */
+export declare function chatIdFromFileName(name: string): string | undefined;
+/** 一个会话的记忆文件概览。 */
+export interface MemoryFileInfo {
+    chatId: string;
+    bytes: number;
+    mtimeMs: number;
+}
+/**
+ * 列出所有记忆文件（**只 stat，不解析内容**）。
+ *
+ * 面板会话列表靠它：解析上千条 JSON 只为显示「有几个会话」不值得，
+ * 大小与 mtime 足以排序与展示；具体条目由 `readMemoryEntries` 按需分页读取。
+ */
+export declare function listMemoryFiles(memoryDir: string): MemoryFileInfo[];
+/** 面板编辑：只允许改正文与标签（`ts`/`kind`/`subject` 是身份，不可改）。 */
+export interface MemoryEditPatch {
+    text?: string;
+    tags?: string[];
+}
+/** 按 `ts` 更新一条记忆；返回是否命中（同毫秒多条时只改第一条）。 */
+export declare function updateMemory(memoryDir: string, chatId: string, ts: number, patch: MemoryEditPatch): boolean;
+/** 按 `ts` 删除一条记忆；返回是否命中。 */
+export declare function deleteMemory(memoryDir: string, chatId: string, ts: number): boolean;
 /** 中文按 2-gram、英文/数字按连续片段切词；结果去重并小写。 */
 export declare function tokenize(text: string): string[];
 /**

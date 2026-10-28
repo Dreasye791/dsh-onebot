@@ -6,9 +6,12 @@ import { describe, expect, it } from 'vitest'
 
 import {
   appendMemory,
+  chatIdFromFileName,
+  deleteMemory,
   findSensitive,
   forgetProfiles,
   isExpired,
+  listMemoryFiles,
   memoryFileName,
   memoryFilePath,
   readAllMemories,
@@ -19,6 +22,7 @@ import {
   tokenize,
   trimMemories,
   ttlDaysFor,
+  updateMemory,
 } from '../src/memory.js'
 import type { MemoryEntry } from '../src/memory.js'
 
@@ -298,5 +302,67 @@ describe('memory: 从会话事件取本轮发言者', () => {
     expect(speakerFromUserEvents([])).toBeUndefined()
     expect(speakerFromUserEvents([null, 42, { type: 'assistant/message' }])).toBeUndefined()
     expect(speakerFromUserEvents([{ type: 'user/message', data: { content: [{ type: 'image' }] } }])).toBeUndefined()
+  })
+})
+
+describe('memory: 会话文件枚举与面板编辑', () => {
+  it('chatIdFromFileName 是 memoryFileName 的逆', () => {
+    expect(chatIdFromFileName('private_10001.jsonl')).toBe('private:10001')
+    expect(chatIdFromFileName('group_20002.jsonl')).toBe('group:20002')
+    expect(chatIdFromFileName('notes.txt')).toBeUndefined()
+    expect(chatIdFromFileName('random.jsonl')).toBeUndefined()
+  })
+
+  it('listMemoryFiles 只列记忆文件（忽略其他文件）且带字节数', () => {
+    const dir = makeDir()
+    appendMemory(dir, 'private:10001', { ts: 1, text: 'A' })
+    appendMemory(dir, 'group:20002', { ts: 2, text: 'B' })
+    writeFileSync(join(dir, 'notes.txt'), 'noise')
+    const files = listMemoryFiles(dir)
+    expect(files.map((file) => file.chatId).sort()).toEqual(['group:20002', 'private:10001'])
+    expect(files.every((file) => file.bytes > 0)).toBe(true)
+  })
+
+  it('listMemoryFiles 目录不存在时返回空数组', () => {
+    expect(listMemoryFiles(join(makeDir(), 'missing'))).toEqual([])
+  })
+
+  it('updateMemory 按 ts 改正文与标签', () => {
+    const dir = makeDir()
+    appendMemory(dir, 'private:10001', { ts: 100, text: '旧内容' })
+    expect(updateMemory(dir, 'private:10001', 100, { text: '新内容', tags: ['偏好'] })).toBe(true)
+    const entries = readAllMemories(dir, 'private:10001')
+    expect(entries).toHaveLength(1)
+    expect(entries[0].text).toBe('新内容')
+    expect(entries[0].tags).toEqual(['偏好'])
+  })
+
+  it('updateMemory 传空标签数组会移除 tags', () => {
+    const dir = makeDir()
+    appendMemory(dir, 'private:10001', { ts: 100, text: '旧', tags: ['a'] })
+    expect(updateMemory(dir, 'private:10001', 100, { tags: [] })).toBe(true)
+    expect(readAllMemories(dir, 'private:10001')[0].tags).toBeUndefined()
+  })
+
+  it('updateMemory 未命中时返回 false 且不改文件', () => {
+    const dir = makeDir()
+    appendMemory(dir, 'private:10001', { ts: 100, text: '旧' })
+    expect(updateMemory(dir, 'private:10001', 999, { text: '新' })).toBe(false)
+    expect(readAllMemories(dir, 'private:10001')[0].text).toBe('旧')
+  })
+
+  it('deleteMemory 只删命中的那条', () => {
+    const dir = makeDir()
+    appendMemory(dir, 'private:10001', { ts: 100, text: 'A' })
+    appendMemory(dir, 'private:10001', { ts: 200, text: 'B' })
+    expect(deleteMemory(dir, 'private:10001', 100)).toBe(true)
+    expect(readAllMemories(dir, 'private:10001').map((entry) => entry.text)).toEqual(['B'])
+  })
+
+  it('deleteMemory 未命中时返回 false', () => {
+    const dir = makeDir()
+    appendMemory(dir, 'private:10001', { ts: 100, text: 'A' })
+    expect(deleteMemory(dir, 'private:10001', 999)).toBe(false)
+    expect(readAllMemories(dir, 'private:10001')).toHaveLength(1)
   })
 })

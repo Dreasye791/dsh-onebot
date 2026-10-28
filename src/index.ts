@@ -20,7 +20,7 @@ import type { OneBotEvent } from './connection.js'
 import type { BridgeDeps, WorkspaceRegistryLike } from './bridge.js'
 import { NapcatWatch } from './napcat-watch.js'
 import type { AccessPolicyConfig } from './chat.js'
-import { homedir } from 'node:os'
+import { defaultMediaDir, dshHome } from './paths.js'
 import { join } from 'node:path'
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -286,19 +286,9 @@ export interface Config {
 
 const ENV = (name: string): string => process.env[name] ?? ''
 
-/** Default media dir: <dsh-home>/media/onebot (dsh-home = $DSH_HOME or ~/.dsh). */
-export function defaultMediaDir(): string {
-  // os.homedir() reads $HOME first and falls back to the passwd entry — the
-  // systemd service runs without HOME, so `?? '/tmp'` used to resolve to
-  // /tmp/.dsh and preset enumeration hit ENOENT (web log line 14429).
-  const home = ENV('DSH_HOME') !== '' ? ENV('DSH_HOME') : join(homedir() || '/tmp', '.dsh')
-  return join(home, 'media', 'onebot')
-}
-
-/** The dsh data home ($DSH_HOME or ~/.dsh); source of the .agent-presets dir. */
-export function dshHome(): string {
-  return ENV('DSH_HOME') !== '' ? ENV('DSH_HOME') : join(homedir() || '/tmp', '.dsh')
-}
+// 路径口径移到 paths.ts（设置页服务也要用它解析 `<mediaDir>/memory`）。这里 import
+// 后再 re-export：`export { x } from './y'` 不会在本地建立绑定，而本文件内部还要用。
+export { defaultMediaDir, dshHome }
 
 /** D4a: schema defaults for the renamed fields (referenced by the deprecated-name fallback). */
 const INBOUND_IMAGE_MAX_PX = 2048

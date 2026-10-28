@@ -115,8 +115,11 @@ describe('T4 客户端 bundle — descriptor 契约核对（与 T3 src/settings-
     }
   })
 
-  it('方法集逐字对齐：getSettings() 0 参；updateSettings(patch, expectedRevision)；listWorkspaces() / listReasoningEfforts() 0 参（W7/T17），全 positional', () => {
-    expect(descriptors.map((descriptor) => descriptor.method)).toEqual(['getSettings', 'updateSettings', 'listWorkspaces', 'listReasoningEfforts'])
+  it('方法集逐字对齐：getSettings() 0 参；updateSettings(patch, expectedRevision)；listWorkspaces() / listReasoningEfforts() 0 参；记忆四条全 positional', () => {
+    expect(descriptors.map((descriptor) => descriptor.method)).toEqual([
+      'getSettings', 'updateSettings', 'listWorkspaces', 'listReasoningEfforts',
+      'listMemoryChats', 'readMemoryEntries', 'updateMemoryEntry', 'deleteMemoryEntry',
+    ])
     const getSettings = descriptors[0] as { parameters: Array<unknown>; result: { schema: { parse(value: unknown): unknown } } }
     expect(getSettings.parameters).toEqual([])
     const updateSettings = descriptors[1] as { parameters: Array<{ name: string }>; result: { schema: { parse(value: unknown): unknown } } }
@@ -143,6 +146,27 @@ describe('T4 客户端 bundle — descriptor 契约核对（与 T3 src/settings-
     })
     // 宿主降级形态（拿不到 llm/默认模型）同样可解析。
     expect(listReasoningEfforts.result.schema.parse({ available: false, efforts: [] })).toEqual({ available: false, efforts: [] })
+
+    // 记忆管理四条：服务端 markRemote 与客户端 descriptor 必须成对，否则面板调不到
+    // （getNapcatStatus 只做了服务端，就是反例）。
+    const listMemoryChats = descriptors[4] as { parameters: Array<unknown>; result: { typeSymbol: string; schema: { parse(value: unknown): unknown } } }
+    expect(listMemoryChats.parameters).toEqual([])
+    expect(listMemoryChats.result.typeSymbol).toBe('MemoryChatsResult')
+    expect(listMemoryChats.result.schema.parse({
+      dir: 'G:/media/onebot/memory',
+      enabled: true,
+      chats: [{ chatId: 'private:10001', kind: 'private', bytes: 128, mtimeMs: 1 }],
+    })).toEqual({
+      dir: 'G:/media/onebot/memory',
+      enabled: true,
+      chats: [{ chatId: 'private:10001', kind: 'private', bytes: 128, mtimeMs: 1 }],
+    })
+    const readMemoryEntries = descriptors[5] as { parameters: Array<{ name: string }> }
+    expect(readMemoryEntries.parameters.map((parameter) => parameter.name)).toEqual(['chatId', 'offset', 'limit', 'query'])
+    const updateMemoryEntry = descriptors[6] as { parameters: Array<{ name: string }> }
+    expect(updateMemoryEntry.parameters.map((parameter) => parameter.name)).toEqual(['chatId', 'ts', 'text', 'tags'])
+    const deleteMemoryEntry = descriptors[7] as { parameters: Array<{ name: string }> }
+    expect(deleteMemoryEntry.parameters.map((parameter) => parameter.name)).toEqual(['chatId', 'ts'])
   })
 
   it('result codec 可解析宿主形态快照（T1 §3：19 键 config + secrets 脱敏标记 + groups + effect=restart）', () => {

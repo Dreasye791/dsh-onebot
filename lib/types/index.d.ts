@@ -16,6 +16,7 @@ import type { SessionStore } from '@deepseek-ai/dsh-session';
 import type { ModelSelection } from '@deepseek-ai/dsh-agent';
 import type Z from '@deepseek-ai/schemastery';
 import type { OneBotEvent } from './connection.js';
+import { defaultMediaDir, dshHome } from './paths.js';
 type Context = CordisContext & {
     tools: ToolRuntime;
     systemPrompt: SystemPrompt;
@@ -267,10 +268,7 @@ export interface Config {
     /** Console log gate: messages below this level are dropped (debug < info < warn < error). */
     logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
-/** Default media dir: <dsh-home>/media/onebot (dsh-home = $DSH_HOME or ~/.dsh). */
-export declare function defaultMediaDir(): string;
-/** The dsh data home ($DSH_HOME or ~/.dsh); source of the .agent-presets dir. */
-export declare function dshHome(): string;
+export { defaultMediaDir, dshHome };
 export declare const Config: Z<Config>;
 /** Map deprecated config names onto their renamed fields: a legacy value is
  * honored only while the new name still sits at its schema default (the new
@@ -281,4 +279,3 @@ export declare function resolveDeprecatedConfig(config: Config): Config;
 export declare function logMetaEvent(selfId: string, event: OneBotEvent, minLevel?: Config['logLevel']): void;
 /** Mount the plugin. */
 export declare function apply(ctx: Context, config: Config): void;
-export {};

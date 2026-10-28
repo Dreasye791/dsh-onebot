@@ -55,6 +55,8 @@ import type { Context } from '@deepseek-ai/cordis'
  *  list()，不打开 registry 内部态——import type 零运行时依赖，不改 bridge.ts）。 */
 import type { WorkspaceRegistryLike } from './bridge.js'
 import { MCP_ALLOW_ITEM_MAX_LEN, MCP_ALLOW_MAX_ENTRIES } from './mcp-gate.js'
+import { deleteMemory, findSensitive, isExpired, listMemoryFiles, readAllMemories, searchMemories, updateMemory } from './memory.js'
+import { memoryDirFor } from './paths.js'
 
 /** patch insert 中 dsh-onebot 主条目的 id（T1 §2/§3：唯一持久层条目）。 */
 export const ENTRY_ID = 'dsh-onebot'
@@ -466,6 +468,170 @@ function resolveDefaultModel(ctx: { get(key: string): unknown } | undefined): De
   return model !== undefined && model !== null && typeof model.currentSelection === 'function' ? model : undefined
 }
 
+// ---------------------------------------------------------------- 记忆管理
+//
+// 面板要「查看/编辑画像」，但网关只认 `getSettings` / `updateSettings` 这两个原有方法
+// （运行时 markRemote 新增的方法不进 remote.methods —— `getNapcatStatus` 实测踩过）。
+// `listReasoningEfforts` 能工作是因为它在**服务端 markRemote 与客户端 descriptors
+// 双向声明**，所以这里照同一模式加四个方法：服务端 markRemote + lib/client.js 的
+// ONEBOT_SETTINGS_DESCRIPTORS 各加一条。
+//
+// 性能取舍：记忆**不进** getSettings 的返回（那会让每次面板刷新都扫盘解析全部 JSON），
+// 而是按需分页：
+//   listMemoryChats  只 readdir + stat，不解析内容
+//   readMemoryEntries 只读选中的那个文件（已按 memoryMaxEntriesPerChat 裁剪过）
+// 读取上限 200/页，前端默认 50。
+
+/** 面板用：一个会话的记忆概览。 */
+export interface MemoryChatSummary {
+  chatId: string
+  /** 从 chatId 前缀判断，便于前端分组显示 */
+  kind: 'private' | 'group'
+  /** 文件字节数（不解析内容，仅展示与排序） */
+  bytes: number
+  /** 文件最后修改时间（epoch ms） */
+  mtimeMs: number
+}
+
+export interface MemoryChatsResult {
+  /** 记忆根目录（便于用户定位与备份） */
+  dir: string
+  /** 记忆功能是否开启；关闭时列表仍可读（历史可见，只是不再写入） */
+  enabled: boolean
+  chats: MemoryChatSummary[]
+}
+
+/** 面板用：一条记忆的视图。 */
+export interface MemoryEntryView {
+  ts: number
+  text: string
+  tags: string[]
+  kind: 'note' | 'profile'
+  subject?: string
+  by?: string
+  role?: string
+  /** 已超保留时长：面板标注「已过期」，模型不再召回（文件未删） */
+  expired: boolean
+}
+
+export interface MemoryEntriesResult {
+  chatId: string
+  /** 过滤后的总数（分页前） */
+  total: number
+  offset: number
+  limit: number
+  entries: MemoryEntryView[]
+}
+
+export interface MemoryMutationResult {
+  ok: boolean
+  /** 变更后该会话的总条数 */
+  total: number
+}
+
+function clampInt(value: unknown, min: number, max: number, fallback: number): number {
+  const num = typeof value === 'number' && Number.isFinite(value) ? Math.floor(value) : fallback
+  return Math.max(min, Math.min(max, num))
+}
+
+/** 从条目 config 解析记忆目录（与工具写入口径同一处：paths.memoryDirFor）。 */
+function memoryDirOf(editor: ConfigEditorLike): string {
+  const raw = findEntry(editor).options.config ?? {}
+  return memoryDirFor(typeof raw.mediaDir === 'string' ? raw.mediaDir : '')
+}
+
+/** 会话列表：只 stat 不解析，几百个文件也是毫秒级。 */
+export function listMemoryChats(editor: ConfigEditorLike): MemoryChatsResult {
+  const raw = findEntry(editor).options.config ?? {}
+  const dir = memoryDirOf(editor)
+  return {
+    dir,
+    enabled: raw.memoryEnabled === true,
+    chats: listMemoryFiles(dir).map((file) => ({
+      chatId: file.chatId,
+      kind: file.chatId.startsWith('group:') ? 'group' as const : 'private' as const,
+      bytes: file.bytes,
+      mtimeMs: file.mtimeMs,
+    })),
+  }
+}
+
+/** 分页读取某个会话的记忆（新→旧；给 query 时按相关度排序）。 */
+export function readMemoryEntries(
+  editor: ConfigEditorLike,
+  chatId: unknown,
+  offset: unknown,
+  limit: unknown,
+  query: unknown,
+): MemoryEntriesResult {
+  const id = typeof chatId === 'string' ? chatId : ''
+  if (id === '') throw new RemoteError('onebot-settings/bad-chat-id', '缺少 chatId，无法读取记忆', { chatId: id })
+  const dir = memoryDirOf(editor)
+  const all = readAllMemories(dir, id)
+  const keyword = typeof query === 'string' ? query.trim() : ''
+  // 无关键字：新→旧（面板默认看最近的）；有关键字：按相关度（searchMemories 已排序）
+  const ordered = keyword === ''
+    ? [...all].reverse()
+    : searchMemories(all, keyword, all.length).map((hit) => hit.entry)
+  const pageSize = clampInt(limit, 1, 200, 50)
+  const start = clampInt(offset, 0, Math.max(0, ordered.length - 1), 0)
+  const now = Date.now()
+  return {
+    chatId: id,
+    total: ordered.length,
+    offset: start,
+    limit: pageSize,
+    entries: ordered.slice(start, start + pageSize).map((entry) => ({
+      ts: entry.ts,
+      text: entry.text,
+      tags: entry.tags ?? [],
+      kind: entry.kind ?? 'note',
+      ...(entry.subject !== undefined ? { subject: entry.subject } : {}),
+      ...(entry.by !== undefined ? { by: entry.by } : {}),
+      ...(entry.role !== undefined ? { role: entry.role } : {}),
+      expired: isExpired(entry, now),
+    })),
+  }
+}
+
+/** 编辑一条记忆的正文/标签（身份字段 ts/kind/subject 不可改）。 */
+export function updateMemoryEntry(
+  editor: ConfigEditorLike,
+  chatId: unknown,
+  ts: unknown,
+  text: unknown,
+  tags: unknown,
+): MemoryMutationResult {
+  const id = typeof chatId === 'string' ? chatId : ''
+  if (id === '') throw new RemoteError('onebot-settings/bad-chat-id', '缺少 chatId，无法保存', { chatId: id })
+  const stamp = typeof ts === 'number' && Number.isFinite(ts) ? ts : 0
+  if (stamp <= 0) throw new RemoteError('onebot-settings/bad-memory-id', '缺少记忆标识（ts）', { chatId: id })
+  const next = typeof text === 'string' ? text.trim() : ''
+  if (next === '') throw new RemoteError('onebot-settings/bad-memory-text', '记忆正文不能为空', { chatId: id })
+  // 与工具写入同一道闸：面板保存也不能把手机号/身份证写进明文文件。
+  const sensitive = findSensitive(next)
+  if (sensitive !== null) {
+    throw new RemoteError('onebot-settings/sensitive-memory', '内容疑似包含' + sensitive + '，已拒绝保存', { chatId: id })
+  }
+  const nextTags = Array.isArray(tags)
+    ? tags.filter((tag): tag is string => typeof tag === 'string' && tag.trim() !== '').slice(0, 8)
+    : []
+  const dir = memoryDirOf(editor)
+  const ok = updateMemory(dir, id, stamp, { text: next.length > 500 ? next.slice(0, 500) : next, tags: nextTags })
+  return { ok, total: readAllMemories(dir, id).length }
+}
+
+/** 删除一条记忆（按 ts）。 */
+export function deleteMemoryEntry(editor: ConfigEditorLike, chatId: unknown, ts: unknown): MemoryMutationResult {
+  const id = typeof chatId === 'string' ? chatId : ''
+  if (id === '') throw new RemoteError('onebot-settings/bad-chat-id', '缺少 chatId，无法删除', { chatId: id })
+  const stamp = typeof ts === 'number' && Number.isFinite(ts) ? ts : 0
+  if (stamp <= 0) throw new RemoteError('onebot-settings/bad-memory-id', '缺少记忆标识（ts）', { chatId: id })
+  const dir = memoryDirOf(editor)
+  const ok = deleteMemory(dir, id, stamp)
+  return { ok, total: readAllMemories(dir, id).length }
+}
+
 /** 38 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
 export function effectiveConfig(raw: Record<string, unknown>): Record<string, unknown> {
   const effective: Record<string, unknown> = {}
@@ -750,12 +916,20 @@ export function createOnebotSettingsMethods(
   updateSettings(patch: unknown, expectedRevision?: number): Promise<OnebotSettingsSnapshot>
   listWorkspaces(): Promise<WorkspaceListResult>
   listReasoningEfforts(): Promise<ReasoningEffortsResult>
+  listMemoryChats(): MemoryChatsResult
+  readMemoryEntries(chatId: string, offset: number, limit: number, query: string): MemoryEntriesResult
+  updateMemoryEntry(chatId: string, ts: number, text: string, tags: string[]): MemoryMutationResult
+  deleteMemoryEntry(chatId: string, ts: number): MemoryMutationResult
 } {
   return {
     getSettings: () => getSettings(editor, state),
     updateSettings: (patch, expectedRevision) => updateSettings(editor, state, patch, expectedRevision),
     listWorkspaces: async () => listWorkspaces(workspaceRegistry),
     listReasoningEfforts: async () => listReasoningEfforts(llm, defaultModel),
+    listMemoryChats: () => listMemoryChats(editor),
+    readMemoryEntries: (chatId, offset, limit, query) => readMemoryEntries(editor, chatId, offset, limit, query),
+    updateMemoryEntry: (chatId, ts, text, tags) => updateMemoryEntry(editor, chatId, ts, text, tags),
+    deleteMemoryEntry: (chatId, ts) => deleteMemoryEntry(editor, chatId, ts),
   }
 }
 
@@ -830,12 +1004,38 @@ if (protocol?.TypertRemoteService) {
       const port = typeof snapshot.config.port === 'number' ? snapshot.config.port : 8643
       return buildNapcatStatus(launcher, port)
     }
+
+    /** 记忆：会话列表（只 stat，不解析内容）。 */
+    listMemoryChats(): MemoryChatsResult {
+      return listMemoryChats(this.configEditor())
+    }
+
+    /** 记忆：分页读取某会话的条目（新→旧；带 query 时按相关度）。 */
+    readMemoryEntries(chatId: string, offset: number, limit: number, query: string): MemoryEntriesResult {
+      return readMemoryEntries(this.configEditor(), chatId, offset, limit, query)
+    }
+
+    /** 记忆：编辑一条的正文/标签（与工具写入共用敏感信息与长度闸门）。 */
+    updateMemoryEntry(chatId: string, ts: number, text: string, tags: string[]): MemoryMutationResult {
+      return updateMemoryEntry(this.configEditor(), chatId, ts, text, tags)
+    }
+
+    /** 记忆：删除一条。 */
+    deleteMemoryEntry(chatId: string, ts: number): MemoryMutationResult {
+      return deleteMemoryEntry(this.configEditor(), chatId, ts)
+    }
   }
   markRemote(OnebotSettingsRemote, 'getSettings')
   markRemote(OnebotSettingsRemote, 'updateSettings')
   markRemote(OnebotSettingsRemote, 'listWorkspaces')
   markRemote(OnebotSettingsRemote, 'listReasoningEfforts')
   markRemote(OnebotSettingsRemote, 'getNapcatStatus')
+  // 记忆管理：必须与 lib/client.js 的 ONEBOT_SETTINGS_DESCRIPTORS 同步声明，
+  // 否则与 getNapcatStatus 一样——服务端有、网关不认。
+  markRemote(OnebotSettingsRemote, 'listMemoryChats')
+  markRemote(OnebotSettingsRemote, 'readMemoryEntries')
+  markRemote(OnebotSettingsRemote, 'updateMemoryEntry')
+  markRemote(OnebotSettingsRemote, 'deleteMemoryEntry')
   OnebotSettingsService = OnebotSettingsRemote
 } else {
   console.warn('[dsh-onebot] @deepseek-ai/dsh-typert-protocol unavailable — onebotSettings remote degrades to a plain cordis service')
@@ -869,6 +1069,23 @@ if (protocol?.TypertRemoteService) {
     /** T17：与 typert 分支同一惰性解析 + 降级语义。 */
     async listReasoningEfforts(): Promise<ReasoningEffortsResult> {
       return listReasoningEfforts(resolveLlmRuntime(this.ctx), resolveDefaultModel(this.ctx))
+    }
+
+    /** 记忆：与 typert 分支同一实现（降级只为「无网关发现」，方法面保持一致）。 */
+    listMemoryChats(): MemoryChatsResult {
+      return listMemoryChats(this.configEditor())
+    }
+
+    readMemoryEntries(chatId: string, offset: number, limit: number, query: string): MemoryEntriesResult {
+      return readMemoryEntries(this.configEditor(), chatId, offset, limit, query)
+    }
+
+    updateMemoryEntry(chatId: string, ts: number, text: string, tags: string[]): MemoryMutationResult {
+      return updateMemoryEntry(this.configEditor(), chatId, ts, text, tags)
+    }
+
+    deleteMemoryEntry(chatId: string, ts: number): MemoryMutationResult {
+      return deleteMemoryEntry(this.configEditor(), chatId, ts)
     }
   }
   OnebotSettingsService = OnebotSettingsPlain

@@ -251,6 +251,15 @@ describe('T4 客户端 bundle — 四组 41 键（分组/键集/默认值 = T1 �
 describe('T4 客户端 bundle — 渲染函数模块级可测（renderGroup 纯函数）', () => {
   const draft = client.draftFromSnapshot as (snapshot: { config: Record<string, unknown> }) => Record<string, unknown>
 
+  it('h() 的第一参必须是 React —— 把组件写在这里会让面板整片空白', () => {
+    // 2026-10-28 实测事故：写成 h(MemoryCard, {...}) 漏掉 React 首参，
+    // h 内部执行 MemoryCard.createElement.apply(...) → TypeError；
+    // 面板没有错误边界，于是整个设置页空白（服务端挂载正常、日志无异常，
+    // 极难从日志定位）。这里做一个零成本的形状守卫。
+    // 排除 `h(React, …)` 与定义本身 `function h(ReactImpl, …)`（两者都以 React 开头）
+    expect(CLIENT_SOURCE).not.toMatch(/\bh\(\s*(?!React)[A-Z][A-Za-z0-9_]*\s*,/)
+  })
+
   function renderAll(draftValues: Record<string, unknown>, opts: { secretSet?: boolean; clearSecret?: boolean } = {}) {
     return groups.map((group) => (client.renderGroup as Function)(stubReact, group, {
       draft: draftValues,

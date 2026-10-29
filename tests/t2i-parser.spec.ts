@@ -10,10 +10,14 @@ describe('parseInline', () => {
     expect(kinds).toContain('code')
     expect(parts.find(p => p.cls === 'bold')?.content).toBe('b')
     expect(parts.find(p => p.cls === 'code')?.content).toBe('h')
-    // *italic* directly adjacent to a bold marker is shadowed by the
-    // outermost-marker filter (original behavior); a clean case works:
+    // 曾经：与 bold 相邻的 *italic* 会被吃掉 —— 旧正则 `\*(?!\*)([\s\S]*?)\*`
+    // 让 `**a**` 的尾星号与 `*b*` 的首星号先配成一对，真正的斜体标记被当成已消费，
+    // 结果星号原样留在正文里。现已用 `(?<![*])` / `(?!\*)` / `[^*\n]` 收紧。
     const clean = parseInline('plain *italic* here')
     expect(clean.find(p => p.cls === 'italic')?.content).toBe('italic')
+    const adjacent = parseInline('**加粗** 与 *斜体*')
+    expect(adjacent.map(p => p.cls)).toEqual(['bold', null, 'italic'])
+    expect(adjacent.every(p => !p.content.includes('*'))).toBe(true)
   })
 
   it('maps __x__ to bold (per the Python code, not the doc)', () => {
@@ -53,6 +57,21 @@ describe('parseBlocks', () => {
     expect(blocks[0]).toMatchObject({ kind: 'quote', content: '引用' })
     expect(blocks[1]).toMatchObject({ kind: 'list', content: '项一' })
     expect(blocks[2]).toMatchObject({ kind: 'ordered', number: 3, content: '项三' })
+  })
+
+  it('连续列表行合并成一个块（逐项成块会让每项多带 16px 块间距，列表看起来松散）', () => {
+    const blocks = parseBlocks('- a\n- b\n- c\n\n1. x\n2. y')
+    expect(blocks[0]).toMatchObject({ kind: 'list', content: 'a\nb\nc' })
+    // 空行会生成一个空 text 块（既有行为，本次未改）
+    expect(blocks[1]).toMatchObject({ kind: 'text', content: '' })
+    expect(blocks[2]).toMatchObject({ kind: 'ordered', number: 1, content: 'x\ny' })
+    // 3 个无序项合并成 1 块、2 个有序项合并成 1 块（不是 5 块）
+    expect(blocks).toHaveLength(3)
+  })
+
+  it('有序列表以首项序号为基、逐项递增（10. / 11. 不会被重置成 1. / 2.）', () => {
+    const blocks = parseBlocks('10. a\n11. b')
+    expect(blocks[0]).toMatchObject({ kind: 'ordered', number: 10, content: 'a\nb' })
   })
 
   it('parses code fences', () => {

@@ -19,8 +19,10 @@ import {
   MCP_ALLOW_ITEM_MAX_LEN,
   MCP_ALLOW_MAX_ENTRIES,
   MCP_TOOL_PREFIX,
+  NATIVE_TOOL_DENY_PREFIXES,
   describeDroppedEntries,
   describeMcpDenial,
+  describeNativeDenial,
   isMcpToolName,
   makeMcpToolGuard,
   matchMcpTool,
@@ -276,6 +278,56 @@ describe('T20 拒绝文案', () => {
  * 也就是说：src 与 lib 是手工双写的两份实现，只测 src 时 lib 漂了也全绿 —— 闸门在
  * 生产里可能压根不生效。这一组直接加载 lib 产物，并对两侧做同输入对比。
  */
+describe('原生第三方工具前缀黑名单（不受 mcpToolAllow 管控）', () => {
+  it('mnemon_* 一律拒绝，即使 mcpToolAllow 放开全部', () => {
+    // 背景：mnemon_* 不带 mcp__ 前缀，早期实现里 `isMcpToolName → false` 就直接放行了，
+    // 等于 QQ 会话能直接读写宿主全局记忆库（G:\dsh-home\.mnemon）。
+    const guard = makeMcpToolGuard(['*'])
+    for (const name of ['mnemon_recall', 'mnemon_remember', 'mnemon_forget', 'mnemon_document_search', 'mnemon_view_route']) {
+      const verdict = guard({ name })
+      expect(typeof verdict).toBe('string')
+      expect(verdict).toContain('第三方插件')
+    }
+  })
+
+  it('不影响本插件工具、宿主内置与已放行的 MCP', () => {
+    const guard = makeMcpToolGuard(['mcp__dbx__*'])
+    expect(guard({ name: 'qq_memory_recall' })).toBeUndefined()
+    expect(guard({ name: 'qq_send_image' })).toBeUndefined()
+    expect(guard({ name: 'read' })).toBeUndefined()
+    expect(guard({ name: 'mcp__dbx__query' })).toBeUndefined()
+  })
+
+  it('按前缀匹配，不做模糊包含', () => {
+    const guard = makeMcpToolGuard(['*'])
+    // 名字里含 mnemon_ 但不是开头 → 不归本闸门管（仍走原有 MCP 判定）
+    expect(guard({ name: 'qq_mnemon_probe' })).toBeUndefined()
+    expect(guard({ name: 'my_mnemon_recall' })).toBeUndefined()
+  })
+
+  it('第二参可覆盖；空数组 = 只按 MCP 白名单管控', () => {
+    const guard = makeMcpToolGuard(['*'], [])
+    expect(guard({ name: 'mnemon_recall' })).toBeUndefined()
+    const custom = makeMcpToolGuard([], ['other_'])
+    expect(custom({ name: 'other_tool' })).toContain('第三方插件')
+    expect(custom({ name: 'mnemon_recall' })).toBeUndefined()
+  })
+
+  it('空字符串前缀不会吞掉所有工具', () => {
+    const guard = makeMcpToolGuard(['*'], [''])
+    expect(guard({ name: 'read' })).toBeUndefined()
+    expect(guard({ name: 'qq_send_image' })).toBeUndefined()
+  })
+
+  it('拒绝文案点名工具但不回显接入清单', () => {
+    const text = describeNativeDenial('mnemon_recall')
+    expect(text).toContain('mnemon_recall')
+    expect(text).toContain('第三方插件')
+    expect(text).not.toContain('mcpToolAllow')
+    expect(NATIVE_TOOL_DENY_PREFIXES).toEqual(['mnemon_'])
+  })
+})
+
 describe('T20 lib 产物与 src 双写一致', () => {
   it('lib 产物的判定语义与 src 完全一致', async () => {
     const lib = await import('../lib/mcp-gate.js')

@@ -1073,3 +1073,12 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **联动**：`src/prompt.ts` 平台说明补「表情标注为 [表情:名称]，是入站标记、回复时不要输出」；`tests/cq.spec.ts` 用 `id=289 → [表情:睁眼]` 守回归；`README.md` 三处占位符描述同步。
 - **坑**：qface 资产是 UTF-8，但 PowerShell 5.1 的 `Get-Content` 默认按 ANSI 读，会显示成「鐫佺溂」——照那个乱码建表会把名字再搞错一次。
 - **验证**：`npx tsc -p tsconfig.json` exit 0（`lib/cq.js`、`lib/face-names.js`、types 均已更新）；`tests/cq.spec.ts` 15 用例全绿。全量 `npm test` 仍有既有失败（settings-remote 的 ALL_KEYS 38→41、inbound 的 scope 名称、deferred/bridge/commands/session-switch 的慢用例超时），两次跑失败集合不一致属 flaky，与本次改动无交集。
+
+## 2026-10-29 QQ 通道拒绝第三方插件原生工具（`mnemon_` 前缀）
+
+- **问题**：`mcpToolAllow` 只接管 `mcp__*`；`dsh-mnemon` 注册的 `mnemon_recall` / `mnemon_remember` / `mnemon_forget` / `mnemon_document_search` / `mnemon_runtime_memory` 等**不带该前缀**，早期实现里 `isMcpToolName → false` 就直接放行。而这些工具读写的是宿主**全局**记忆库（本机 `G:\dsh-home\.mnemon`，配置为 `storageScope: custom`，不按 chat / workspace 隔离）—— 等于群里一句「查一下我之前的记录」就能翻出工作记忆（该库现有 27 篇工作文档归档）。
+- **修法**：`mcp-gate.ts` 新增 `NATIVE_TOOL_DENY_PREFIXES = ['mnemon_']`，guard 里**最先**判定（必须早于 MCP 判断，否则会被当成普通工具放行）。拒绝文案只说明「第三方插件 + 宿主全局数据」，不回显接入清单（和其他拒绝一样，避免模型转述到群里）。
+- **为什么不用 `tools.restrict` 真正隐藏**：它要求列出**确切存在**的工具名（unknown names 抛错），而 `ToolRuntime` 没有公开的枚举方法。硬编码十几个名字，一旦 mnemon 升级改名或未安装，就会在 agent 创建时抛错、整个会话起不来。guard 是调用期拒绝，稳健；代价是模型看得到工具名、可能试一次，但会立刻收到明确原因。
+- **作用域**：`bridge.ts` 的 `guard.call(agentCtx.tools, …)` 是 **per-agent** 注册，所以只作用于 QQ 的 chat agent —— Web / GUI 会话仍可正常使用 mnemon。
+- **可覆盖**：`makeMcpToolGuard(rawAllow, denyPrefixes?)` 第二参；传 `[]` 即回到「只按 MCP 白名单管控」。
+- **验证**：`tsc` exit 0；`mcp-gate.spec` 37 条（新增 6 条：`mnemon_*` 全拒 / 不影响 `qq_*` 与宿主内置 / 前缀精确匹配不做模糊 / 空字符串前缀不吞掉全部工具 / 第二参覆盖语义 / 拒绝文案不回显清单）；6 文件 151 用例全绿。

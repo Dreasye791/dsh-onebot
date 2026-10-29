@@ -3,7 +3,7 @@ import { createCanvas, loadImage } from '@napi-rs/canvas'
 import { renderTextImage, CARD_WIDTH } from '../src/t2i/index.js'
 import { FontManager } from '../src/t2i/fonts.js'
 import { parseBlocks } from '../src/t2i/parser.js'
-import { elementHeight, FontWidthSource, renderElement } from '../src/t2i/elements.js'
+import { elementHeight, FontWidthSource, renderElement, renderInlineParts } from '../src/t2i/elements.js'
 import type { LayoutCtx } from '../src/t2i/elements.js'
 import type { CardCanvas } from '../src/t2i/canvas.js'
 import { BODY_FONT_SIZE } from '../src/t2i/index.js'
@@ -240,6 +240,63 @@ describe('T21 列表项目符号走几何圆点（不依赖字体 cmap）', () =
   it('字号放大时圆点同步放大（不是写死像素）', () => {
     const small = Number(String(renderListAt(12, 0).find((call) => call.startsWith('fillCircle:'))).split(',')[2])
     const large = Number(String(renderListAt(28, 0).find((call) => call.startsWith('fillCircle:'))).split(',')[2])
+    expect(large).toBeGreaterThan(small)
+  })
+})
+
+/**
+ * 行内代码（`code`）的两个对齐约束 —— 曾经都错：
+ * 1. 胶囊高度 size + 11 超过 list / quote 的行高 size + 10，相邻行胶囊互相挤压；
+ * 2. 代码文字传入 `y + padY + 3`（+8px），同一行里汉字与代码不在一条基线上。
+ */
+describe('T21 行内代码与正文对齐（胶囊不撑高行、文字同基线）', () => {
+  function renderCodeCapsule(size: number, top: number) {
+    const rects: number[][] = []
+    const codeYs: number[] = []
+    const fake = {
+      font: {
+        familyFor: () => 'SimHei',
+        ascent: () => size * 0.86,
+        charWidth: () => size * 0.6,
+        emojiWidth: () => 0,
+        codeFamilyFor: () => 'Consolas',
+      },
+      drawRun: () => {},
+      drawBodyRuns: () => {},
+      drawCodeRuns: (_text: string, _x: number, y: number) => { codeYs.push(y) },
+      fillRoundRect: (_x: number, y: number, _w: number, h: number) => { rects.push([y, h]) },
+      strokeRoundRect: () => {},
+      hLine: () => {},
+      vLine: () => {},
+      withTransform: (_dx: number, _dy: number, draw: () => void) => { draw() },
+      runWidth: (text: string) => text.length * size * 0.6,
+    } as unknown as CardCanvas
+    const ctx: LayoutCtx = { width: 400, size, widthSource: { charWidth: () => size * 0.6 } }
+    renderInlineParts(fake, 0, top, [{ cls: 'code', content: 'abc' }], size, '#000', ctx)
+    const [capsuleY, capsuleH] = rects[0]
+    return { capsuleY, capsuleH, codeY: codeYs[0] }
+  }
+
+  it('胶囊高度不超过最小行高（list / quote 是 size + 10）', () => {
+    const { capsuleH } = renderCodeCapsule(14, 10)
+    expect(capsuleH).toBeLessThanOrEqual(14 + 10)
+  })
+
+  it('胶囊在行内垂直居中（中心落在首行范围内）', () => {
+    const { capsuleY, capsuleH } = renderCodeCapsule(14, 10)
+    const center = capsuleY + capsuleH / 2
+    expect(center).toBeGreaterThan(10)
+    expect(center).toBeLessThan(10 + 14)
+  })
+
+  it('代码文字与正文共用同一条 ascender line（不得额外下沉）', () => {
+    const { codeY } = renderCodeCapsule(14, 10)
+    expect(codeY).toBe(10)
+  })
+
+  it('胶囊随字号缩放，不写死像素', () => {
+    const small = renderCodeCapsule(12, 0).capsuleH
+    const large = renderCodeCapsule(28, 0).capsuleH
     expect(large).toBeGreaterThan(small)
   })
 })

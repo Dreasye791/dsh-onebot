@@ -98,12 +98,21 @@ export function renderInlineParts(
     } else if (cls === 'code') {
       const w = codeWidth(ctx.widthSource, part.content, size)
       const padX = 6
-      const padY = 5
-      // Light blue-grey capsule with a thin border (internal height
-      // size + 2*padY + 1 = 37px ≤ line height size + 12 = 38px).
-      card.fillRoundRect(cx, y + 1, w + padX * 2, size + padY * 2 + 1, 6, COLORS.codeCapsuleBg)
-      card.strokeRoundRect(cx, y + 1, w + padX * 2, size + padY * 2 + 1, 6, COLORS.codeCapsuleOutline)
-      card.drawCodeRuns(part.content, cx + padX, y + padY + 3, size, COLORS.codeCapsuleText)
+      // 胶囊高度跟随字号并在行内垂直居中。
+      //
+      // 原来写死 padY = 5（高度 size + 11），而 list / quote 的行高只有 size + 10 ——
+      // 相邻两行都有行内代码时胶囊互相挤压，视觉上就是「行距忽大忽小」。这里取
+      // size + 8 并在 y 上方留 4px，任何行高（最小 size + 10）都放得下。
+      const capsuleH = size + 8
+      const capsuleY = y - 4
+      card.fillRoundRect(cx, capsuleY, w + padX * 2, capsuleH, 5, COLORS.codeCapsuleBg)
+      card.strokeRoundRect(cx, capsuleY, w + padX * 2, capsuleH, 5, COLORS.codeCapsuleOutline)
+      // 代码文字与正文共用同一条 ascender line。
+      //
+      // 原来传的是 `y + padY + 3`（+8px），代码比同一行的汉字低半个字高 —— 截图里
+      // 「CreateFileMapping … 」明显沉在汉字基线以下就是这个原因。drawCodeRuns
+      // 内部已对 ASCII 做 +1 的基线微调，这里不能再额外下移。
+      card.drawCodeRuns(part.content, cx + padX, y, size, COLORS.codeCapsuleText)
       cx += w + padX * 2 + 2
     }
   }

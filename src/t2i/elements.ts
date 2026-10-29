@@ -196,8 +196,13 @@ export function renderElement(el: BlockElement, card: CardCanvas, ctx: LayoutCtx
     case 'list': {
       const lines = linesFor(el.content, ctx, ctx.width - 45)
       y += 8
+      // 项目符号用几何圆点，不画 `•` 字符：CJK 首选字体（SimHei）的 cmap 里没有
+      // U+2022，Skia 命中不到字形会画 notdef 空心方框（实测 U+25CF 才靠运气命中，
+      // 换字体就复发）。圆心按「首行基线 − 0.3em」定位，与 `•` 在正常字体里的
+      // 视觉位置一致；半径 0.09em（14px 下约 1.3px）与常见项目符号粗细相当。
       const family = card.font.familyFor('cjk')
-      if (family !== undefined) card.drawRun('•', x + 5, y, family, ctx.size, COLORS.ink)
+      const baseline = family !== undefined ? y + card.font.ascent(family, ctx.size) : y + ctx.size * 0.8
+      card.fillCircle(x + 8, baseline - ctx.size * 0.3, Math.max(1.4, ctx.size * 0.11), COLORS.ink)
       let ty = y
       for (const line of lines) {
         renderInlineParts(card, x + 25, ty, line, ctx.size, COLORS.ink, ctx)

@@ -47,6 +47,14 @@ export declare class CardCanvas {
     fillRect(x: number, y: number, w: number, h: number, fill: string): void;
     /** Fill a rounded rectangle. */
     fillRoundRect(x: number, y: number, w: number, h: number, radius: number, fill: string): void;
+    /**
+     * Fill a circle.
+     *
+     * 项目符号（`•`）不能用字符画：CJK 首选字体（SimHei）的 cmap 里没有 U+2022，
+     * Skia 命中不到字形就画 notdef 方框 —— 实测 `@napi-rs/canvas` 下 U+2022 是空心
+     * 轮廓，U+25CF 才是实心圆（换字体还会再犯）。几何绘制与字体无关，永远正确。
+     */
+    fillCircle(cx: number, cy: number, radius: number, fill: string): void;
     /** Stroke a rounded rectangle outline. */
     strokeRoundRect(x: number, y: number, w: number, h: number, radius: number, color: string): void;
     /** Run a drawing callback under an AFFINE shear (italic simulation). */

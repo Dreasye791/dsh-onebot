@@ -3,8 +3,9 @@ import { createCanvas, loadImage } from '@napi-rs/canvas'
 import { renderTextImage, CARD_WIDTH } from '../src/t2i/index.js'
 import { FontManager } from '../src/t2i/fonts.js'
 import { parseBlocks } from '../src/t2i/parser.js'
-import { elementHeight, FontWidthSource } from '../src/t2i/elements.js'
+import { elementHeight, FontWidthSource, renderElement } from '../src/t2i/elements.js'
 import type { LayoutCtx } from '../src/t2i/elements.js'
+import type { CardCanvas } from '../src/t2i/canvas.js'
 import { BODY_FONT_SIZE } from '../src/t2i/index.js'
 
 const font = FontManager.create()
@@ -178,5 +179,67 @@ describeFont('renderTextImage', () => {
     let total = 0
     for (const el of parseBlocks(PRESSURE)) total += elementHeight(el, ctx)
     expect(total).toBeGreaterThan(100)
+  })
+})
+
+/**
+ * 不依赖字体：用假 CardCanvas 记录绘制调用。
+ *
+ * 背景：列表项目符号原来画 `•`（U+2022），而 CJK 首选字体 SimHei 的 cmap 里没有这个
+ * 码位，Skia 命中不到字形就画 notdef 空心方框（截图里那个方块）。改成几何圆点后，
+ * 这条断言把「不许再把符号当字符画」钉死 —— 换字体、换渲染器都不会复发。
+ */
+describe('T21 列表项目符号走几何圆点（不依赖字体 cmap）', () => {
+  function renderListAt(size: number, top: number): string[] {
+    const calls: string[] = []
+    const fake = {
+      font: {
+        familyFor: () => 'SimHei',
+        ascent: () => size * 0.86,
+        charWidth: () => size * 0.6,
+        emojiWidth: () => 0,
+        codeFamilyFor: () => 'Consolas',
+      },
+      drawRun: (text: string) => { calls.push('drawRun:' + text) },
+      drawCodeRuns: () => {},
+      drawBodyRuns: () => { calls.push('drawBodyRuns') },
+      fillCircle: (cx: number, cy: number, radius: number) => { calls.push('fillCircle:' + cx + ',' + cy + ',' + radius) },
+      fillRect: () => {},
+      fillRoundRect: () => {},
+      strokeRoundRect: () => {},
+      hLine: () => {},
+      vLine: () => {},
+      withTransform: (_dx: number, _dy: number, draw: () => void) => { draw() },
+      runWidth: (text: string) => text.length * size * 0.6,
+    } as unknown as CardCanvas
+    const ctx: LayoutCtx = { width: 400, size, widthSource: { charWidth: () => size * 0.6 } }
+    renderElement({ kind: 'list', content: '第一项' }, fake, ctx, 0, top)
+    return calls
+  }
+
+  it('调用 fillCircle 绘制项目符号，且不再把 • 当字符画', () => {
+    const calls = renderListAt(14, 10)
+    const bullet = calls.find((call) => call.startsWith('fillCircle:'))
+    expect(bullet).toBeDefined()
+    expect(calls.some((call) => call.includes('•'))).toBe(false)
+    // 正文照常绘制（别把整个 list 分支画没了）
+    expect(calls).toContain('drawBodyRuns')
+  })
+
+  it('圆点落在首行中线上：x 固定、y 在首行范围内、半径随字号缩放', () => {
+    const calls = renderListAt(14, 10)
+    const [cx, cy, radius] = String(calls.find((call) => call.startsWith('fillCircle:'))).slice('fillCircle:'.length).split(',').map(Number)
+    expect(cx).toBe(8)
+    // list 分支先 +8 间距：首行从 18 开始、行高 14 → 圆心应落在 18..32（基线 −0.3em）
+    expect(cy).toBeGreaterThan(18)
+    expect(cy).toBeLessThan(32)
+    expect(radius).toBeGreaterThan(1)
+    expect(radius).toBeLessThan(3)
+  })
+
+  it('字号放大时圆点同步放大（不是写死像素）', () => {
+    const small = Number(String(renderListAt(12, 0).find((call) => call.startsWith('fillCircle:'))).split(',')[2])
+    const large = Number(String(renderListAt(28, 0).find((call) => call.startsWith('fillCircle:'))).split(',')[2])
+    expect(large).toBeGreaterThan(small)
   })
 })

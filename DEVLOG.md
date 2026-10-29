@@ -1093,3 +1093,15 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
   - 面板只在 `lastSeenAt !== ts` 时显示「最近提及」，避免与首次写入时间重复占位。
 - **数据兼容**：历史条目没有 `lastSeenAt`，`parseLine` 按缺省处理（视为 `ts`），不需要迁移。
 - **验证**：`tsc` exit 0；`memory.spec` 新增 6 条（首次不折叠 / 全等折叠且 `ts` 不变 / kind 不同算两条 / subject 不同算两条 / 同 subject 折叠 / tags·by·role 不丢）；`client-settings` 同步 9 个方法与新参数名；7 文件全绿。
+
+## 2026-10-29 t2i 列表项目符号渲染成空心方框（字体缺 U+2022）
+
+- **现象**：卡片里无序列表的项目符号是空心方框（notdef），不是圆点。
+- **根因**：`src/t2i/elements.ts` 的 `case 'list'` 用 `drawRun('•', …)` 画项目符号，而字体链首选 `SimHei` 的 **cmap 里没有 U+2022**。Skia 命中不到字形就画 notdef 方框 —— 与转义无关。实测同一套 `@napi-rs/canvas`：U+2022 空心轮廓、U+25CF 实心圆、U+00B7 小点，在 `Microsoft YaHei` 下 U+2022 又是正常的 —— 说明是字体覆盖问题，不是渲染器问题。
+- **修法**：改几何绘制。`CardCanvas` 新增 `fillCircle(cx, cy, radius, fill)`（`arc` + `fill`），list 分支用它替代字符：
+  - 圆心 = `首行基线 − 0.3em`：与 `•` 在正常字体里的视觉位置一致
+  - 半径 = `0.11em`（14px 下约 1.5px）；先试 0.09em，出图后偏小，调到 0.11em 与正文比例协调
+  - 基线用 `font.ascent()` 算；字体不可用时回落 `size * 0.8`
+  - 有序列表不动（数字在所有字体里都有）
+- **为什么不换字符**：换 U+25CF 只是「当前字体碰巧有」，换字体或换渲染器就复发；几何绘制与字体、渲染器都无关，是唯一确定正确的做法。
+- **验证**：`tsc` exit 0；用 `renderTextImage` 真实渲染出图确认圆点为实心（改前是空心方框）；`t2i-render.spec` 新增 3 条 —— 用**假 CardCanvas 记录调用**（不需要字体，CI 上也能跑）：断言调用 `fillCircle`、不再画 `•` 字符、圆心落在首行范围、半径随字号缩放；3 文件 35 用例全绿。

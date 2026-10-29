@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { createCanvas, loadImage } from '@napi-rs/canvas'
 import { renderTextImage, CARD_WIDTH } from '../src/t2i/index.js'
 import { FontManager } from '../src/t2i/fonts.js'
@@ -241,6 +242,30 @@ describe('T21 列表项目符号走几何圆点（不依赖字体 cmap）', () =
     const small = Number(String(renderListAt(12, 0).find((call) => call.startsWith('fillCircle:'))).split(',')[2])
     const large = Number(String(renderListAt(28, 0).find((call) => call.startsWith('fillCircle:'))).split(',')[2])
     expect(large).toBeGreaterThan(small)
+  })
+})
+
+/**
+ * 斜体方向：`ctx.transform(a, b, c, d, e, f)` 展开是 `x' = a·x + c·y + e`、
+ * `y' = b·x + d·y + f`。斜体要 **c**（x 随 y：上端右移、竖画仍斜），
+ * 旧实现用 **b = 0.2**（y 随 x）等于把整行往下错切 —— 竖画竖直、横画下沉，
+ * 看起来是「歪」而不是「斜体」。
+ */
+describe('T21 斜体用 c 轴错切（x 随 y），不是 b 轴（y 随 x）', () => {
+  const source = readFileSync(new URL('../src/t2i/canvas.ts', import.meta.url), 'utf8')
+
+  it('withTransform 用 -shear 作为 c 分量，并以 pivotY（基线）为不动点', () => {
+    expect(source).toContain('this.ctx.transform(1, 0, -shear, 1, dx + shear * pivotY, dy)')
+  })
+
+  it('不再出现 b = 0.2 的旧写法', () => {
+    expect(source).not.toContain('this.ctx.transform(1, 0.2, 0, 1, dx, dy)')
+  })
+
+  it('elements.ts 把基线作为 pivotY 传进去（否则绕 ascender 剪切会上下错位）', () => {
+    const elements = readFileSync(new URL('../src/t2i/elements.ts', import.meta.url), 'utf8')
+    expect(elements).toContain('card.font.ascent(family, size)')
+    expect(elements).toMatch(/withTransform\(cx, y,[\s\S]{0,160}baseline\)/)
   })
 })
 

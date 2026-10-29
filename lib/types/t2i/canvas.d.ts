@@ -57,8 +57,24 @@ export declare class CardCanvas {
     fillCircle(cx: number, cy: number, radius: number, fill: string): void;
     /** Stroke a rounded rectangle outline. */
     strokeRoundRect(x: number, y: number, w: number, h: number, radius: number, color: string): void;
-    /** Run a drawing callback under an AFFINE shear (italic simulation). */
-    withTransform(dx: number, dy: number, draw: () => void): void;
+    /**
+     * Run a drawing callback under an AFFINE shear (italic simulation).
+     *
+     * Canvas 的 `transform(a, b, c, d, e, f)` 展开是：
+     *   `x' = a·x + c·y + e`
+     *   `y' = b·x + d·y + f`
+     *
+     * 斜体要的是 **`c`**（x 随 y 变）：同一笔画的上端相对下端右移，竖直笔画仍然竖直。
+     * 原来写的是 `b = 0.2`（y 随 x 变），效果是把整行**向下错切** —— 竖画不动、横画下沉，
+     * 看起来像「歪了」而不是「斜体右倾」。实测中文尤其明显。
+     *
+     * @param dx - 局域原点的平移 x。
+     * @param dy - 局域原点的平移 y。
+     * @param draw - 绘制回调（用局域坐标，原点 = 传入的 dx/dy）。
+     * @param pivotY - 剪切不动点（局域坐标；斜体传基线），该高度上的 x 不受影响。
+     * @param shear - 斜率，0.2 ≈ 常见斜体（14px 字上端右移约 2.4px）。
+     */
+    withTransform(dx: number, dy: number, draw: () => void, pivotY?: number, shear?: number): void;
     /** Stroke a horizontal line. */
     hLine(x1: number, y: number, x2: number, color: string, width?: number): void;
     /** Stroke a vertical line. */

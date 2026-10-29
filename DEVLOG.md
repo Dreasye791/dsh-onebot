@@ -1082,3 +1082,14 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **作用域**：`bridge.ts` 的 `guard.call(agentCtx.tools, …)` 是 **per-agent** 注册，所以只作用于 QQ 的 chat agent —— Web / GUI 会话仍可正常使用 mnemon。
 - **可覆盖**：`makeMcpToolGuard(rawAllow, denyPrefixes?)` 第二参；传 `[]` 即回到「只按 MCP 白名单管控」。
 - **验证**：`tsc` exit 0；`mcp-gate.spec` 37 条（新增 6 条：`mnemon_*` 全拒 / 不影响 `qq_*` 与宿主内置 / 前缀精确匹配不做模糊 / 空字符串前缀不吞掉全部工具 / 第二参覆盖语义 / 拒绝文案不回显清单）；6 文件 151 用例全绿。
+
+## 2026-10-29 记忆卡片三项增强：kind 筛选 / 面板新建 / 最近提及
+
+- **kind 筛选**：`readMemoryEntries` 追加第 5 个位置参数 `kind`（`'note'` / `'profile'` / 其他=不筛），过滤在**服务端**做。放前端筛会让「共 N 条」与分页指针全错 —— 这是唯一必须动接口的一项。
+- **面板新建**：新增 `createMemoryEntry(chatId, text, kind, subject, tags)`（服务端 `markRemote` + 客户端 descriptor 成对）。与工具写入共用同一套规则：`findSensitive` 拒绝敏感信息、正文 ≤500 字、`memoryMaxEntriesPerChat` 裁剪、画像必须给主体。来源字段（`by`/`role`）留空 —— 面板操作没有 QQ 身份，留空比编一个更诚实。
+- **最近提及（`lastSeenAt`）**：`MemoryEntry` 加可选字段，语义 = 最近一次**被写入/重复提到**的时间。写入路径统一改走 `upsertMemory`：`kind + subject + text` **三者全等**时只刷新 `lastSeenAt`，不再追加行。
+  - 为什么只做精确判重：近似去重需要相似度计算（真正的重复堆积要等第二批 embedding）；精确匹配已经能挡住「同一句话被反复记住」这种最常见的堆积。
+  - `appendMemory` 保持无条件追加的原语义，历史调用方与既有单测不受影响。
+  - 面板只在 `lastSeenAt !== ts` 时显示「最近提及」，避免与首次写入时间重复占位。
+- **数据兼容**：历史条目没有 `lastSeenAt`，`parseLine` 按缺省处理（视为 `ts`），不需要迁移。
+- **验证**：`tsc` exit 0；`memory.spec` 新增 6 条（首次不折叠 / 全等折叠且 `ts` 不变 / kind 不同算两条 / subject 不同算两条 / 同 subject 折叠 / tags·by·role 不丢）；`client-settings` 同步 9 个方法与新参数名；7 文件全绿。

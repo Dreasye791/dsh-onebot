@@ -23,6 +23,7 @@ import {
   trimMemories,
   ttlDaysFor,
   updateMemory,
+  upsertMemory,
 } from '../src/memory.js'
 import type { MemoryEntry } from '../src/memory.js'
 
@@ -364,5 +365,63 @@ describe('memory: 会话文件枚举与面板编辑', () => {
     appendMemory(dir, 'private:10001', { ts: 100, text: 'A' })
     expect(deleteMemory(dir, 'private:10001', 999)).toBe(false)
     expect(readAllMemories(dir, 'private:10001')).toHaveLength(1)
+  })
+})
+
+describe('memory: upsert（同一条目折叠为「最近提及」）', () => {
+  it('首次写入不折叠，lastSeenAt 等于 ts', () => {
+    const dir = makeDir()
+    const result = upsertMemory(dir, 'private:10001', { ts: 100, text: '喜欢螺蛳粉' })
+    expect(result.refreshed).toBe(false)
+    const entries = readAllMemories(dir, 'private:10001')
+    expect(entries).toHaveLength(1)
+    expect(entries[0].lastSeenAt).toBe(100)
+  })
+
+  it('完全相同的条目只刷新 lastSeenAt，不新增行', () => {
+    const dir = makeDir()
+    upsertMemory(dir, 'private:10001', { ts: 100, text: '喜欢螺蛳粉' })
+    const again = upsertMemory(dir, 'private:10001', { ts: 200, text: '喜欢螺蛳粉' })
+    expect(again.refreshed).toBe(true)
+    const entries = readAllMemories(dir, 'private:10001')
+    expect(entries).toHaveLength(1)
+    expect(entries[0].ts).toBe(100)          // 首次写入时间不变
+    expect(entries[0].lastSeenAt).toBe(200)  // 最近提及被刷新
+  })
+
+  it('正文相同但 kind 不同 → 视为两条', () => {
+    const dir = makeDir()
+    upsertMemory(dir, 'group:1', { ts: 100, text: '喜欢螺蛳粉' })
+    const profile = upsertMemory(dir, 'group:1', { ts: 200, text: '喜欢螺蛳粉', kind: 'profile', subject: '10001' })
+    expect(profile.refreshed).toBe(false)
+    expect(readAllMemories(dir, 'group:1')).toHaveLength(2)
+  })
+
+  it('正文相同但 subject 不同 → 视为两条（不同人的画像）', () => {
+    const dir = makeDir()
+    upsertMemory(dir, 'group:1', { ts: 100, text: '话少', kind: 'profile', subject: '10001' })
+    const other = upsertMemory(dir, 'group:1', { ts: 200, text: '话少', kind: 'profile', subject: '10002' })
+    expect(other.refreshed).toBe(false)
+    expect(readAllMemories(dir, 'group:1')).toHaveLength(2)
+  })
+
+  it('同 subject 的画像再次提及 → 折叠并刷新', () => {
+    const dir = makeDir()
+    upsertMemory(dir, 'group:1', { ts: 100, text: '话少', kind: 'profile', subject: '10001' })
+    const again = upsertMemory(dir, 'group:1', { ts: 300, text: '话少', kind: 'profile', subject: '10001' })
+    expect(again.refreshed).toBe(true)
+    const entries = readAllMemories(dir, 'group:1')
+    expect(entries).toHaveLength(1)
+    expect(entries[0].lastSeenAt).toBe(300)
+  })
+
+  it('不丢其他字段（tags / by / role 原样保留）', () => {
+    const dir = makeDir()
+    upsertMemory(dir, 'private:10001', { ts: 100, text: '要交周报', tags: ['待办'], by: '10001', role: 'admin' })
+    upsertMemory(dir, 'private:10001', { ts: 200, text: '要交周报', tags: ['待办'] })
+    const [entry] = readAllMemories(dir, 'private:10001')
+    expect(entry.tags).toEqual(['待办'])
+    expect(entry.by).toBe('10001')
+    expect(entry.role).toBe('admin')
   })
 })

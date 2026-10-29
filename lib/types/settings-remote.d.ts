@@ -206,6 +206,8 @@ export interface MemoryEntryView {
     subject?: string;
     by?: string;
     role?: string;
+    /** 最近一次被提及的时间（缺省 = 从未刷新，等于 `ts`） */
+    lastSeenAt?: number;
     /** 已超保留时长：面板标注「已过期」，模型不再召回（文件未删） */
     expired: boolean;
 }
@@ -221,15 +223,32 @@ export interface MemoryMutationResult {
     ok: boolean;
     /** 变更后该会话的总条数 */
     total: number;
+    /** 仅新建时出现：true = 命中了完全相同的既有条目，只刷新了「最近提及」而没新增行 */
+    refreshed?: boolean;
 }
 /** 会话列表：只 stat 不解析，几百个文件也是毫秒级。 */
 export declare function listMemoryChats(editor: ConfigEditorLike): MemoryChatsResult;
-/** 分页读取某个会话的记忆（新→旧；给 query 时按相关度排序）。 */
-export declare function readMemoryEntries(editor: ConfigEditorLike, chatId: unknown, offset: unknown, limit: unknown, query: unknown): MemoryEntriesResult;
+/**
+ * 分页读取某个会话的记忆（新→旧；给 query 时按相关度排序）。
+ *
+ * `kind` 只看某一类：`'note'` / `'profile'`，其他值（含 `''`）表示不筛 —— 面板的
+ * 「全部 / 记忆 / 画像」下拉就靠它，否则画像条数一多就把普通记忆淹了。
+ */
+export declare function readMemoryEntries(editor: ConfigEditorLike, chatId: unknown, offset: unknown, limit: unknown, query: unknown, kind: unknown): MemoryEntriesResult;
 /** 编辑一条记忆的正文/标签（身份字段 ts/kind/subject 不可改）。 */
 export declare function updateMemoryEntry(editor: ConfigEditorLike, chatId: unknown, ts: unknown, text: unknown, tags: unknown): MemoryMutationResult;
 /** 删除一条记忆（按 ts）。 */
 export declare function deleteMemoryEntry(editor: ConfigEditorLike, chatId: unknown, ts: unknown): MemoryMutationResult;
+/**
+ * 面板新建一条记忆。
+ *
+ * 与工具写入共用同一套规则：敏感信息拒绝、正文 ≤500 字、`kind: 'profile'` 必须给主体。
+ * 走 `upsertMemory`（而不是无条件 append）—— 面板重复添加同一句话时只刷新「最近提及」，
+ * 与模型侧的判重口径保持一致。
+ *
+ * 来源字段（`by` / `role`）留空：面板操作没有 QQ 身份，留空比编一个更诚实。
+ */
+export declare function createMemoryEntry(editor: ConfigEditorLike, chatId: unknown, text: unknown, kind: unknown, subject: unknown, tags: unknown): MemoryMutationResult;
 /** 38 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
 export declare function effectiveConfig(raw: Record<string, unknown>): Record<string, unknown>;
 /** updateSettings 入参校验（T1 §4：32 键的任意子集，扁平 JSON）。未知键整单
@@ -288,7 +307,8 @@ export declare function createOnebotSettingsMethods(editor: ConfigEditorLike, st
     listWorkspaces(): Promise<WorkspaceListResult>;
     listReasoningEfforts(): Promise<ReasoningEffortsResult>;
     listMemoryChats(): MemoryChatsResult;
-    readMemoryEntries(chatId: string, offset: number, limit: number, query: string): MemoryEntriesResult;
+    readMemoryEntries(chatId: string, offset: number, limit: number, query: string, kind: string): MemoryEntriesResult;
+    createMemoryEntry(chatId: string, text: string, kind: string, subject: string, tags: string[]): MemoryMutationResult;
     updateMemoryEntry(chatId: string, ts: number, text: string, tags: string[]): MemoryMutationResult;
     deleteMemoryEntry(chatId: string, ts: number): MemoryMutationResult;
 };

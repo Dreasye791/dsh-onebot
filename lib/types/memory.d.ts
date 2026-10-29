@@ -35,6 +35,13 @@ export interface MemoryEntry {
     role?: MemoryRole;
     /** 画像主体 QQ 号（`kind: 'profile'` 时必填）。 */
     subject?: string;
+    /**
+     * 最近一次「提及」的时间（epoch ms）：同一事实被再次记录时刷新，而不是新增一条。
+     *
+     * 缺省（历史条目）视为等于 `ts`。面板用它显示「最近提及」，判断某条印象是否已经
+     * 很久没被提起 —— `ts` 只说明首次写入，不能回答这个问题。
+     */
+    lastSeenAt?: number;
 }
 /** 召回结果。 */
 export interface MemoryHit {
@@ -99,6 +106,21 @@ export declare function memoryFileName(chatId: string): string;
 export declare function memoryFilePath(memoryDir: string, chatId: string): string;
 /** 追加一条记忆；目录不存在时自动创建。 */
 export declare function appendMemory(memoryDir: string, chatId: string, entry: MemoryEntry): void;
+/** `upsertMemory` 的结果。 */
+export interface UpsertResult {
+    /** true = 命中了完全相同的条目，只刷新了 `lastSeenAt`（没有新增行）。 */
+    refreshed: boolean;
+}
+/**
+ * 写入一条记忆，并把「完全相同的条目」折成一次提及。
+ *
+ * 判重口径是 **kind + subject + text 三者全等**，只做精确匹配 —— 近似去重需要相似度
+ * 计算（第二批上 embedding 之后再做）。这样重复说同一件事不会堆成几十行，同时
+ * `lastSeenAt` 能回答「这条印象最近一次被提到是什么时候」。
+ *
+ * 注意 `appendMemory` 保持原语义（无条件追加），单测与历史调用方不受影响。
+ */
+export declare function upsertMemory(memoryDir: string, chatId: string, entry: MemoryEntry): UpsertResult;
 /** 读取某个 chat 的全部记忆（旧→新）。 */
 export declare function readAllMemories(memoryDir: string, chatId: string): MemoryEntry[];
 /** 读取某个 chat 的记忆（旧→新），`max` 只保留最近的若干条。 */

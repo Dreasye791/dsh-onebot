@@ -41,6 +41,13 @@ export interface MemoryEntry {
   role?: MemoryRole
   /** 画像主体 QQ 号（`kind: 'profile'` 时必填）。 */
   subject?: string
+  /**
+   * 最近一次「提及」的时间（epoch ms）：同一事实被再次记录时刷新，而不是新增一条。
+   *
+   * 缺省（历史条目）视为等于 `ts`。面板用它显示「最近提及」，判断某条印象是否已经
+   * 很久没被提起 —— `ts` 只说明首次写入，不能回答这个问题。
+   */
+  lastSeenAt?: number
 }
 
 /** 召回结果。 */
@@ -166,6 +173,37 @@ export function appendMemory(memoryDir: string, chatId: string, entry: MemoryEnt
   appendFileSync(memoryFilePath(memoryDir, chatId), JSON.stringify(entry) + '\n', 'utf8')
 }
 
+/** `upsertMemory` 的结果。 */
+export interface UpsertResult {
+  /** true = 命中了完全相同的条目，只刷新了 `lastSeenAt`（没有新增行）。 */
+  refreshed: boolean
+}
+
+/**
+ * 写入一条记忆，并把「完全相同的条目」折成一次提及。
+ *
+ * 判重口径是 **kind + subject + text 三者全等**，只做精确匹配 —— 近似去重需要相似度
+ * 计算（第二批上 embedding 之后再做）。这样重复说同一件事不会堆成几十行，同时
+ * `lastSeenAt` 能回答「这条印象最近一次被提到是什么时候」。
+ *
+ * 注意 `appendMemory` 保持原语义（无条件追加），单测与历史调用方不受影响。
+ */
+export function upsertMemory(memoryDir: string, chatId: string, entry: MemoryEntry): UpsertResult {
+  const entries = readAllMemories(memoryDir, chatId)
+  const kindOf = (item: MemoryEntry): MemoryKind => item.kind ?? 'note'
+  const index = entries.findIndex((existing) =>
+    kindOf(existing) === kindOf(entry)
+    && (existing.subject ?? '') === (entry.subject ?? '')
+    && existing.text === entry.text)
+  if (index < 0) {
+    appendMemory(memoryDir, chatId, { ...entry, lastSeenAt: entry.ts })
+    return { refreshed: false }
+  }
+  entries[index] = { ...entries[index], lastSeenAt: entry.ts }
+  writeAll(memoryDir, chatId, entries)
+  return { refreshed: true }
+}
+
 /** 把条目序列化回 JSONL（裁剪/删除共用）。 */
 function writeAll(memoryDir: string, chatId: string, entries: readonly MemoryEntry[]): boolean {
   try {
@@ -191,6 +229,9 @@ function parseLine(line: string): MemoryEntry | null {
     const role: MemoryRole | undefined = parsed.role === 'admin' ? 'admin' : parsed.role === 'member' ? 'member' : undefined
     const by = typeof parsed.by === 'string' && parsed.by !== '' ? parsed.by : undefined
     const subject = typeof parsed.subject === 'string' && parsed.subject !== '' ? parsed.subject : undefined
+    const lastSeenAt = typeof parsed.lastSeenAt === 'number' && Number.isFinite(parsed.lastSeenAt) && parsed.lastSeenAt > 0
+      ? parsed.lastSeenAt
+      : undefined
     return {
       ts: typeof parsed.ts === 'number' && Number.isFinite(parsed.ts) ? parsed.ts : 0,
       text: parsed.text,
@@ -199,6 +240,7 @@ function parseLine(line: string): MemoryEntry | null {
       ...(by !== undefined ? { by } : {}),
       ...(role !== undefined ? { role } : {}),
       ...(subject !== undefined ? { subject } : {}),
+      ...(lastSeenAt !== undefined ? { lastSeenAt } : {}),
     }
   } catch {
     return null

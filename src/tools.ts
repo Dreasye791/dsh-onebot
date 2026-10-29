@@ -17,7 +17,7 @@ import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import type { ChatBridge } from './bridge.js'
 import type { OneBotConnection } from './connection.js'
 import { fileToBase64, isUrl } from './media.js'
-import { appendMemory, findSensitive, readAllMemories, readMemories, searchMemories, selectForRecall, speakerFromUserEvents, trimMemories } from './memory.js'
+import { findSensitive, readAllMemories, readMemories, searchMemories, selectForRecall, speakerFromUserEvents, trimMemories, upsertMemory } from './memory.js'
 import { splitChatId } from './chat.js'
 import type { OneBotSegment } from './cq.js'
 import { parseMessage, cqUnescape } from './cq.js'
@@ -731,7 +731,8 @@ export function registerTools(
           }
         }
 
-        appendMemory(memoryDir, chatId, {
+        // upsert：完全相同的条目只刷新「最近提及」，不重复堆行（与面板新建同一口径）。
+        const write = upsertMemory(memoryDir, chatId, {
           ts: Date.now(),
           text: clipped,
           ...(tags !== undefined && tags.length > 0 ? { tags } : {}),
@@ -741,7 +742,7 @@ export function registerTools(
         })
         const dropped = trimMemories(memoryDir, chatId, cap)
         const stored = readMemories(memoryDir, chatId, cap).length
-        return { ok: true, stored, dropped, kind }
+        return { ok: true, stored, dropped, kind, refreshed: write.refreshed }
       },
     }))
 

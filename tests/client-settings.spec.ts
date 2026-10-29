@@ -118,7 +118,7 @@ describe('T4 客户端 bundle — descriptor 契约核对（与 T3 src/settings-
   it('方法集逐字对齐：getSettings() 0 参；updateSettings(patch, expectedRevision)；listWorkspaces() / listReasoningEfforts() 0 参；记忆四条全 positional', () => {
     expect(descriptors.map((descriptor) => descriptor.method)).toEqual([
       'getSettings', 'updateSettings', 'listWorkspaces', 'listReasoningEfforts',
-      'listMemoryChats', 'readMemoryEntries', 'updateMemoryEntry', 'deleteMemoryEntry',
+      'listMemoryChats', 'readMemoryEntries', 'createMemoryEntry', 'updateMemoryEntry', 'deleteMemoryEntry',
     ])
     const getSettings = descriptors[0] as { parameters: Array<unknown>; result: { schema: { parse(value: unknown): unknown } } }
     expect(getSettings.parameters).toEqual([])
@@ -162,10 +162,12 @@ describe('T4 客户端 bundle — descriptor 契约核对（与 T3 src/settings-
       chats: [{ chatId: 'private:10001', kind: 'private', bytes: 128, mtimeMs: 1 }],
     })
     const readMemoryEntries = descriptors[5] as { parameters: Array<{ name: string }> }
-    expect(readMemoryEntries.parameters.map((parameter) => parameter.name)).toEqual(['chatId', 'offset', 'limit', 'query'])
-    const updateMemoryEntry = descriptors[6] as { parameters: Array<{ name: string }> }
+    expect(readMemoryEntries.parameters.map((parameter) => parameter.name)).toEqual(['chatId', 'offset', 'limit', 'query', 'kind'])
+    const createMemoryEntry = descriptors[6] as { parameters: Array<{ name: string }> }
+    expect(createMemoryEntry.parameters.map((parameter) => parameter.name)).toEqual(['chatId', 'text', 'kind', 'subject', 'tags'])
+    const updateMemoryEntry = descriptors[7] as { parameters: Array<{ name: string }> }
     expect(updateMemoryEntry.parameters.map((parameter) => parameter.name)).toEqual(['chatId', 'ts', 'text', 'tags'])
-    const deleteMemoryEntry = descriptors[7] as { parameters: Array<{ name: string }> }
+    const deleteMemoryEntry = descriptors[8] as { parameters: Array<{ name: string }> }
     expect(deleteMemoryEntry.parameters.map((parameter) => parameter.name)).toEqual(['chatId', 'ts'])
   })
 

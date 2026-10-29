@@ -55,7 +55,7 @@ import type { Context } from '@deepseek-ai/cordis'
  *  list()，不打开 registry 内部态——import type 零运行时依赖，不改 bridge.ts）。 */
 import type { WorkspaceRegistryLike } from './bridge.js'
 import { MCP_ALLOW_ITEM_MAX_LEN, MCP_ALLOW_MAX_ENTRIES } from './mcp-gate.js'
-import { deleteMemory, findSensitive, isExpired, listMemoryFiles, readAllMemories, searchMemories, updateMemory } from './memory.js'
+import { deleteMemory, findSensitive, isExpired, listMemoryFiles, readAllMemories, searchMemories, trimMemories, updateMemory, upsertMemory } from './memory.js'
 import { memoryDirFor } from './paths.js'
 
 /** patch insert 中 dsh-onebot 主条目的 id（T1 §2/§3：唯一持久层条目）。 */
@@ -510,6 +510,8 @@ export interface MemoryEntryView {
   subject?: string
   by?: string
   role?: string
+  /** 最近一次被提及的时间（缺省 = 从未刷新，等于 `ts`） */
+  lastSeenAt?: number
   /** 已超保留时长：面板标注「已过期」，模型不再召回（文件未删） */
   expired: boolean
 }
@@ -527,6 +529,8 @@ export interface MemoryMutationResult {
   ok: boolean
   /** 变更后该会话的总条数 */
   total: number
+  /** 仅新建时出现：true = 命中了完全相同的既有条目，只刷新了「最近提及」而没新增行 */
+  refreshed?: boolean
 }
 
 function clampInt(value: unknown, min: number, max: number, fallback: number): number {
@@ -556,23 +560,32 @@ export function listMemoryChats(editor: ConfigEditorLike): MemoryChatsResult {
   }
 }
 
-/** 分页读取某个会话的记忆（新→旧；给 query 时按相关度排序）。 */
+/**
+ * 分页读取某个会话的记忆（新→旧；给 query 时按相关度排序）。
+ *
+ * `kind` 只看某一类：`'note'` / `'profile'`，其他值（含 `''`）表示不筛 —— 面板的
+ * 「全部 / 记忆 / 画像」下拉就靠它，否则画像条数一多就把普通记忆淹了。
+ */
 export function readMemoryEntries(
   editor: ConfigEditorLike,
   chatId: unknown,
   offset: unknown,
   limit: unknown,
   query: unknown,
+  kind: unknown,
 ): MemoryEntriesResult {
   const id = typeof chatId === 'string' ? chatId : ''
   if (id === '') throw new RemoteError('onebot-settings/bad-chat-id', '缺少 chatId，无法读取记忆', { chatId: id })
   const dir = memoryDirOf(editor)
   const all = readAllMemories(dir, id)
+  // 历史条目缺 kind，按 note 处理（与 selectForRecall / tools 的口径一致）。
+  const wanted = kind === 'profile' ? 'profile' as const : kind === 'note' ? 'note' as const : undefined
+  const scoped = wanted === undefined ? all : all.filter((entry) => (entry.kind ?? 'note') === wanted)
   const keyword = typeof query === 'string' ? query.trim() : ''
   // 无关键字：新→旧（面板默认看最近的）；有关键字：按相关度（searchMemories 已排序）
   const ordered = keyword === ''
-    ? [...all].reverse()
-    : searchMemories(all, keyword, all.length).map((hit) => hit.entry)
+    ? [...scoped].reverse()
+    : searchMemories(scoped, keyword, scoped.length).map((hit) => hit.entry)
   const pageSize = clampInt(limit, 1, 200, 50)
   const start = clampInt(offset, 0, Math.max(0, ordered.length - 1), 0)
   const now = Date.now()
@@ -589,6 +602,7 @@ export function readMemoryEntries(
       ...(entry.subject !== undefined ? { subject: entry.subject } : {}),
       ...(entry.by !== undefined ? { by: entry.by } : {}),
       ...(entry.role !== undefined ? { role: entry.role } : {}),
+      ...(entry.lastSeenAt !== undefined ? { lastSeenAt: entry.lastSeenAt } : {}),
       expired: isExpired(entry, now),
     })),
   }
@@ -630,6 +644,60 @@ export function deleteMemoryEntry(editor: ConfigEditorLike, chatId: unknown, ts:
   const dir = memoryDirOf(editor)
   const ok = deleteMemory(dir, id, stamp)
   return { ok, total: readAllMemories(dir, id).length }
+}
+
+/**
+ * 面板新建一条记忆。
+ *
+ * 与工具写入共用同一套规则：敏感信息拒绝、正文 ≤500 字、`kind: 'profile'` 必须给主体。
+ * 走 `upsertMemory`（而不是无条件 append）—— 面板重复添加同一句话时只刷新「最近提及」，
+ * 与模型侧的判重口径保持一致。
+ *
+ * 来源字段（`by` / `role`）留空：面板操作没有 QQ 身份，留空比编一个更诚实。
+ */
+export function createMemoryEntry(
+  editor: ConfigEditorLike,
+  chatId: unknown,
+  text: unknown,
+  kind: unknown,
+  subject: unknown,
+  tags: unknown,
+): MemoryMutationResult {
+  const id = typeof chatId === 'string' ? chatId : ''
+  if (id === '') throw new RemoteError('onebot-settings/bad-chat-id', '缺少 chatId，无法新建', { chatId: id })
+  const body = typeof text === 'string' ? text.trim() : ''
+  if (body === '') throw new RemoteError('onebot-settings/bad-memory-text', '记忆正文不能为空', { chatId: id })
+  // 与工具写入同一道闸：面板也不能把手机号/身份证写进明文文件。
+  const sensitive = findSensitive(body)
+  if (sensitive !== null) {
+    throw new RemoteError('onebot-settings/sensitive-memory', '内容疑似包含' + sensitive + '，已拒绝保存', { chatId: id })
+  }
+  const kindValue = kind === 'profile' ? 'profile' as const : 'note' as const
+  const subjectValue = typeof subject === 'string' ? subject.trim() : ''
+  if (kindValue === 'profile' && subjectValue === '') {
+    throw new RemoteError('onebot-settings/bad-subject', '画像必须指定主体 QQ 号', { chatId: id })
+  }
+  const nextTags = Array.isArray(tags)
+    ? tags.filter((tag): tag is string => typeof tag === 'string' && tag.trim() !== '').slice(0, 8)
+    : []
+  const raw = findEntry(editor).options.config ?? {}
+  const cap = typeof raw.memoryMaxEntriesPerChat === 'number' && raw.memoryMaxEntriesPerChat > 0
+    ? Math.floor(raw.memoryMaxEntriesPerChat)
+    : 200
+  const dir = memoryDirOf(editor)
+  const result = upsertMemory(dir, id, {
+    ts: Date.now(),
+    text: body.length > 500 ? body.slice(0, 500) : body,
+    ...(nextTags.length > 0 ? { tags: nextTags } : {}),
+    ...(kindValue === 'profile' ? { kind: 'profile' as const, subject: subjectValue } : {}),
+  })
+  // 面板新建同样要遵守单会话上限（与工具写入一致）。
+  trimMemories(dir, id, cap)
+  return {
+    ok: true,
+    total: readAllMemories(dir, id).length,
+    ...(result.refreshed ? { refreshed: true } : {}),
+  }
 }
 
 /** 38 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
@@ -917,7 +985,8 @@ export function createOnebotSettingsMethods(
   listWorkspaces(): Promise<WorkspaceListResult>
   listReasoningEfforts(): Promise<ReasoningEffortsResult>
   listMemoryChats(): MemoryChatsResult
-  readMemoryEntries(chatId: string, offset: number, limit: number, query: string): MemoryEntriesResult
+  readMemoryEntries(chatId: string, offset: number, limit: number, query: string, kind: string): MemoryEntriesResult
+  createMemoryEntry(chatId: string, text: string, kind: string, subject: string, tags: string[]): MemoryMutationResult
   updateMemoryEntry(chatId: string, ts: number, text: string, tags: string[]): MemoryMutationResult
   deleteMemoryEntry(chatId: string, ts: number): MemoryMutationResult
 } {
@@ -927,7 +996,8 @@ export function createOnebotSettingsMethods(
     listWorkspaces: async () => listWorkspaces(workspaceRegistry),
     listReasoningEfforts: async () => listReasoningEfforts(llm, defaultModel),
     listMemoryChats: () => listMemoryChats(editor),
-    readMemoryEntries: (chatId, offset, limit, query) => readMemoryEntries(editor, chatId, offset, limit, query),
+    readMemoryEntries: (chatId, offset, limit, query, kind) => readMemoryEntries(editor, chatId, offset, limit, query, kind),
+    createMemoryEntry: (chatId, text, kind, subject, tags) => createMemoryEntry(editor, chatId, text, kind, subject, tags),
     updateMemoryEntry: (chatId, ts, text, tags) => updateMemoryEntry(editor, chatId, ts, text, tags),
     deleteMemoryEntry: (chatId, ts) => deleteMemoryEntry(editor, chatId, ts),
   }
@@ -1010,9 +1080,14 @@ if (protocol?.TypertRemoteService) {
       return listMemoryChats(this.configEditor())
     }
 
-    /** 记忆：分页读取某会话的条目（新→旧；带 query 时按相关度）。 */
-    readMemoryEntries(chatId: string, offset: number, limit: number, query: string): MemoryEntriesResult {
-      return readMemoryEntries(this.configEditor(), chatId, offset, limit, query)
+    /** 记忆：分页读取某会话的条目（新→旧；带 query 时按相关度；kind 只看某一类）。 */
+    readMemoryEntries(chatId: string, offset: number, limit: number, query: string, kind: string): MemoryEntriesResult {
+      return readMemoryEntries(this.configEditor(), chatId, offset, limit, query, kind)
+    }
+
+    /** 记忆：面板新建一条（与工具写入共用敏感信息/长度/上限规则）。 */
+    createMemoryEntry(chatId: string, text: string, kind: string, subject: string, tags: string[]): MemoryMutationResult {
+      return createMemoryEntry(this.configEditor(), chatId, text, kind, subject, tags)
     }
 
     /** 记忆：编辑一条的正文/标签（与工具写入共用敏感信息与长度闸门）。 */
@@ -1034,6 +1109,7 @@ if (protocol?.TypertRemoteService) {
   // 否则与 getNapcatStatus 一样——服务端有、网关不认。
   markRemote(OnebotSettingsRemote, 'listMemoryChats')
   markRemote(OnebotSettingsRemote, 'readMemoryEntries')
+  markRemote(OnebotSettingsRemote, 'createMemoryEntry')
   markRemote(OnebotSettingsRemote, 'updateMemoryEntry')
   markRemote(OnebotSettingsRemote, 'deleteMemoryEntry')
   OnebotSettingsService = OnebotSettingsRemote
@@ -1076,8 +1152,12 @@ if (protocol?.TypertRemoteService) {
       return listMemoryChats(this.configEditor())
     }
 
-    readMemoryEntries(chatId: string, offset: number, limit: number, query: string): MemoryEntriesResult {
-      return readMemoryEntries(this.configEditor(), chatId, offset, limit, query)
+    readMemoryEntries(chatId: string, offset: number, limit: number, query: string, kind: string): MemoryEntriesResult {
+      return readMemoryEntries(this.configEditor(), chatId, offset, limit, query, kind)
+    }
+
+    createMemoryEntry(chatId: string, text: string, kind: string, subject: string, tags: string[]): MemoryMutationResult {
+      return createMemoryEntry(this.configEditor(), chatId, text, kind, subject, tags)
     }
 
     updateMemoryEntry(chatId: string, ts: number, text: string, tags: string[]): MemoryMutationResult {

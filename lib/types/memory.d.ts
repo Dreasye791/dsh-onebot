@@ -169,10 +169,20 @@ export declare function deleteMemoriesWhere(memoryDir: string, chatId: string, p
  * 为什么按 `ts` 逐条打补丁而不是整文件替换：补齐期间模型可能正好在 `remember` 追加新条目，
  * 整文件替换会把那条新增抹掉；只改命中条目的 `emb` / `dim` 是最小写。
  *
- * @returns 实际写入的条数（`ts` 找不到的会被跳过）。
+ * **为什么还要比对 `text`**：补齐是先快照正文、再编码（含跨批 await，可能持续数秒）、
+ * 最后写回。这期间用户完全可能在面板上改了这条的正文 —— 而 `updateMemory` 刚刚因为
+ * 「正文变了」把 `emb` 删掉。此时若只按 `ts` 写回，等于用**旧文本的向量**填回新文本，
+ * 恰好撤销了「编辑失效」的全部意义（虚假相似：这条会在不相关查询里被召回）。
+ * 所以文本对不上就跳过，下一轮补齐会按新文本重新编码。
+ *
+ * 同一个 `ts + text` 双键也顺带缓解了 `ts = Date.now()` 可能重复的问题
+ * （同毫秒写入两条不同记忆时，不会再互相写串向量）。
+ *
+ * @returns 实际写入的条数（`ts`+`text` 对不上的会被跳过）。
  */
 export declare function writeMemoryEmbeddings(memoryDir: string, chatId: string, updates: readonly {
     ts: number;
+    text: string;
     emb: readonly number[];
 }[]): number;
 /** `private_123.jsonl` → `private:123`；不是记忆文件时返回 undefined（`memoryFileName` 的逆）。 */

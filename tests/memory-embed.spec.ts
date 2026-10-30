@@ -139,6 +139,20 @@ describe('memory-embed: HttpEmbedder（Ollama）', () => {
     expect((init.headers as Record<string, string>).authorization).toBeUndefined()
   })
 
+  it('url 直接写完整端点 /v1/embeddings 也走 OpenAI 协议，且不重复拼接', async () => {
+    // 各家文档最常见的就是让你粘完整端点；判成 Ollama 会 POST 到
+    // `…/v1/embeddings/api/embed` 拿 404，而降级是静默的，极难排查。
+    const doFetch = vi.fn(async () => jsonResponse({ data: [{ embedding: [0.5] }] }))
+    const embedder = new HttpEmbedder({
+      url: 'https://api.example.com/v1/embeddings',
+      model: 'm',
+      fetchImpl: doFetch as unknown as typeof fetch,
+    })
+    await expect(embedder.embed(['x'])).resolves.toEqual([[0.5]])
+    const [endpoint] = doFetch.mock.calls[0] as unknown as [string]
+    expect(endpoint).toBe('https://api.example.com/v1/embeddings')
+  })
+
   it('非 2xx → 抛错（由 embedSafely 降级）', async () => {
     const doFetch = vi.fn(async () => jsonResponse({ error: 'boom' }, 500))
     const embedder = new HttpEmbedder({

@@ -1242,3 +1242,25 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
   `tokenizer.json` / `*.onnx`（含 `onnx/` 子目录），退出码 0/1/2。
 - **验证**：`tsc` exit 0；`memory-backfill.spec` **10 条**（分批、budget、幂等、维度迁移、
   失败不冒泡、中断让路、无文件安全返回）；**10 文件 254 用例全绿**。
+
+### 同日补：四处健壮性修复（系统评估后）
+
+- **补齐期间正文被改写**：`writeMemoryEmbeddings` 原来只按 `ts` 匹配，而补齐是「先快照正文 →
+  编码（含跨批 await，可能几秒）→ 写回」。这期间面板改正文会让写回把**旧文本的向量**填回
+  新文本，恰好撤销「编辑失效」（虚假相似，且看起来一切正常）。改为 `ts + text` 双键匹配，
+  文本不一致就跳过、留给下一轮按新文本重编。同一个双键也顺带缓解了 `ts = Date.now()`
+  同毫秒重复时互相写串向量的问题。
+- **群聊画像召回不到**：`qq_memory_recall` 的发言者只取 `dmSubject(chatId)`（群聊恒为
+  `undefined`），而 `selectForRecall` 对 `subject !== speaker` 一律丢弃 —— 于是
+  `memoryProfileScope='all'` 下群里写的画像「写得进、读不出」，且完全静默
+  （看起来像是「画像功能没生效」）。改为与 `remember` 同一条解析链：
+  私聊 → `bridge.speakerFor()` → 会话事件兜底。
+- **端点判定过窄**：`HttpEmbedder` 原来只认 `endsWith('/v1')`。用户直接粘完整端点
+  `…/v1/embeddings`（各家文档最常见的写法）会被判成 Ollama，POST 到
+  `…/v1/embeddings/api/embed` 拿 404 —— 而降级是静默的，几乎无法从现象定位。
+  改为接受 `/v1` 与 `/v1/embeddings` 两种结尾，且已含 `/embeddings` 时不重复拼接。
+- **补齐不看总开关**：`memoryEnabled=false` 但 `memoryEmbeddingMode` 有残留配置时，
+  每个 `turn/end` 仍会白读一遍记忆文件。加一行短路。
+- **验证**：`tsc` exit 0；`memory-backfill.spec` 加 1 条（编码期间改正文不写回，
+  断言 `embedded === 0` 且该条 `emb` 仍为空）、`memory-embed.spec` 加 1 条
+  （完整端点仍走 OpenAI 协议且不双拼）；**10 文件 256 用例全绿**。

@@ -194,9 +194,17 @@ export class HttpEmbedder implements Embedder {
   async embed(texts: readonly string[]): Promise<number[][]> {
     if (texts.length === 0) return []
     const base = this.options.url.replace(/\/+$/, '')
-    // 以 /v1 结尾 → OpenAI 兼容（POST /v1/embeddings）；否则按 Ollama（POST /api/embed）。
-    const openai = base.endsWith('/v1')
-    const endpoint = openai ? base + '/embeddings' : base + '/api/embed'
+    // OpenAI 兼容 vs Ollama 的判定。
+    //
+    // 不能死抠 `endsWith('/v1')`：用户很可能直接粘**完整端点**
+    // `https://api.x.com/v1/embeddings`（各家文档里最常见的写法），或带网关前缀的地址 ——
+    // 判成 Ollama 就会 POST 到 `…/v1/embeddings/api/embed` 拿 404，而降级是静默的，
+    // 排查成本极高。所以接受 `/v1` 与 `/v1/embeddings` 两种结尾，且已含 `/embeddings`
+    // 时不再重复拼接。
+    const openai = /\/v1(\/embeddings)?$/.test(base)
+    const endpoint = openai
+      ? (base.endsWith('/embeddings') ? base : base + '/embeddings')
+      : base + '/api/embed'
     const doFetch = this.options.fetchImpl ?? fetch
     const controller = new AbortController()
     const timer = setTimeout(() => { controller.abort() }, this.options.timeoutMs ?? 5000)

@@ -95,10 +95,14 @@ export async function backfillChat(options: BackfillOptions): Promise<BackfillRe
       // 整批失败：不逐条重试（那会把一次故障放大成 N 次请求），留给下一轮。
       continue
     }
-    const updates: { ts: number; emb: readonly number[] }[] = []
+    const updates: { ts: number; text: string; emb: readonly number[] }[] = []
     for (let index = 0; index < batch.length; index += 1) {
       const vector = vectors[index]
-      if (Array.isArray(vector) && vector.length > 0) updates.push({ ts: batch[index].ts, emb: vector })
+      // 带上 text：写回时按 `ts + text` 双键匹配，编码期间正文被改过就不会写串
+      // （`updateMemory` 已把旧向量删了，这里再写回去等于撤销失效）。
+      if (Array.isArray(vector) && vector.length > 0) {
+        updates.push({ ts: batch[index].ts, text: batch[index].text, emb: vector })
+      }
     }
     if (updates.length > 0) embedded += writeMemoryEmbeddings(memoryDir, chatId, updates)
     // 让出事件循环：补齐在后台跑，不能把主线程占满（宿主还要处理消息/渲染）。

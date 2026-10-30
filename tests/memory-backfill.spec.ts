@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-import { appendMemory, readAllMemories } from '../src/memory.js'
+import { appendMemory, readAllMemories, updateMemory } from '../src/memory.js'
 import { backfillChat } from '../src/memory-backfill.js'
 import type { Embedder } from '../src/memory-embed.js'
 
@@ -110,6 +110,29 @@ describe('memory-backfill: 幂等与维度迁移', () => {
     const result = await backfillChat({ memoryDir: dir, chatId: 'private:10001', embedder: unknown })
     expect(result.pending).toBe(0)
     expect(unknown.calls).toHaveLength(0)
+  })
+
+  it('编码期间正文被改过 → 不把旧向量写回新文本', async () => {
+    // 真实场景：补齐先快照正文，再编码（含跨批 await，可能几秒），最后写回。
+    // 这期间用户完全可能在面板上改了正文，而 updateMemory 刚因为「正文变了」删掉 emb。
+    // 若只按 ts 写回，等于用旧文本的向量填回新文本，恰好撤销编辑失效（虚假相似）。
+    const dir = makeDir()
+    appendMemory(dir, 'private:10001', { ts: 1, text: '旧文本' })
+    const embedder: Embedder = {
+      dim: 2,
+      async isAvailable(): Promise<boolean> {
+        return true
+      },
+      async embed(texts: readonly string[]): Promise<number[][]> {
+        updateMemory(dir, 'private:10001', 1, { text: '新文本' })
+        return texts.map(() => [1, 1])
+      },
+    }
+    const result = await backfillChat({ memoryDir: dir, chatId: 'private:10001', embedder })
+    expect(result.embedded).toBe(0)
+    const [entry] = readAllMemories(dir, 'private:10001')
+    expect(entry.text).toBe('新文本')
+    expect(entry.emb).toBeUndefined()
   })
 })
 

@@ -17,7 +17,7 @@ import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import type { ChatBridge } from './bridge.js'
 import type { OneBotConnection } from './connection.js'
 import { fileToBase64, isUrl } from './media.js'
-import { deleteMemoriesWhere, findSensitive, readAllMemories, readMemories, searchMemories, searchMemoriesHybrid, selectForRecall, speakerFromUserEvents, trimMemories, upsertMemory } from './memory.js'
+import { deleteMemoriesWhere, findSensitiveIn, readAllMemories, readMemories, searchMemories, searchMemoriesHybrid, selectForRecall, speakerFromUserEvents, trimMemories, upsertMemory } from './memory.js'
 import { embedSafely } from './memory-embed.js'
 import { splitChatId } from './chat.js'
 import type { OneBotSegment } from './cq.js'
@@ -687,7 +687,8 @@ export function registerTools(
           ? a.tags.filter((t): t is string => typeof t === 'string' && t.trim() !== '').slice(0, 8)
           : undefined
         // 敏感信息先拦：记忆以明文落盘，宁可拦错也不能把手机号/身份证写进文件。
-        const sensitive = findSensitive(clipped)
+        // 标签一起过闸 —— 标签同样落盘、同样会出现在 recall 结果里。
+        const sensitive = findSensitiveIn(clipped, tags)
         if (sensitive !== null) {
           throw new Error('qq_memory_remember: 内容疑似包含' + sensitive + '，已拒绝写入。'
             + '记忆是明文 JSONL 存盘，请不要记录手机号 / 身份证 / 银行卡等敏感信息。')

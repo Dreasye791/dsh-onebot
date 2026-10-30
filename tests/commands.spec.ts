@@ -12,6 +12,7 @@ import { join } from 'node:path'
 
 import { COMMANDS, helpText, packageVersion } from '../src/commands.js'
 import { MediaStore } from '../src/media.js'
+import { appendMemory, readAllMemories } from '../src/memory.js'
 import { makeCmdHarness } from './helpers/bridge-harness.js'
 
 describe('commands', () => {
@@ -1131,4 +1132,110 @@ describe('commands · serial selection (R2)', () => {
     await h.bridge.stop()
     await h.connection.stop()
   }, 60_000)
+})
+
+/**
+ * `/memory` 是**唯一对成员开放**的命令，承载的是「被记录的人能自查自删」这条隐私承诺。
+ * 此前只测了「命令表里有它、且是唯一非 adminOnly」—— 它跑起来长什么样没人验证过：
+ * 计数会不会把别人的画像算进去、过期的算不算、删的时候会不会删到别人身上。
+ */
+describe('/memory 与 /memory forget 的行为（成员自查自删）', () => {
+  const textOf = (h: Awaited<ReturnType<typeof makeCmdHarness>>): string =>
+    h.outbound.map((frame) => JSON.stringify(frame.params)).join('\n')
+
+  it('未启用记忆时提示去设置页开启，而不是显示空列表', async () => {
+    const h = await makeCmdHarness()
+    h.sendText('/memory')
+    await vi.waitFor(() => {
+      expect(textOf(h)).toContain('频道记忆未启用')
+    })
+  })
+
+  it('只统计调用者可见的条目：公共 note + 自己的画像，别人的画像既不计入也不显示', async () => {
+    const h = await makeCmdHarness({ memoryEnabled: true })
+    const dir = join(h.mediaDir, 'memory')
+    const now = Date.now()
+    appendMemory(dir, 'private:10001', { ts: now - 3000, text: '周五要交周报' })
+    appendMemory(dir, 'private:10001', { ts: now - 2000, text: '喜欢简短回答', kind: 'profile', subject: '10001' })
+    appendMemory(dir, 'private:10001', { ts: now - 1000, text: '别人的秘密', kind: 'profile', subject: '99999' })
+
+    h.sendText('/memory')
+    await vi.waitFor(() => {
+      const out = textOf(h)
+      expect(out).toContain('公共 1')
+      expect(out).toContain('你的画像 1')
+      expect(out).toContain('喜欢简短回答')
+      expect(out).not.toContain('别人的秘密')
+    })
+  })
+
+  it('过期条目不计入统计（软过期：文件留着，但不再算进「几条」）', async () => {
+    const h = await makeCmdHarness({ memoryEnabled: true })
+    appendMemory(join(h.mediaDir, 'memory'), 'private:10001', {
+      ts: Date.now() - 20 * 24 * 60 * 60 * 1000,
+      text: '过期的待办',
+      tags: ['待办'],
+    })
+    h.sendText('/memory')
+    await vi.waitFor(() => {
+      const out = textOf(h)
+      expect(out).toContain('0 条')
+      expect(out).toContain('还没有关于你的画像')
+    })
+  })
+
+  it('画像超过 10 条时只显示最近 10 条并注明', async () => {
+    const h = await makeCmdHarness({ memoryEnabled: true })
+    const dir = join(h.mediaDir, 'memory')
+    const base = Date.now()
+    for (let index = 0; index < 12; index += 1) {
+      appendMemory(dir, 'private:10001', {
+        ts: base - (12 - index) * 1000,
+        text: '画像第 ' + index + ' 条',
+        kind: 'profile',
+        subject: '10001',
+      })
+    }
+    h.sendText('/memory')
+    await vi.waitFor(() => {
+      const out = textOf(h)
+      expect(out).toContain('你的画像 12')
+      expect(out).toContain('仅显示最近 10 条')
+    })
+  })
+
+  it('/memory forget 只删自己的画像，公共记忆与别人的画像原样保留', async () => {
+    const h = await makeCmdHarness({ memoryEnabled: true })
+    const dir = join(h.mediaDir, 'memory')
+    const now = Date.now()
+    appendMemory(dir, 'private:10001', { ts: now, text: '公共记忆' })
+    appendMemory(dir, 'private:10001', { ts: now + 1, text: '我的画像', kind: 'profile', subject: '10001' })
+    appendMemory(dir, 'private:10001', { ts: now + 2, text: '别人的画像', kind: 'profile', subject: '99999' })
+
+    h.sendText('/memory forget')
+    await vi.waitFor(() => {
+      expect(textOf(h)).toContain('已删除关于你的 1 条画像')
+    })
+    expect(readAllMemories(dir, 'private:10001').map((entry) => entry.text)).toEqual(['公共记忆', '别人的画像'])
+  })
+
+  it('/memory forget 没有画像时给明确提示', async () => {
+    const h = await makeCmdHarness({ memoryEnabled: true })
+    h.sendText('/memory forget')
+    await vi.waitFor(() => {
+      expect(textOf(h)).toContain('没有找到关于你的画像')
+    })
+  })
+
+  it('/memory xxx 只回用法，不误执行删除（且 forget 后不删除）', async () => {
+    const h = await makeCmdHarness({ memoryEnabled: true })
+    const dir = join(h.mediaDir, 'memory')
+    appendMemory(dir, 'private:10001', { ts: Date.now(), text: '我的画像', kind: 'profile', subject: '10001' })
+
+    h.sendText('/memory forgetall')
+    await vi.waitFor(() => {
+      expect(textOf(h)).toContain('用法：/memory 查看')
+    })
+    expect(readAllMemories(dir, 'private:10001')).toHaveLength(1)
+  })
 })

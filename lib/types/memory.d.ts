@@ -107,6 +107,15 @@ export declare function selectForRecall(entries: readonly MemoryEntry[], scope?:
  */
 export declare function findSensitive(text: string): string | null;
 /**
+ * 正文 + 标签一起过敏感闸。
+ *
+ * 为什么必须合并判：`tags` 同样是明文落盘、也会出现在 `recall` 结果与设置页卡片里，
+ * 而原实现只把 `text` 交给 `findSensitive` —— 手机号写进标签（`tags: ['13800138000']`）
+ * 可以完全绕过拦截。用 `\n` 分隔而不是空格，避免标签数字与正文末尾数字粘成一个长串
+ * 造成误判。
+ */
+export declare function findSensitiveIn(text: string, tags?: readonly string[]): string | null;
+/**
  * chatId → 安全文件名。
  *
  * chatId 形如 `private:123456` / `group:789`，冒号在 Windows 文件名里非法，

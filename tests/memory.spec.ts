@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -11,6 +11,7 @@ import {
   deleteMemoriesWhere,
   deleteMemory,
   findSensitive,
+  findSensitiveIn,
   forgetProfiles,
   isExpired,
   keywordScore,
@@ -238,6 +239,41 @@ describe('memory: 敏感信息拦截', () => {
     // 13 位时间戳不在 16-19 位范围内
     expect(findSensitive('时间戳 1730000000000')).toBeNull()
   })
+
+  it('带分隔符的手机号也被拦（人写手机号最常见的形态）', () => {
+    // 只按 `\d+` 切会切成 3/4/4 三段，长度全不匹配 —— 原实现整类漏过。
+    expect(findSensitive('电话 138-0013-8000')).toBe('手机号')
+    expect(findSensitive('电话 138 0013 8000')).toBe('手机号')
+    expect(findSensitive('电话 138.0013.8000')).toBe('手机号')
+  })
+
+  it('+86 前缀的 13 位号码按手机号拦（剥离国家码再判）', () => {
+    expect(findSensitive('tel +8613800138000')).toBe('手机号')
+    expect(findSensitive('tel 8613800138000')).toBe('手机号')
+  })
+
+  it('相邻两个手机号仍然各自命中（不会被粘成一个长数字而漏过）', () => {
+    expect(findSensitive('A 13800138000 B 13900139000')).toBe('手机号')
+  })
+
+  it('15 位老身份证也拦（它落在 16–19 位银行卡档之外）', () => {
+    expect(findSensitive('身份证 110101900307123')).toBe('身份证号')
+  })
+
+  it('带空格的银行卡号也拦', () => {
+    expect(findSensitive('卡号 6222 0202 0000 0000')).toBe('银行卡号')
+  })
+
+  it('普通编号不被误粘成长数字（订单号/日期仍不命中）', () => {
+    expect(findSensitive('订单 2024-001-002 已发货')).toBeNull()
+    expect(findSensitive('2026-10-30 开会')).toBeNull()
+  })
+
+  it('findSensitiveIn：标签同样过闸（否则把手机号写进 tags 就能绕过）', () => {
+    expect(findSensitiveIn('无敏感内容的正文', ['13800138000'])).toBe('手机号')
+    expect(findSensitiveIn('无敏感内容的正文', ['偏好', '待办'])).toBeNull()
+    expect(findSensitiveIn('无敏感内容的正文')).toBeNull()
+  })
 })
 
 describe('memory: 删除画像', () => {
@@ -428,6 +464,41 @@ describe('memory: upsert（同一条目折叠为「最近提及」）', () => {
     expect(entry.by).toBe('10001')
     expect(entry.role).toBe('admin')
   })
+
+  it('再次提及时并入新标签（原来会被丢弃，TTL 一直按旧档位算）', () => {
+    const dir = makeDir()
+    // 第一次无标签 → 无标签档 90 天
+    upsertMemory(dir, 'private:10001', { ts: 100, text: '周五要交周报' })
+    expect(ttlDaysFor(readAllMemories(dir, 'private:10001')[0])).toBe(90)
+    // 第二次补上「待办」→ 应变成 14 天档（不是继续按 90 天）
+    upsertMemory(dir, 'private:10001', { ts: 200, text: '周五要交周报', tags: ['待办'] })
+    const [entry] = readAllMemories(dir, 'private:10001')
+    expect(entry.tags).toEqual(['待办'])
+    expect(ttlDaysFor(entry)).toBe(14)
+  })
+
+  it('标签取并集且去重（第二次补充分类不丢第一次的）', () => {
+    const dir = makeDir()
+    upsertMemory(dir, 'private:10001', { ts: 100, text: 'x', tags: ['偏好'] })
+    upsertMemory(dir, 'private:10001', { ts: 200, text: 'x', tags: ['偏好', '事实'] })
+    expect(readAllMemories(dir, 'private:10001')[0].tags).toEqual(['偏好', '事实'])
+  })
+
+  it('再次提及会写入新向量（换模型后能自愈）', () => {
+    const dir = makeDir()
+    upsertMemory(dir, 'private:10001', { ts: 100, text: 'x', emb: [1, 1], dim: 2 })
+    upsertMemory(dir, 'private:10001', { ts: 200, text: 'x', emb: [1, 1, 1], dim: 3 })
+    const [entry] = readAllMemories(dir, 'private:10001')
+    expect(entry.emb).toEqual([1, 1, 1])
+    expect(entry.dim).toBe(3)
+  })
+
+  it('再次提及没带向量时保留原向量（不清空）', () => {
+    const dir = makeDir()
+    upsertMemory(dir, 'private:10001', { ts: 100, text: 'x', emb: [1, 2], dim: 2 })
+    upsertMemory(dir, 'private:10001', { ts: 200, text: 'x' })
+    expect(readAllMemories(dir, 'private:10001')[0].emb).toEqual([1, 2])
+  })
 })
 
 describe('memory: 向量字段与余弦', () => {
@@ -546,6 +617,32 @@ describe('memory: 混合召回（关键词 + 语义）', () => {
     const score = keywordScore(entries[0], tokens)
     const hit = searchMemories(entries, '螺蛳粉').find((item) => item.entry.ts === 1)
     expect(hit?.score).toBe(score)
+  })
+})
+
+describe('memory: 写路径原子性（tmp + rename，不直接覆盖）', () => {
+  const source = readFileSync(new URL('../src/memory.ts', import.meta.url), 'utf8')
+
+  it('writeAll 复用 rewriteMemories，而不是直接覆盖原文件', () => {
+    // 直接 writeFileSync 覆盖原文件时，写入中途崩溃/断电会留下半个文件 ——
+    // 所有历史条目一起损坏。rename 是原子的：读者要么看到旧文件、要么看到新文件。
+    expect(source).toMatch(/function writeAll\([\s\S]{0,400}?rewriteMemories\(memoryDir, chatId, entries\)/)
+    expect(source).not.toMatch(/function writeAll\([\s\S]{0,400}?writeFileSync\(/)
+  })
+
+  it('源码里只有一处 writeFileSync（写 .tmp），不存在绕过原子性的旁路', () => {
+    const directWrites = source.match(/writeFileSync\(/g) ?? []
+    expect(directWrites).toHaveLength(1)
+    expect(source).toContain("const temp = file + '.tmp'")
+  })
+
+  it('upsert / update / delete 之后目录里不残留 .tmp', () => {
+    const dir = makeDir()
+    appendMemory(dir, 'private:10001', { ts: 1, text: 'A' })
+    upsertMemory(dir, 'private:10001', { ts: 2, text: 'A' })
+    updateMemory(dir, 'private:10001', 1, { text: 'B' })
+    deleteMemoriesWhere(dir, 'private:10001', () => false)
+    expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([])
   })
 })
 

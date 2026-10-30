@@ -230,6 +230,13 @@ export async function makeCmdHarness(opts?: {
    * 绝对路径换成 `<本机路径>`，路径里的文件名随之消失，断言必然失败。
    */
   redactLocalPaths?: boolean
+  /**
+   * 频道记忆总开关（absent = 产品默认 false）。
+   *
+   * `/memory` 与 `/memory forget` 的**行为**取决于它：关闭时只回一句「未启用」，
+   * 开启时才读 `<mediaDir>/memory/`。断言真实输出的用例必须显式打开。
+   */
+  memoryEnabled?: boolean
   /** T4 (P3): optional log capture for reference-number assertions. */
   log?: (level: string, message: string) => void
 }) {
@@ -281,6 +288,7 @@ export async function makeCmdHarness(opts?: {
       // T3 (P2): deferred-delivery timeout override (absent = the 10min default).
       ...(opts?.deferredTimeoutMs !== undefined ? { deferredTimeoutMs: opts.deferredTimeoutMs } : {}),
       sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
+      memoryEnabled: opts?.memoryEnabled ?? false,
       maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
       textImageThreshold: 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
       agentPreset: 'standard', workspacePath: mediaDir,

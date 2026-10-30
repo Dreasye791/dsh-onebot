@@ -55,7 +55,7 @@ import type { Context } from '@deepseek-ai/cordis'
  *  list()，不打开 registry 内部态——import type 零运行时依赖，不改 bridge.ts）。 */
 import type { WorkspaceRegistryLike } from './bridge.js'
 import { MCP_ALLOW_ITEM_MAX_LEN, MCP_ALLOW_MAX_ENTRIES } from './mcp-gate.js'
-import { deleteMemory, findSensitive, isExpired, listMemoryFiles, readAllMemories, searchMemories, trimMemories, updateMemory, upsertMemory } from './memory.js'
+import { deleteMemory, findSensitiveIn, isExpired, listMemoryFiles, readAllMemories, searchMemories, trimMemories, updateMemory, upsertMemory } from './memory.js'
 import { memoryDirFor } from './paths.js'
 
 /** patch insert 中 dsh-onebot 主条目的 id（T1 §2/§3：唯一持久层条目）。 */
@@ -649,14 +649,15 @@ export function updateMemoryEntry(
   if (stamp <= 0) throw new RemoteError('onebot-settings/bad-memory-id', '缺少记忆标识（ts）', { chatId: id })
   const next = typeof text === 'string' ? text.trim() : ''
   if (next === '') throw new RemoteError('onebot-settings/bad-memory-text', '记忆正文不能为空', { chatId: id })
-  // 与工具写入同一道闸：面板保存也不能把手机号/身份证写进明文文件。
-  const sensitive = findSensitive(next)
-  if (sensitive !== null) {
-    throw new RemoteError('onebot-settings/sensitive-memory', '内容疑似包含' + sensitive + '，已拒绝保存', { chatId: id })
-  }
   const nextTags = Array.isArray(tags)
     ? tags.filter((tag): tag is string => typeof tag === 'string' && tag.trim() !== '').slice(0, 8)
     : []
+  // 与工具写入同一道闸：面板保存也不能把手机号/身份证写进明文文件。
+  // 标签一并过闸（标签同样落盘、同样出现在卡片与 recall 结果里）。
+  const sensitive = findSensitiveIn(next, nextTags)
+  if (sensitive !== null) {
+    throw new RemoteError('onebot-settings/sensitive-memory', '内容疑似包含' + sensitive + '，已拒绝保存', { chatId: id })
+  }
   const dir = memoryDirOf(editor)
   const ok = updateMemory(dir, id, stamp, { text: next.length > 500 ? next.slice(0, 500) : next, tags: nextTags })
   return { ok, total: readAllMemories(dir, id).length }
@@ -694,11 +695,6 @@ export function createMemoryEntry(
   if (id === '') throw new RemoteError('onebot-settings/bad-chat-id', '缺少 chatId，无法新建', { chatId: id })
   const body = typeof text === 'string' ? text.trim() : ''
   if (body === '') throw new RemoteError('onebot-settings/bad-memory-text', '记忆正文不能为空', { chatId: id })
-  // 与工具写入同一道闸：面板也不能把手机号/身份证写进明文文件。
-  const sensitive = findSensitive(body)
-  if (sensitive !== null) {
-    throw new RemoteError('onebot-settings/sensitive-memory', '内容疑似包含' + sensitive + '，已拒绝保存', { chatId: id })
-  }
   const kindValue = kind === 'profile' ? 'profile' as const : 'note' as const
   const subjectValue = typeof subject === 'string' ? subject.trim() : ''
   if (kindValue === 'profile' && subjectValue === '') {
@@ -707,6 +703,11 @@ export function createMemoryEntry(
   const nextTags = Array.isArray(tags)
     ? tags.filter((tag): tag is string => typeof tag === 'string' && tag.trim() !== '').slice(0, 8)
     : []
+  // 与工具写入同一道闸：面板也不能把手机号/身份证写进明文文件（标签一并过闸）。
+  const sensitive = findSensitiveIn(body, nextTags)
+  if (sensitive !== null) {
+    throw new RemoteError('onebot-settings/sensitive-memory', '内容疑似包含' + sensitive + '，已拒绝保存', { chatId: id })
+  }
   const raw = findEntry(editor).options.config ?? {}
   const cap = typeof raw.memoryMaxEntriesPerChat === 'number' && raw.memoryMaxEntriesPerChat > 0
     ? Math.floor(raw.memoryMaxEntriesPerChat)

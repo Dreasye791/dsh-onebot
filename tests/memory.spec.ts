@@ -12,6 +12,7 @@ import {
   deleteMemory,
   findSensitive,
   findSensitiveIn,
+  forgetAllProfiles,
   forgetProfiles,
   isExpired,
   keywordScore,
@@ -286,12 +287,25 @@ describe('memory: 删除画像', () => {
     expect(readAllMemories(dir, 'group:1').map((e) => e.text)).toEqual(['群规', 'B 的偏好'])
   })
 
-  it('不传 subject 时删掉全部画像，note 保留', () => {
+  it('subject 为空串 / undefined 时什么都不删（护栏：差一个空串就会删光所有人）', () => {
+    // 曾经语义是「空 subject = 删掉本会话所有画像」，而调用点只把命令发送者的
+    // userId 原样透传 —— 一旦上游让 userId 变空串，一句 /memory forget 就删光
+    // 所有人的画像且不可撤销。现在空值一律返回 0，清空要走 forgetAllProfiles。
     const dir = makeDir()
     appendMemory(dir, 'group:1', { ts: 1, text: '群规' })
     appendMemory(dir, 'group:1', { ts: 2, text: 'A', kind: 'profile', subject: '1001' })
     appendMemory(dir, 'group:1', { ts: 3, text: 'B', kind: 'profile', subject: '1002' })
-    expect(forgetProfiles(dir, 'group:1')).toBe(2)
+    expect(forgetProfiles(dir, 'group:1', '')).toBe(0)
+    expect(forgetProfiles(dir, 'group:1', undefined)).toBe(0)
+    expect(readAllMemories(dir, 'group:1')).toHaveLength(3)
+  })
+
+  it('forgetAllProfiles 才是「删掉全部画像」，note 保留', () => {
+    const dir = makeDir()
+    appendMemory(dir, 'group:1', { ts: 1, text: '群规' })
+    appendMemory(dir, 'group:1', { ts: 2, text: 'A', kind: 'profile', subject: '1001' })
+    appendMemory(dir, 'group:1', { ts: 3, text: 'B', kind: 'profile', subject: '1002' })
+    expect(forgetAllProfiles(dir, 'group:1')).toBe(2)
     expect(readAllMemories(dir, 'group:1').map((e) => e.text)).toEqual(['群规'])
   })
 
@@ -519,6 +533,26 @@ describe('memory: 向量字段与余弦', () => {
     expect(entry.dim).toBe(3)
   })
 
+  it('缺 ts 的行被跳过（否则恒过期 + 与其他坏行共享同一标识）', () => {
+    const dir = makeDir()
+    writeFileSync(memoryFilePath(dir, 'private:10001'), [
+      JSON.stringify({ text: '没有 ts' }),
+      JSON.stringify({ ts: 0, text: 'ts 为 0' }),
+      JSON.stringify({ ts: 100, text: '正常' }),
+    ].join('\n') + '\n', 'utf8')
+    expect(readAllMemories(dir, 'private:10001').map((entry) => entry.text)).toEqual(['正常'])
+  })
+
+  it('缺 ts 但有 lastSeenAt → 用 lastSeenAt 兜底（老数据尽量救回）', () => {
+    const dir = makeDir()
+    writeFileSync(
+      memoryFilePath(dir, 'private:10001'),
+      JSON.stringify({ text: '只有 lastSeenAt', lastSeenAt: 500 }) + '\n',
+      'utf8',
+    )
+    expect(readAllMemories(dir, 'private:10001')[0].ts).toBe(500)
+  })
+
   it('向量里混入非数字 → 整条当未编码（半个向量比没有更糟）', () => {
     const dir = makeDir()
     writeFileSync(
@@ -610,6 +644,20 @@ describe('memory: 混合召回（关键词 + 语义）', () => {
     // 查询向量取负向：与所有条目余弦都被压到 0（负相关不当作「半个命中」），
     // 而关键词也匹配不到任何 2-gram → 两条路都是 0 分，正确结果就是空。
     expect(searchMemoriesHybrid(entries, '完全无关的词', { queryVector: [-1, -1] })).toEqual([])
+  })
+
+  it('weight=1 是纯语义：无向量的条目不再靠关键词挤进来', () => {
+    const entries = [
+      { ts: 1, text: '螺蛳粉很好吃' },                 // 无向量（关键词满分）
+      { ts: 2, text: '完全无关的内容', emb: [0, 1] },   // 有向量但与查询正交
+    ]
+    // 纯语义模式下两者都该出局：ts=1 没有向量，ts=2 余弦为 0
+    expect(searchMemoriesHybrid(entries, '螺蛳粉', { queryVector: [1, 0], weight: 1 })).toEqual([])
+  })
+
+  it('weight=0.99 时无向量条目仍按关键词参与（只有显式设 1 才是纯语义）', () => {
+    const entries = [{ ts: 1, text: '螺蛳粉很好吃' }]
+    expect(searchMemoriesHybrid(entries, '螺蛳粉', { queryVector: [1, 0], weight: 0.99 })).toHaveLength(1)
   })
 
   it('无向量 / 维度不符的条目：分数严格等于关键词分（不打折）', () => {

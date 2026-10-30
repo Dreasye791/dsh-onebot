@@ -765,6 +765,26 @@ describe('面板记忆方法（分页 / 过滤 / 校验 / 裁剪）', () => {
     expect(readAllMemories(dir, 'private:10001')[0].text).toBe('旧内容')
   })
 
+  it('memoryEmbeddingUrl 必须是 http(s) 且不能带账号密码', async () => {
+    const editor = new FakeConfigEditor()
+    const state = createRevisionState()
+    // 端点决定「记忆原文发到哪」：允许 file:/ws: 之类没有意义，必须收口。
+    await expect(updateSettings(editor, state, { memoryEmbeddingUrl: 'ftp://x/v1' })).rejects.toThrow('只支持 http')
+    // URL 里的凭据会被快照原样回显，还会被日志/截图带走 —— 必须走 memoryEmbeddingKey。
+    await expect(updateSettings(editor, state, { memoryEmbeddingUrl: 'https://u:p@api.example.com/v1' }))
+      .rejects.toThrow('不能包含用户名/密码')
+    await expect(updateSettings(editor, state, { memoryEmbeddingUrl: 'http://127.0.0.1:11434' }))
+      .resolves.toMatchObject({ revision: 1 })
+  })
+
+  it('readMemoryEntries 不回传 by（写入者 QQ），只回 role', () => {
+    const { editor, dir } = makeEditor()
+    appendMemory(dir, 'private:10001', { ts: 1, text: 'A', by: '10001', role: 'member' })
+    const [entry] = readMemoryEntries(editor, 'private:10001', 0, 50, '', '').entries
+    expect(entry).not.toHaveProperty('by')
+    expect(entry.role).toBe('member')
+  })
+
   it('deleteMemoryEntry：按 ts 删除并返回剩余总数', () => {
     const { editor, dir } = makeEditor()
     appendMemory(dir, 'private:10001', { ts: 100, text: 'A' })

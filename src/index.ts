@@ -393,7 +393,7 @@ export const Config: Z<Config> = z.object({
   memoryEmbeddingKey: z.string().default('')
     .description('http 模式的 Bearer token（仅 OpenAI 协议使用）；local 与 off 忽略'),
   memorySemanticWeight: z.number().min(0).max(1).default(0.6)
-    .description('混合召回的语义权重（0~1）：0=纯关键词，1=纯语义。有向量的条目按 w×余弦+(1−w)×关键词打分；无向量或维度不符（历史条目/换过模型）的条目只按关键词打分，不打折'),
+    .description('混合召回的语义权重（0~1）：0=纯关键词，1=纯语义。有向量的条目按 w×余弦+(1−w)×关键词打分；无向量或维度不符（历史条目/换过模型）的条目**只按关键词打分、不打折**（否则历史条目会被系统性压低，表现为排序莫名其妙）。注意设为 1 时这批没有向量的条目**不参与**召回 —— 纯语义就是只看语义'),
   ignoreSelf: z.boolean().default(true)
     .description('忽略机器人自己发出的消息（防自循环）'),
   interimMessages: z.boolean().default(true)

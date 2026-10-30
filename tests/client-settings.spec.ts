@@ -253,6 +253,14 @@ describe('T4 客户端 bundle — 四组 41 键（分组/键集/默认值 = T1 �
 describe('T4 客户端 bundle — 渲染函数模块级可测（renderGroup 纯函数）', () => {
   const draft = client.draftFromSnapshot as (snapshot: { config: Record<string, unknown> }) => Record<string, unknown>
 
+  it('「已过期」与「最近提及」并存时要解释原因（否则看起来像 bug）', () => {
+    // 保留期从首次写入（ts）算，重复提及只刷新 lastSeenAt —— 于是一条「刚被提过」
+    // 的记忆可能同时显示「最近提及 3 天前」与「已过期」。文案必须区分，否则用户会
+    // 以为过期判定坏了。
+    expect(CLIENT_SOURCE).toContain('已过期（按首次写入计时）')
+    expect(CLIENT_SOURCE).toContain('重复提及只刷新「最近提及」、不延长保留期')
+  })
+
   it('h() 的第一参必须是 React —— 把组件写在这里会让面板整片空白', () => {
     // 2026-10-28 实测事故：写成 h(MemoryCard, {...}) 漏掉 React 首参，
     // h 内部执行 MemoryCard.createElement.apply(...) → TypeError；

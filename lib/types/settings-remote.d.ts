@@ -214,7 +214,13 @@ export interface MemoryEntryView {
     tags: string[];
     kind: 'note' | 'profile';
     subject?: string;
-    by?: string;
+    /**
+     * 写入者的权限级别（`admin` / `member`）。
+     *
+     * 刻意**不返回 `by`（写入者 QQ）**：面板不需要它（渲染只用 `subject`），而它就是
+     * 一条身份信息 —— 少给前端一个字段，就少一条泄露路径。`role` 只说明权限级别，
+     * 不含身份，保留它以便将来做审计视图。
+     */
     role?: string;
     /** 最近一次被提及的时间（缺省 = 从未刷新，等于 `ts`） */
     lastSeenAt?: number;

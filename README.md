@@ -199,7 +199,7 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `memoryEmbeddingModel` | `''` | `local`：模型目录（相对名会拼到 `<mediaDir>/models/` 下，也可填绝对路径）；`http`：模型名（如 `bge-m3` / `nomic-embed-text`）。`local` 依赖可选的 `@xenova/transformers`（未安装则自动退回关键词）。放好模型后跑 `node scripts/check-embedding-model.mjs` 校验 `config.json` / `tokenizer.json` / `*.onnx` 是否齐全 |
 | `memoryEmbeddingUrl` | `''` | `http` 端点：**以 `/v1` 结尾走 OpenAI 协议**（`POST {url}/embeddings` + Bearer），否则走 Ollama 协议（`POST {url}/api/embed`）。⚠️ 该模式会把记忆原文发送到该端点 |
 | `memoryEmbeddingKey` | `''` | `http` + OpenAI 协议的 Bearer。**快照脱敏不回显**（与访问令牌同款处理），留空 = 不修改 |
-| `memorySemanticWeight` | `0.6` | 混合召回的语义权重（0–1）：0 = 纯关键词，1 = 纯语义。设置页 behavior 组可改 |
+| `memorySemanticWeight` | `0.6` | 混合召回的语义权重（0–1）：0 = 纯关键词，1 = 纯语义。**没有向量或维度不符的条目只按关键词打分、不打折**（否则历史条目被系统性压低）；设为 `1` 时这些条目**不参与**召回（纯语义 = 只看语义）。设置页 behavior 组可改 |
 | `memeDir` | `''` | 表情包目录（T12）：按 `<目录>/<情绪标签>/<图片>` 组织的图库，与 dsh-meme 图库同构，可直接把它的 pack 目录拷进来。配置后本通道 agent 多一个 `qq_send_meme` 工具——按情绪标签随机抽一张，或按关键词（文件名/标签子串，空格分隔多词、整词不中自动拆词）搜一张发到 QQ。留空（默认）=不注册该工具，模型看不到它。**只影响 QQ 通道**。目录必须位于 `mediaDir` 之内**且不能等于 `mediaDir`**（后者会让工具把 `mediaDir` 根下别的会话的入站临时图当表情发出去）；两个条件都在**注册阶段**用 `realpath` 校验并判定，不满足则工具直接不注册（不会出现「看到工具但发不出」）。可在设置面板「连接」组配置，也可在 patch config 手改。 |
 | `dmPolicy` | `open` | 私聊策略：`open`(仅管理员)/`allowlist`(白名单)/`disabled` |
 | `groupPolicy` | `open` | 群聊策略：`open`(所有人)/`allowlist`/`disabled` |

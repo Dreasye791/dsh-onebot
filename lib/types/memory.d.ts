@@ -156,13 +156,27 @@ export declare function readMemories(memoryDir: string, chatId: string, max?: nu
  */
 export declare function trimMemories(memoryDir: string, chatId: string, max: number): number;
 /**
- * 删掉某个主体的全部画像（`/memory forget`）。
+ * 删掉**某个主体**的画像（`/memory forget`）。
  *
- * `subject` 为空时删掉所有 profile（管理员清理用，调用方负责判权）。
+ * `subject` 必须非空：空串/`undefined` **什么都不删并返回 0**。
+ *
+ * 这是刻意的护栏。此前语义是「空 subject = 删掉本会话所有画像」，而调用点只是把
+ * 命令发送者的 `userId` 原样透传 —— 一旦上游某处让 `userId` 变成空串（入站层改造、
+ * 伪造的 sender、重放的事件），一句 `/memory forget` 就会删光本会话所有人的画像，
+ * 且不可撤销。要清空全部画像，请显式调用 `forgetAllProfiles`。
  *
  * @returns 被删除的条数。
  */
-export declare function forgetProfiles(memoryDir: string, chatId: string, subject?: string): number;
+export declare function forgetProfiles(memoryDir: string, chatId: string, subject: string | undefined): number;
+/**
+ * 删掉本会话**所有**画像（`note` 保留）。
+ *
+ * 与 `forgetProfiles` 分开命名，是为了让「删一个人」和「删全部」在调用点一眼可辨 ——
+ * 同一个函数靠 `subject` 是否为空来区分，是这类误删的经典来源。
+ *
+ * @returns 被删除的条数。
+ */
+export declare function forgetAllProfiles(memoryDir: string, chatId: string): number;
 /**
  * 按谓词批量删除（`qq_memory_forget` 用），一次重写整个文件。
  *

@@ -535,7 +535,13 @@ export interface MemoryEntryView {
   tags: string[]
   kind: 'note' | 'profile'
   subject?: string
-  by?: string
+  /**
+   * 写入者的权限级别（`admin` / `member`）。
+   *
+   * 刻意**不返回 `by`（写入者 QQ）**：面板不需要它（渲染只用 `subject`），而它就是
+   * 一条身份信息 —— 少给前端一个字段，就少一条泄露路径。`role` 只说明权限级别，
+   * 不含身份，保留它以便将来做审计视图。
+   */
   role?: string
   /** 最近一次被提及的时间（缺省 = 从未刷新，等于 `ts`） */
   lastSeenAt?: number
@@ -627,7 +633,7 @@ export function readMemoryEntries(
       tags: entry.tags ?? [],
       kind: entry.kind ?? 'note',
       ...(entry.subject !== undefined ? { subject: entry.subject } : {}),
-      ...(entry.by !== undefined ? { by: entry.by } : {}),
+      // 不回传 `by`（写入者 QQ）：面板用不到，少一个身份字段就少一条泄露路径。
       ...(entry.role !== undefined ? { role: entry.role } : {}),
       ...(entry.lastSeenAt !== undefined ? { lastSeenAt: entry.lastSeenAt } : {}),
       expired: isExpired(entry, now),
@@ -796,6 +802,24 @@ function validateStringValue(key: string, value: string): string | undefined {
   if ((key === 'workspacePath' || key === 'memeDir') && value !== '') {
     if (!isAbsolute(value)) return key + ' 必须是绝对路径（工作区/表情包目录）'
     if (value.split(/[\\/]/).includes('..')) return key + ' 不能包含 .. 段'
+    return undefined
+  }
+  if (key === 'memoryEmbeddingUrl' && value !== '') {
+    let parsed: URL
+    try {
+      parsed = new URL(value)
+    } catch {
+      return 'memoryEmbeddingUrl 不是合法 URL'
+    }
+    // embedding 端点是 HTTP 服务（Ollama / OpenAI 兼容），不是 WS。
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return 'memoryEmbeddingUrl 只支持 http:// 或 https://'
+    }
+    // 不许把凭据写进 URL：设置页快照会原样回显它，而 URL 里的密码还会被
+    // 访问日志、浏览器历史、截图带走。凭据应该走 memoryEmbeddingKey。
+    if (parsed.username !== '' || parsed.password !== '') {
+      return 'memoryEmbeddingUrl 不能包含用户名/密码（请改用 memoryEmbeddingKey）'
+    }
     return undefined
   }
   return undefined

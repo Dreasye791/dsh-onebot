@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest'
 import {
   appendMemory,
   chatIdFromFileName,
+  deleteMemoriesWhere,
   deleteMemory,
   findSensitive,
   forgetProfiles,
@@ -423,5 +424,40 @@ describe('memory: upsert（同一条目折叠为「最近提及」）', () => {
     expect(entry.tags).toEqual(['待办'])
     expect(entry.by).toBe('10001')
     expect(entry.role).toBe('admin')
+  })
+})
+
+describe('memory: 按谓词批量删除（qq_memory_forget 的底层）', () => {
+  it('只删命中项，返回被删的条目内容', () => {
+    const dir = makeDir()
+    appendMemory(dir, 'private:10001', { ts: 100, text: '周五要交周报' })
+    appendMemory(dir, 'private:10001', { ts: 200, text: '周报已经交了' })
+    const removed = deleteMemoriesWhere(dir, 'private:10001', (entry) => entry.ts === 100)
+    expect(removed.map((entry) => entry.text)).toEqual(['周五要交周报'])
+    expect(readAllMemories(dir, 'private:10001').map((entry) => entry.text)).toEqual(['周报已经交了'])
+  })
+
+  it('无命中时返回空数组且不重写文件', () => {
+    const dir = makeDir()
+    appendMemory(dir, 'private:10001', { ts: 100, text: 'A' })
+    expect(deleteMemoriesWhere(dir, 'private:10001', () => false)).toEqual([])
+    expect(readAllMemories(dir, 'private:10001')).toHaveLength(1)
+  })
+
+  it('可一次删多条（按 by 过滤＝只删某人写的）', () => {
+    const dir = makeDir()
+    appendMemory(dir, 'group:1', { ts: 1, text: 'x', by: '10001' })
+    appendMemory(dir, 'group:1', { ts: 2, text: 'y', by: '10001' })
+    appendMemory(dir, 'group:1', { ts: 3, text: 'z', by: '20002' })
+    const removed = deleteMemoriesWhere(dir, 'group:1', (entry) => entry.by === '10001')
+    expect(removed).toHaveLength(2)
+    expect(readAllMemories(dir, 'group:1').map((entry) => entry.text)).toEqual(['z'])
+  })
+
+  it('删空时文件保留为空（不删文件）', () => {
+    const dir = makeDir()
+    appendMemory(dir, 'private:10001', { ts: 100, text: 'A' })
+    expect(deleteMemoriesWhere(dir, 'private:10001', () => true)).toHaveLength(1)
+    expect(readAllMemories(dir, 'private:10001')).toEqual([])
   })
 })

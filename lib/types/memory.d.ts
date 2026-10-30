@@ -142,6 +142,15 @@ export declare function trimMemories(memoryDir: string, chatId: string, max: num
  * @returns 被删除的条数。
  */
 export declare function forgetProfiles(memoryDir: string, chatId: string, subject?: string): number;
+/**
+ * 按谓词批量删除（`qq_memory_forget` 用），一次重写整个文件。
+ *
+ * 为什么不复用 `deleteMemory`：那个按 `ts` 删**单条**，而 forget 需要「关键词命中
+ * + 权限过滤」的组合条件，逐条删会重写 N 次文件。
+ *
+ * @returns 被删除的条目（调用方用它回显「删了什么」，否则模型只能猜）。
+ */
+export declare function deleteMemoriesWhere(memoryDir: string, chatId: string, predicate: (entry: MemoryEntry) => boolean): MemoryEntry[];
 /** `private_123.jsonl` → `private:123`；不是记忆文件时返回 undefined（`memoryFileName` 的逆）。 */
 export declare function chatIdFromFileName(name: string): string | undefined;
 /** 一个会话的记忆文件概览。 */

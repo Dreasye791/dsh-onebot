@@ -306,6 +306,30 @@ export function forgetProfiles(memoryDir: string, chatId: string, subject?: stri
   return writeAll(memoryDir, chatId, kept) ? removed : 0
 }
 
+/**
+ * 按谓词批量删除（`qq_memory_forget` 用），一次重写整个文件。
+ *
+ * 为什么不复用 `deleteMemory`：那个按 `ts` 删**单条**，而 forget 需要「关键词命中
+ * + 权限过滤」的组合条件，逐条删会重写 N 次文件。
+ *
+ * @returns 被删除的条目（调用方用它回显「删了什么」，否则模型只能猜）。
+ */
+export function deleteMemoriesWhere(
+  memoryDir: string,
+  chatId: string,
+  predicate: (entry: MemoryEntry) => boolean,
+): MemoryEntry[] {
+  const all = readAllMemories(memoryDir, chatId)
+  const removed: MemoryEntry[] = []
+  const kept: MemoryEntry[] = []
+  for (const entry of all) {
+    if (predicate(entry)) removed.push(entry)
+    else kept.push(entry)
+  }
+  if (removed.length === 0) return []
+  return writeAll(memoryDir, chatId, kept) ? removed : []
+}
+
 /** `private_123.jsonl` → `private:123`；不是记忆文件时返回 undefined（`memoryFileName` 的逆）。 */
 export function chatIdFromFileName(name: string): string | undefined {
   if (!name.toLowerCase().endsWith('.jsonl')) return undefined

@@ -1150,3 +1150,20 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **修法**：`transform(1, 0, -shear, 1, dx + shear * pivotY, dy)`，并以**基线**为不动点（`pivotY = font.ascent(family, size)`；局域坐标里 ascender 在 0、baseline 在 ascent）。shear 仍取 0.2（14px 字上端右移约 2.4px，接近常见斜体）。
 - **验证**：真实渲染对比图 —— `lllll` / `HHHHH` 竖笔画组现在**明显右倾**（修复前完全竖直），英文 `The quick brown fox` 呈正常斜体；`t2i-render.spec` 新增 3 条静态守卫（用 c 分量 + pivotY / 不再出现 `b=0.2` / elements 传基线），3 文件 44 用例全绿。
 - **附带说明**：中文伪斜体在小字号下仍「看不太出倾斜」，这是伪斜体的固有限制（汉字结构复杂、SimHei 没有 italic 字形），不是本次能解决的 —— 真斜体需要字体自带 italic。
+
+## 2026-10-30 记忆审查：新增 `qq_memory_forget`（B 方案）
+
+- **缺口**：模型能写（`remember`）、能读（`recall`），**不能改也不能删**。而写入侧只做「完全相同」的去重（`upsertMemory`），所以「周五要交周报」与「周报已经交了」是两条不同文本 —— 会永久并存，`recall` 时都返回，模型只能自己猜哪条对。
+- **取证结论**（三条约束，先查再动手）：
+  1. `deleteMemory` 只能按 `ts` 删**单条**、`forgetProfiles` 只删画像 → 需要新增「按谓词批量删」；
+  2. 权限依据是条目的 `by`（谁写的）/ `subject`（谁的画像），但**历史条目与面板创建的条目没有 `by`** → 非管理员删不掉（刻意的安全默认）；
+  3. `MEMBER_ALLOWED_TOOL_NAMES` 需要放行新工具。
+- **新工具** `qq_memory_forget(ts | query, chat_id?)`：
+  - **不接受空条件**（既不给 `ts` 也不给 `query` 直接报错）—— 清空是 `/memory forget` 的语义，不该让模型拥有一条指令抹掉整段记忆的能力；
+  - 权限：管理员不限；非管理员只能删「自己写的（`by`）」或「关于自己的画像（`subject`）」；
+  - 「命中但无权删」**抛错而不是返回 0** —— 静默返回 0 会让模型以为「本来就没有」，转而用 `remember` 再记一条，问题反而更大。
+- **prompt 加审查指引**：`recall` 后发现同一件事有新旧两条互相矛盾时，用 `forget` 删掉过时的那条、只留最新，**不要靠再记一条来覆盖**。
+- **数据层**：新增 `deleteMemoriesWhere(dir, chatId, predicate)`（一次重写文件，返回被删条目供回显）。
+- **顺手**：清掉 `tools.ts` 里上一轮遗留的重复注释（两段「取本轮发言者」）。
+- **验证**：`tsc` exit 0；`memory.spec` 加 4 条（只删命中 / 无命中不重写 / 按 `by` 批量删 / 删空保留空文件）、`prompt.spec` 加 3 条（含 `qq_memory_forget` / 「记忆会过时」/「不要靠再记一条来覆盖」）→ memory + prompt + client-settings + plugin **4 文件 121 用例全绿**。
+- **既有问题（未修，已取证）**：`commands.spec` 有 2 条在本机稳定失败 —— `/workspace <file>` 与 `/workspace` 编号列表的断言期望完整文件名/目录名，但 `realpath` 会把 `mkdtemp` 产物展开成 **Windows 8.3 短名**（`NOT-A-~1.TXT`）。用 `git stash` 在未改动的 HEAD 上做对照实验，**同样 2 failed / 36 passed**，确认与本轮改动无关。修法：断言改用 `realpathSync` 归一化后的值，或只比不区分短名的片段。

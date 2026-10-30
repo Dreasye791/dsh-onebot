@@ -36,6 +36,10 @@ describe('buildPlatformPrompt', () => {
     expect(on).toContain('主动记忆')
     expect(on).toContain('不要等用户开口说')
     expect(on).toContain('一轮最多记一条')
+    // 审查：发现矛盾时要「删掉旧的」而不是「再记一条」，否则新旧条目永久并存
+    expect(on).toContain('qq_memory_forget')
+    expect(on).toContain('记忆会过时')
+    expect(on).toContain('不要靠再记一条来覆盖')
   })
 
   it('记忆提示与人设层共存，且人设仍在最前', () => {

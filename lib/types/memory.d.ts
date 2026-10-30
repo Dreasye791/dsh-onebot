@@ -163,6 +163,18 @@ export declare function forgetProfiles(memoryDir: string, chatId: string, subjec
  * @returns 被删除的条目（调用方用它回显「删了什么」，否则模型只能猜）。
  */
 export declare function deleteMemoriesWhere(memoryDir: string, chatId: string, predicate: (entry: MemoryEntry) => boolean): MemoryEntry[];
+/**
+ * 批量写回向量（后台补齐用），一次重写整个文件。
+ *
+ * 为什么按 `ts` 逐条打补丁而不是整文件替换：补齐期间模型可能正好在 `remember` 追加新条目，
+ * 整文件替换会把那条新增抹掉；只改命中条目的 `emb` / `dim` 是最小写。
+ *
+ * @returns 实际写入的条数（`ts` 找不到的会被跳过）。
+ */
+export declare function writeMemoryEmbeddings(memoryDir: string, chatId: string, updates: readonly {
+    ts: number;
+    emb: readonly number[];
+}[]): number;
 /** `private_123.jsonl` → `private:123`；不是记忆文件时返回 undefined（`memoryFileName` 的逆）。 */
 export declare function chatIdFromFileName(name: string): string | undefined;
 /** 一个会话的记忆文件概览。 */

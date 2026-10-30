@@ -29,6 +29,7 @@ import { buildPlatformPrompt } from './prompt.js'
 import { registerTools } from './tools.js'
 import { forgetProfiles, readAllMemories, selectForRecall } from './memory.js'
 import type { Embedder } from './memory-embed.js'
+import { backfillChat } from './memory-backfill.js'
 import { makeMcpToolGuard, describeDroppedEntries } from './mcp-gate.js'
 import { tryHandleCommand as routeCommand, STEER_ACCEPTED_NOTICE, type CommandContext } from './commands.js'
 import { relayHostCards as relayCards, type CardRelayContext } from './card-relay.js'
@@ -417,6 +418,13 @@ export class ChatBridge {
    * running turn (one notice per turn; cleared at turn/end and on chat
    * removal — bounded by the chat population). */
   private readonly queueNoticeChats = new Set<ChatId>()
+  /**
+   * 正在后台补齐记忆向量的 chat（第二批 2b′）。
+   *
+   * 作用只是**去重**：同一个 chat 连续结束两个回合时，不要并发跑两份补齐 ——
+   * 两份会各自读一遍文件、各写一遍，后写的把前一份的结果覆盖掉（内容相同但白做功）。
+   */
+  private readonly memoryBackfillInFlight = new Set<ChatId>()
   /** Plugin version + git commit, read once for /ver. */
   private pluginVersion: string | undefined
   private pluginCommit: string | undefined
@@ -654,6 +662,45 @@ export class ChatBridge {
     const raw = this.deps.config.memorySemanticWeight
     if (raw === undefined || !Number.isFinite(raw)) return 0.6
     return Math.max(0, Math.min(1, raw))
+  }
+
+  /**
+   * `turn/end` 之后在后台补齐这个会话缺失的记忆向量（第二批 2b′）。
+   *
+   * 三条设计约束：
+   * - **不阻塞回复**：这里是 fire-and-forget，本轮的最终消息早已发出；
+   * - **新回合让路**：`isCancelled` 检查 `chat.busy`，用户又发消息就立刻停手，
+   *   下一轮 turn/end 接着补 —— 补齐永远不该和真实对话抢 CPU；
+   * - **静默**：任何失败只记 debug 日志。补齐是增强功能，坏了不该让用户看到。
+   */
+  private scheduleMemoryBackfill(chatId: ChatId): void {
+    const embedder = this.memoryEmbedder()
+    // 未启用语义召回：一条也不补（否则等于给每个 chat 都开一个无用的读写循环）。
+    if (embedder === undefined) return
+    if (this.memoryBackfillInFlight.has(chatId)) return
+    this.memoryBackfillInFlight.add(chatId)
+    void backfillChat({
+      memoryDir: this.memoryDir(),
+      chatId,
+      embedder,
+      // 8 条/批：单批约 8 × 30ms ≈ 240ms，再大就会让一次 turn/end 后的空窗明显变卡。
+      batchSize: 8,
+      // 32 条/轮：200 条的会话约 6 轮补齐，用户不会感到「某一次回复特别慢」。
+      budget: 32,
+      isCancelled: () => this.chats.get(chatId)?.busy === true,
+    })
+      .then((result) => {
+        if (result.embedded > 0) {
+          this.deps.log('debug', 'memory backfill ' + chatId + ': +' + result.embedded
+            + ', remaining ' + result.remaining + (result.cancelled ? ' (cancelled)' : ''))
+        }
+      })
+      .catch((error: unknown) => {
+        this.deps.log('debug', 'memory backfill failed for ' + chatId + ': ' + describeError(error))
+      })
+      .finally(() => {
+        this.memoryBackfillInFlight.delete(chatId)
+      })
   }
 
   /**
@@ -1332,6 +1379,8 @@ export class ChatBridge {
       // running turn notifies again.
       this.queueNoticeChats.delete(chatId)
       this.deps.log('info', 'turn/end for ' + chatId + ': ' + event.data.reason.kind)
+      // 第二批 2b′：本轮已经收尾，在后台补齐这个会话缺失的记忆向量（不阻塞任何东西）。
+      this.scheduleMemoryBackfill(chatId)
       // Durable: flush the session so a later restart can resume it.
       void this.deps.sessions.flush(chat.agent.session).catch((error: unknown) => {
         this.deps.log('warn', 'session flush failed: ' + String(error))

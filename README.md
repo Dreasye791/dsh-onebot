@@ -196,7 +196,7 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `memoryProfileScope` | `dm` | 成员画像（`kind: profile`）能在哪写：`dm`（默认，只有私聊）/ `all`（群聊也允许）/ `off`（关闭画像）。**主体自动取「本轮发言者」**：私聊是对话对方，群聊读本轮消息里的 `<user_message qq="…">`；非管理员只能写自己（显式填别人会被拒），管理员不限。群聊默认关只是产品取舍（群里给某人建画像容易被当成议论别人），不是技术限制。设置页 behavior 组可改 |
 | 保留时长（按 `tags`） | — | 不单独配置：`待办` 14 天、`偏好` 不过期、`事实` 365 天、无标签 90 天。**绝对过期**（从写入时刻起算，被 recall 多少次都不续期）；过期只是不再被检索，文件里的原文保留（软过期），可用 `/memory forget` 真删 |
 | `memoryEmbeddingMode` | `off` | 语义召回：`off`（默认，纯关键词）/ `local`（进程内 ONNX）/ `http`（外部端点）。开启后 `recall` 按「语义相似 × 权重 + 关键词 × (1−权重)」混合打分，能回答「上次那个方案」这类模糊描述。**任何编码失败都自动退回纯关键词**，不影响记忆写入；没有向量或维度不符的条目只按关键词打分（不会被压低） |
-| `memoryEmbeddingModel` | `''` | `local`：模型目录（相对名会拼到 `<mediaDir>/models/` 下，也可填绝对路径）；`http`：模型名（如 `bge-m3` / `nomic-embed-text`）。`local` 依赖可选的 `@xenova/transformers`（未安装则自动退回关键词） |
+| `memoryEmbeddingModel` | `''` | `local`：模型目录（相对名会拼到 `<mediaDir>/models/` 下，也可填绝对路径）；`http`：模型名（如 `bge-m3` / `nomic-embed-text`）。`local` 依赖可选的 `@xenova/transformers`（未安装则自动退回关键词）。放好模型后跑 `node scripts/check-embedding-model.mjs` 校验 `config.json` / `tokenizer.json` / `*.onnx` 是否齐全 |
 | `memoryEmbeddingUrl` | `''` | `http` 端点：**以 `/v1` 结尾走 OpenAI 协议**（`POST {url}/embeddings` + Bearer），否则走 Ollama 协议（`POST {url}/api/embed`）。⚠️ 该模式会把记忆原文发送到该端点 |
 | `memoryEmbeddingKey` | `''` | `http` + OpenAI 协议的 Bearer。**快照脱敏不回显**（与访问令牌同款处理），留空 = 不修改 |
 | `memorySemanticWeight` | `0.6` | 混合召回的语义权重（0–1）：0 = 纯关键词，1 = 纯语义。设置页 behavior 组可改 |

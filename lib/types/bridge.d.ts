@@ -353,6 +353,13 @@ export declare class ChatBridge {
      * running turn (one notice per turn; cleared at turn/end and on chat
      * removal — bounded by the chat population). */
     private readonly queueNoticeChats;
+    /**
+     * 正在后台补齐记忆向量的 chat（第二批 2b′）。
+     *
+     * 作用只是**去重**：同一个 chat 连续结束两个回合时，不要并发跑两份补齐 ——
+     * 两份会各自读一遍文件、各写一遍，后写的把前一份的结果覆盖掉（内容相同但白做功）。
+     */
+    private readonly memoryBackfillInFlight;
     /** Plugin version + git commit, read once for /ver. */
     private pluginVersion;
     private pluginCommit;
@@ -400,6 +407,16 @@ export declare class ChatBridge {
     memoryEmbedder(): Embedder | undefined;
     /** 混合召回的语义权重（0~1）；缺省 0.6，越界值按边界处理。 */
     memorySemanticWeight(): number;
+    /**
+     * `turn/end` 之后在后台补齐这个会话缺失的记忆向量（第二批 2b′）。
+     *
+     * 三条设计约束：
+     * - **不阻塞回复**：这里是 fire-and-forget，本轮的最终消息早已发出；
+     * - **新回合让路**：`isCancelled` 检查 `chat.busy`，用户又发消息就立刻停手，
+     *   下一轮 turn/end 接着补 —— 补齐永远不该和真实对话抢 CPU；
+     * - **静默**：任何失败只记 debug 日志。补齐是增强功能，坏了不该让用户看到。
+     */
+    private scheduleMemoryBackfill;
     /**
      * Outbound media fence roots for one agent session's current turn (M1-A3b):
      * the plugin media dir always, plus the chat's workspace directory when the

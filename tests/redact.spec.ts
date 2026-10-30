@@ -43,6 +43,20 @@ describe('redactLocalPaths', () => {
     expect(redactLocalPaths('看完了，是个安装教学')).toEqual({ text: '看完了，是个安装教学', count: 0 })
     expect(redactLocalPaths('')).toEqual({ text: '', count: 0 })
   })
+
+  it('路径后紧跟全角左括号时不吃掉括号后的计数', () => {
+    // /workspace 的输出形如 `1. C:\tmp\onebot-test-x（1 会话） ← 当前`。
+    // 旧 STOP 只列了 `）` 没列 `（`，`[^STOP]*` 会一路吃到空格，把 `（1` 当成路径
+    // 的一部分 —— 用户看到 `1. <本机路径> 会话） ← 当前`，计数被吞。
+    const result = redactLocalPaths('1. C:\\tmp\\onebot-test-x（1 会话） ← 当前')
+    expect(result.text).toBe(`1. ${LOCAL_PATH_PLACEHOLDER}（1 会话） ← 当前`)
+    expect(result.count).toBe(1)
+  })
+
+  it('成对标点（书名号 / 直角引号）的闭合符也不会被吃掉', () => {
+    expect(redactLocalPaths('见《D:\\a\\b》').text).toBe(`见《${LOCAL_PATH_PLACEHOLDER}》`)
+    expect(redactLocalPaths('叫「C:\\x」').text).toBe(`叫「${LOCAL_PATH_PLACEHOLDER}」`)
+  })
 })
 
 describe('sendToChat 接入点', () => {

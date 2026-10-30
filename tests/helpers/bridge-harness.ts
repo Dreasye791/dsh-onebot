@@ -223,6 +223,13 @@ export async function makeCmdHarness(opts?: {
   sessionPersistence?: unknown
   /** T4 (P3): optional trace sink (absent = tracing off). */
   trace?: TraceSink
+  /**
+   * 出站本机路径脱敏开关（absent = 产品默认 true）。
+   *
+   * 需要断言「发出的文本里含某个本机路径/文件名」的用例应显式关掉：脱敏会把整段
+   * 绝对路径换成 `<本机路径>`，路径里的文件名随之消失，断言必然失败。
+   */
+  redactLocalPaths?: boolean
   /** T4 (P3): optional log capture for reference-number assertions. */
   log?: (level: string, message: string) => void
 }) {
@@ -278,6 +285,7 @@ export async function makeCmdHarness(opts?: {
       textImageThreshold: 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
       agentPreset: 'standard', workspacePath: mediaDir,
       ...(opts?.trace !== undefined ? { trace: opts.trace } : {}),
+      ...(opts?.redactLocalPaths !== undefined ? { redactLocalPaths: opts.redactLocalPaths } : {}),
     },
     policy: {
       dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],

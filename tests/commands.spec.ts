@@ -737,6 +737,10 @@ describe('commands', () => {
     })
     const h = await makeCmdHarness({
       agentPresets: { defaultId: 'standard', resolve, mount: vi.fn() },
+      // 这条用例断言错误文案里含**具体文件名**（not-a-dir.txt）。出站脱敏会把整段
+      // 绝对路径换成 `<本机路径>`，文件名随之消失 —— 与本用例要验的「文案是否给出
+      // 下一步」无关，所以关掉脱敏（脱敏本身由 redact.spec 覆盖）。
+      redactLocalPaths: false,
     })
     ;(h.bridge as unknown as { deps: { llmCatalog?: unknown } }).deps.llmCatalog = {
       listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
@@ -885,7 +889,9 @@ describe('commands · serial selection (R2)', () => {
 
   it('/workspace bare form renders a numbered snapshot with the current marker; /workspace <序号> runs the original switch path', async () => {
     const otherDir = mkdtempSync(join(tmpdir(), 'onebot-ws2-'))
-    const h = await makeCmdHarness()
+    // 断言里要比对 workspace 目录名与「（1 会话） ← 当前」之间的相对位置。出站脱敏会
+    // 把绝对路径换成 `<本机路径>`，比对对象整体消失 —— 关掉脱敏，本用例只验列表渲染。
+    const h = await makeCmdHarness({ redactLocalPaths: false })
     ;(h.bridge as unknown as { deps: { workspaceRegistry?: unknown } }).deps.workspaceRegistry = wsRegistry(h.mediaDir, otherDir)
     h.sendText('你好')
     await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))

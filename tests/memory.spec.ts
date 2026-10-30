@@ -612,6 +612,23 @@ describe('memory: 混合召回（关键词 + 语义）', () => {
     expect(searchMemoriesHybrid(entries, '完全无关的词', { queryVector: [-1, -1] })).toEqual([])
   })
 
+  it('无向量 / 维度不符的条目：分数严格等于关键词分（不打折）', () => {
+    // 只断言排序的话，「把无向量条目的分数乘 0.5」这种退化也能通过（注释里点名要
+    // 避免的正是这件事）。这里直接比数值：分数必须**严格等于**关键词分。
+    const entries = [
+      { ts: 1, text: '螺蛳粉很好吃' },                 // 无向量
+      { ts: 2, text: '螺蛳粉要加辣', emb: [1, 0, 0] }, // 维度不符（查询是 2 维）
+      { ts: 3, text: '螺蛳粉不辣了', emb: [1, 0] },    // 有向量
+    ]
+    const hits = searchMemoriesHybrid(entries, '螺蛳粉', { queryVector: [1, 0] })
+    const tokens = tokenize('螺蛳粉')
+    for (const ts of [1, 2]) {
+      const entry = entries.find((item) => item.ts === ts)!
+      const hit = hits.find((item) => item.entry.ts === ts)!
+      expect(hit.score).toBe(keywordScore(entry, tokens))
+    }
+  })
+
   it('keywordScore 与 searchMemories 同口径（抽函数不改变结果）', () => {
     const tokens = tokenize('螺蛳粉')
     const score = keywordScore(entries[0], tokens)

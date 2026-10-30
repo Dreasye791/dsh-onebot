@@ -425,6 +425,13 @@ export class ChatBridge {
    * 两份会各自读一遍文件、各写一遍，后写的把前一份的结果覆盖掉（内容相同但白做功）。
    */
   private readonly memoryBackfillInFlight = new Set<ChatId>()
+  /**
+   * 语义编码失败的**节流时间戳**（每个 chat 一条）。
+   *
+   * 端点配错/挂掉时，`embedSafely` 在每次 recall、每批 backfill 都会失败 —— 不节流的话
+   * 一次对话能刷几十条 warn，反而把真正有用的日志淹掉。
+   */
+  private readonly embedFailureAt = new Map<ChatId, number>()
   /** Plugin version + git commit, read once for /ver. */
   private pluginVersion: string | undefined
   private pluginCommit: string | undefined
@@ -665,6 +672,23 @@ export class ChatBridge {
   }
 
   /**
+   * 上报一次语义编码失败（此时已经降级为纯关键词）。
+   *
+   * 为什么需要：`embedSafely` 的降级是**静默**的 —— 端点配错、模型目录缺失、超时，
+   * 用户侧只看到「语义召回好像没用」，日志里一条线索都没有。这个方法是唯一的出口。
+   *
+   * 同一 chat 5 分钟只记一次：失败会在每次 recall、每批 backfill 重复发生，
+   * 不节流会把日志淹掉。
+   */
+  reportEmbedFailure(chatId: ChatId, error: unknown): void {
+    const now = Date.now()
+    const last = this.embedFailureAt.get(chatId) ?? 0
+    if (now - last < 5 * 60_000) return
+    this.embedFailureAt.set(chatId, now)
+    this.deps.log('warn', '记忆语义编码失败（已降级为纯关键词）：' + chatId + ' — ' + describeError(error))
+  }
+
+  /**
    * `turn/end` 之后在后台补齐这个会话缺失的记忆向量（第二批 2b′）。
    *
    * 三条设计约束：
@@ -691,6 +715,7 @@ export class ChatBridge {
       // 32 条/轮：200 条的会话约 6 轮补齐，用户不会感到「某一次回复特别慢」。
       budget: 32,
       isCancelled: () => this.chats.get(chatId)?.busy === true,
+      onFailure: (error) => { this.reportEmbedFailure(chatId, error) },
     })
       .then((result) => {
         if (result.embedded > 0) {

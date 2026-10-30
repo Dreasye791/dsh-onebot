@@ -10,6 +10,8 @@ export interface BackfillOptions {
     budget?: number;
     /** 返回 true 时停止（通常是「有新回合开始了」）。 */
     isCancelled?: (() => boolean) | undefined;
+    /** 编码失败回调（由调用方做节流上报，避免「静默降级」）。 */
+    onFailure?: ((error: unknown) => void) | undefined;
 }
 /** 补齐结果。 */
 export interface BackfillResult {

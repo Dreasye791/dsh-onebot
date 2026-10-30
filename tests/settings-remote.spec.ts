@@ -14,6 +14,9 @@
  * §3/§3.1/§4。
  * @module dsh-onebot/tests/settings-remote
  */
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 
 import { Context } from '@deepseek-ai/cordis'
@@ -26,12 +29,18 @@ import {
   OnebotSettingsService,
   SCHEMA_DEFAULTS,
   SETTINGS_GROUPS,
+  createMemoryEntry,
   createOnebotSettingsMethods,
   createRevisionState,
+  deleteMemoryEntry,
   getSettings,
+  listMemoryChats,
   listWorkspaces,
+  readMemoryEntries,
+  updateMemoryEntry,
   updateSettings,
 } from '../src/settings-remote.js'
+import { appendMemory, readAllMemories } from '../src/memory.js'
 import type { WorkspaceRegistryLike } from '../src/bridge.js'
 
 /** configEditor 最小替身：rows = profile patch 中 dsh-onebot 的覆盖行文档。 */
@@ -289,7 +298,7 @@ describe('onebotSettings remote — W6 白名单扩展（W1/W2 观测/调试 6 �
   it('6 个新键入快照：默认值正确、落在 diagnostics 组、计入 ALL_KEYS', () => {
     const editor = new FakeConfigEditor()
     const snapshot = getSettings(editor, createRevisionState())
-    expect(ALL_KEYS).toHaveLength(38) // W6 19→25、W7 25→26、T2 26→27、T9 27→28、T3 28→29、T10 29→30（reasoningEffort）、T11 30→31（persona）、T12 31→32（memeDir）、T15 32→35（attach 三键）、T18 35→37（记账回收与写盘超时）、T20 37→38（mcpToolAllow）
+    expect(ALL_KEYS).toHaveLength(50) // W6 19→25、W7 25→26、T2 26→27、T9 27→28、T3 28→29、T10 29→30（reasoningEffort）、T11 30→31（persona）、T12 31→32（memeDir）、T15 32→35（attach 三键）、T18 35→37（记账回收与写盘超时）、T20 37→38（mcpToolAllow）、NapCat 看护 38→41、频道记忆 41→45、语义召回 45→50
     expect(snapshot.groups.diagnostics).toEqual([...NEW_BOOLEAN_KEYS])
     for (const key of NEW_BOOLEAN_KEYS) {
       expect(snapshot.config[key]).toBe(NEW_DEFAULTS[key])
@@ -383,7 +392,7 @@ describe('onebotSettings remote — W6 失败守卫（configEditor 失败场景�
 describe('onebotSettings remote — W7 workspacePath 白名单扩展（connection 组 26 键）', () => {
   it('workspacePath 入快照：默认值 \'\'、connection 组键序追加、ALL_KEYS 25→26', () => {
     const snapshot = getSettings(new FakeConfigEditor(), createRevisionState())
-    expect(ALL_KEYS).toHaveLength(38) // W6 19→25、W7 25→26、T2 26→27、T9 27→28、T3 28→29、T10 29→30（reasoningEffort）、T11 30→31（persona）、T12 31→32（memeDir）、T15 32→35（attach 三键）、T18 35→37（记账回收与写盘超时）、T20 37→38（mcpToolAllow）
+    expect(ALL_KEYS).toHaveLength(50) // W6 19→25、W7 25→26、T2 26→27、T9 27→28、T3 28→29、T10 29→30（reasoningEffort）、T11 30→31（persona）、T12 31→32（memeDir）、T15 32→35（attach 三键）、T18 35→37（记账回收与写盘超时）、T20 37→38（mcpToolAllow）、NapCat 看护 38→41、频道记忆 41→45、语义召回 45→50
     expect(SCHEMA_DEFAULTS.workspacePath).toBe('')
     // 只钉不变量：workspacePath 在 connection 组内且位于 botQQ 之后。写死整串键序会随
     // 每次加键再漂一次（该组此后追加了 memeDir 与 T18/T20 五键，现共 13 键）；
@@ -493,10 +502,12 @@ describe('onebotSettings remote — W7 listWorkspaces（workspace 注册表只�
 describe('onebotSettings remote — P1/T2 newMessagePolicy 白名单扩展（键集 32→35→37→38 后仍整单拒绝未知键）', () => {
   it('newMessagePolicy 入快照：默认 \'queue\'、behavior 组尾追加、ALL_KEYS 26→27', () => {
     const snapshot = getSettings(new FakeConfigEditor(), createRevisionState())
-    expect(ALL_KEYS).toHaveLength(38) // W6 19→25、W7 25→26、T2 26→27、T9 27→28、T3 28→29、T10 29→30（reasoningEffort）、T11 30→31（persona）、T12 31→32（memeDir）、T15 32→35（attach 三键）、T18 35→37（记账回收与写盘超时）、T20 37→38（mcpToolAllow）
+    expect(ALL_KEYS).toHaveLength(50) // W6 19→25、W7 25→26、T2 26→27、T9 27→28、T3 28→29、T10 29→30（reasoningEffort）、T11 30→31（persona）、T12 31→32（memeDir）、T15 32→35（attach 三键）、T18 35→37（记账回收与写盘超时）、T20 37→38（mcpToolAllow）、NapCat 看护 38→41、频道记忆 41→45、语义召回 45→50
     expect(SCHEMA_DEFAULTS.newMessagePolicy).toBe('queue')
     expect(SETTINGS_GROUPS.behavior).toEqual([
       'interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'reasoningEffort', 'persona',
+      'memoryEnabled', 'memoryMaxEntriesPerChat', 'memoryRecallTopK', 'memoryProfileScope',
+      'memoryEmbeddingMode', 'memoryEmbeddingModel', 'memoryEmbeddingUrl', 'memoryEmbeddingKey', 'memorySemanticWeight',
     ])
     expect(snapshot.groups.behavior).toEqual(SETTINGS_GROUPS.behavior)
     expect(snapshot.config.newMessagePolicy).toBe('queue')
@@ -536,10 +547,12 @@ describe('onebotSettings remote — P1/T2 newMessagePolicy 白名单扩展（键
 describe('onebotSettings remote — T9 autoSteerPolicy 白名单扩展（behavior 组 27→28 键，用户裁决 2026-10-12）', () => {
   it('autoSteerPolicy 入快照：默认 \'admin\'、behavior 组尾追加（newMessagePolicy 之后）、ALL_KEYS 27→28', () => {
     const snapshot = getSettings(new FakeConfigEditor(), createRevisionState())
-    expect(ALL_KEYS).toHaveLength(38) // W6 19→25、W7 25→26、T2 26→27、T9 27→28、T3 28→29、T10 29→30（reasoningEffort）、T11 30→31（persona）、T12 31→32（memeDir）、T15 32→35（attach 三键）、T18 35→37（记账回收与写盘超时）、T20 37→38（mcpToolAllow）
+    expect(ALL_KEYS).toHaveLength(50) // W6 19→25、W7 25→26、T2 26→27、T9 27→28、T3 28→29、T10 29→30（reasoningEffort）、T11 30→31（persona）、T12 31→32（memeDir）、T15 32→35（attach 三键）、T18 35→37（记账回收与写盘超时）、T20 37→38（mcpToolAllow）、NapCat 看护 38→41、频道记忆 41→45、语义召回 45→50
     expect(SCHEMA_DEFAULTS.autoSteerPolicy).toBe('admin')
     expect(SETTINGS_GROUPS.behavior).toEqual([
       'interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'reasoningEffort', 'persona',
+      'memoryEnabled', 'memoryMaxEntriesPerChat', 'memoryRecallTopK', 'memoryProfileScope',
+      'memoryEmbeddingMode', 'memoryEmbeddingModel', 'memoryEmbeddingUrl', 'memoryEmbeddingKey', 'memorySemanticWeight',
     ])
     expect(snapshot.groups.behavior).toEqual(SETTINGS_GROUPS.behavior)
     expect(snapshot.config.autoSteerPolicy).toBe('admin')
@@ -579,10 +592,12 @@ describe('onebotSettings remote — T9 autoSteerPolicy 白名单扩展（behavio
 describe('onebotSettings remote — T3 deferredTimeoutMs 白名单扩展（behavior 组 28→29 键）后续 T10 reasoningEffort 29→30', () => {
   it('deferredTimeoutMs 入快照：默认 600000、behavior 组尾追加（autoSteerPolicy 之后）、ALL_KEYS 28→29', () => {
     const snapshot = getSettings(new FakeConfigEditor(), createRevisionState())
-    expect(ALL_KEYS).toHaveLength(38) // W6 19→25、W7 25→26、T2 26→27、T9 27→28、T3 28→29、T10 29→30（reasoningEffort）、T11 30→31（persona）、T12 31→32（memeDir）、T15 32→35（attach 三键）、T18 35→37（记账回收与写盘超时）、T20 37→38（mcpToolAllow）
+    expect(ALL_KEYS).toHaveLength(50) // W6 19→25、W7 25→26、T2 26→27、T9 27→28、T3 28→29、T10 29→30（reasoningEffort）、T11 30→31（persona）、T12 31→32（memeDir）、T15 32→35（attach 三键）、T18 35→37（记账回收与写盘超时）、T20 37→38（mcpToolAllow）、NapCat 看护 38→41、频道记忆 41→45、语义召回 45→50
     expect(SCHEMA_DEFAULTS.deferredTimeoutMs).toBe(600_000)
     expect(SETTINGS_GROUPS.behavior).toEqual([
       'interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'reasoningEffort', 'persona',
+      'memoryEnabled', 'memoryMaxEntriesPerChat', 'memoryRecallTopK', 'memoryProfileScope',
+      'memoryEmbeddingMode', 'memoryEmbeddingModel', 'memoryEmbeddingUrl', 'memoryEmbeddingKey', 'memorySemanticWeight',
     ])
     expect(snapshot.groups.behavior).toEqual(SETTINGS_GROUPS.behavior)
     expect(snapshot.config.deferredTimeoutMs).toBe(600_000)
@@ -624,5 +639,137 @@ describe('C-09 键集守卫：Config schema ↔ ALL_KEYS / SCHEMA_DEFAULTS', () 
       expect(Object.prototype.hasOwnProperty.call(effective, key), key + ' 不在 Config schema 里').toBe(true)
       expect(effective[key], key + ' 的 schema 默认值与 SCHEMA_DEFAULTS 不一致').toEqual(SCHEMA_DEFAULTS[key])
     }
+  })
+})
+
+/**
+ * 面板的五个记忆方法：实现级行为（此前 `settings-remote.spec` 里 `memory` 命中数为 0）。
+ *
+ * 面板是用户**唯一的手工入口**，而这些方法里有分页夹取、服务端过滤、敏感拦截、
+ * 上限裁剪 —— 任一处写错都只表现为「面板里数字不对」或「保存被拒」，不会报错。
+ */
+describe('面板记忆方法（分页 / 过滤 / 校验 / 裁剪）', () => {
+  function makeEditor(extra: Record<string, unknown> = {}) {
+    const root = mkdtempSync(join(tmpdir(), 'settings-memory-'))
+    const mediaDir = join(root, 'media')
+    mkdirSync(mediaDir, { recursive: true })
+    const editor = new FakeConfigEditor({ mediaDir, memoryMaxEntriesPerChat: 200, ...extra })
+    return { editor, mediaDir, dir: join(mediaDir, 'memory') }
+  }
+
+  it('listMemoryChats 只列记忆文件，带字节数与方向（忽略别的文件）', () => {
+    const { editor, dir } = makeEditor()
+    appendMemory(dir, 'private:10001', { ts: 1, text: 'A' })
+    appendMemory(dir, 'group:20002', { ts: 2, text: 'B' })
+    writeFileSync(join(dir, 'notes.txt'), 'noise', 'utf8')
+
+    const result = listMemoryChats(editor)
+    expect(result.dir).toBe(dir)
+    expect(result.chats.map((chat) => chat.chatId).sort()).toEqual(['group:20002', 'private:10001'])
+    expect(result.chats.every((chat) => chat.bytes > 0)).toBe(true)
+    expect(result.chats.find((chat) => chat.chatId === 'group:20002')?.kind).toBe('group')
+  })
+
+  it('readMemoryEntries 缺 chatId 时抛 bad-chat-id（不是返回空列表）', () => {
+    const { editor } = makeEditor()
+    expect(() => readMemoryEntries(editor, '', 0, 50, '', '')).toThrow('缺少 chatId')
+    expect(() => readMemoryEntries(editor, 42, 0, 50, '', '')).toThrow('缺少 chatId')
+  })
+
+  it('readMemoryEntries 的 kind 过滤在服务端做（total 与分页同步）', () => {
+    const { editor, dir } = makeEditor()
+    const now = Date.now()
+    appendMemory(dir, 'private:10001', { ts: now, text: '公共一' })
+    appendMemory(dir, 'private:10001', { ts: now + 1, text: '公共二' })
+    appendMemory(dir, 'private:10001', { ts: now + 2, text: '我的画像', kind: 'profile', subject: '10001' })
+
+    const all = readMemoryEntries(editor, 'private:10001', 0, 50, '', '')
+    expect(all.total).toBe(3)
+    const profiles = readMemoryEntries(editor, 'private:10001', 0, 50, '', 'profile')
+    expect(profiles.total).toBe(1)
+    expect(profiles.entries[0].text).toBe('我的画像')
+    const notes = readMemoryEntries(editor, 'private:10001', 0, 50, '', 'note')
+    expect(notes.total).toBe(2)
+  })
+
+  it('readMemoryEntries：limit/offset 夹取到合法范围（0 条/负数不崩）', () => {
+    const { editor, dir } = makeEditor()
+    for (let index = 0; index < 5; index += 1) {
+      appendMemory(dir, 'private:10001', { ts: 100 + index, text: '第 ' + index + ' 条' })
+    }
+    expect(readMemoryEntries(editor, 'private:10001', 0, 0, '', '').limit).toBe(1)
+    expect(readMemoryEntries(editor, 'private:10001', 0, 9999, '', '').limit).toBe(200)
+    // offset 超界 → 夹到最后一个合法值，不返回空页
+    expect(readMemoryEntries(editor, 'private:10001', 999, 50, '', '').offset).toBe(4)
+  })
+
+  it('readMemoryEntries：给 query 时按相关度排序（默认新→旧）', () => {
+    const { editor, dir } = makeEditor()
+    appendMemory(dir, 'private:10001', { ts: 100, text: '今天天气不错' })
+    appendMemory(dir, 'private:10001', { ts: 200, text: '周五要交周报' })
+
+    const recent = readMemoryEntries(editor, 'private:10001', 0, 50, '', '')
+    expect(recent.entries[0].text).toBe('周五要交周报') // 新→旧
+    const searched = readMemoryEntries(editor, 'private:10001', 0, 50, '天气', '')
+    expect(searched.total).toBe(1)
+    expect(searched.entries[0].text).toBe('今天天气不错')
+  })
+
+  it('createMemoryEntry：缺 chatId / 空正文 / 敏感信息 / 画像无主体 各自抛错', () => {
+    const { editor } = makeEditor()
+    expect(() => createMemoryEntry(editor, '', 'x', 'note', '', [])).toThrow('缺少 chatId')
+    expect(() => createMemoryEntry(editor, 'private:10001', '  ', 'note', '', [])).toThrow('不能为空')
+    expect(() => createMemoryEntry(editor, 'private:10001', '电话 13800138000', 'note', '', [])).toThrow('手机号')
+    expect(() => createMemoryEntry(editor, 'private:10001', '话少', 'profile', '', [])).toThrow('必须指定主体')
+  })
+
+  it('createMemoryEntry：敏感内容写进标签同样被拒（不能绕过）', () => {
+    const { editor } = makeEditor()
+    expect(() => createMemoryEntry(editor, 'private:10001', '无敏感正文', 'note', '', ['13800138000']))
+      .toThrow('手机号')
+  })
+
+  it('createMemoryEntry：重复新建返回 refreshed 且总数不变', () => {
+    const { editor, dir } = makeEditor()
+    const first = createMemoryEntry(editor, 'private:10001', '要交周报', 'note', '', [])
+    expect(first).toMatchObject({ ok: true, total: 1 })
+    expect(first.refreshed).toBeUndefined()
+    const again = createMemoryEntry(editor, 'private:10001', '要交周报', 'note', '', [])
+    expect(again).toMatchObject({ ok: true, total: 1, refreshed: true })
+    expect(readAllMemories(dir, 'private:10001')).toHaveLength(1)
+  })
+
+  it('createMemoryEntry 遵守单会话上限（超了丢最旧）', () => {
+    const { editor, dir } = makeEditor({ memoryMaxEntriesPerChat: 2 })
+    createMemoryEntry(editor, 'private:10001', '第一条', 'note', '', [])
+    createMemoryEntry(editor, 'private:10001', '第二条', 'note', '', [])
+    createMemoryEntry(editor, 'private:10001', '第三条', 'note', '', [])
+    expect(readAllMemories(dir, 'private:10001').map((entry) => entry.text)).toEqual(['第二条', '第三条'])
+  })
+
+  it('updateMemoryEntry：缺 ts 抛错；改正文后旧向量失效', () => {
+    const { editor, dir } = makeEditor()
+    appendMemory(dir, 'private:10001', { ts: 100, text: '旧内容', emb: [1, 2], dim: 2 })
+    expect(() => updateMemoryEntry(editor, 'private:10001', 0, '新内容', [])).toThrow('缺少记忆标识')
+    const result = updateMemoryEntry(editor, 'private:10001', 100, '新内容', [])
+    expect(result).toMatchObject({ ok: true, total: 1 })
+    const [entry] = readAllMemories(dir, 'private:10001')
+    expect(entry.text).toBe('新内容')
+    expect(entry.emb).toBeUndefined()
+  })
+
+  it('updateMemoryEntry：敏感信息拒绝保存（与工具同一道闸）', () => {
+    const { editor, dir } = makeEditor()
+    appendMemory(dir, 'private:10001', { ts: 100, text: '旧内容' })
+    expect(() => updateMemoryEntry(editor, 'private:10001', 100, '身份证 110101199003071234', [])).toThrow('身份证号')
+    expect(readAllMemories(dir, 'private:10001')[0].text).toBe('旧内容')
+  })
+
+  it('deleteMemoryEntry：按 ts 删除并返回剩余总数', () => {
+    const { editor, dir } = makeEditor()
+    appendMemory(dir, 'private:10001', { ts: 100, text: 'A' })
+    appendMemory(dir, 'private:10001', { ts: 200, text: 'B' })
+    expect(deleteMemoryEntry(editor, 'private:10001', 100)).toMatchObject({ ok: true, total: 1 })
+    expect(readAllMemories(dir, 'private:10001').map((entry) => entry.text)).toEqual(['B'])
   })
 })

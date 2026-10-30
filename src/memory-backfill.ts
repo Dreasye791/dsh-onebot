@@ -32,6 +32,8 @@ export interface BackfillOptions {
   budget?: number
   /** 返回 true 时停止（通常是「有新回合开始了」）。 */
   isCancelled?: (() => boolean) | undefined
+  /** 编码失败回调（由调用方做节流上报，避免「静默降级」）。 */
+  onFailure?: ((error: unknown) => void) | undefined
 }
 
 /** 补齐结果。 */
@@ -60,6 +62,16 @@ export async function backfillChat(options: BackfillOptions): Promise<BackfillRe
 
   const targetDim = embedder.dim
   /**
+   * **http 模式不补画像**。
+   *
+   * 补齐是后台批量（一轮最多 32 条），而用户开启 http 端点时预期的是「我让它记的
+   * 那条会发出去」—— 把别人的画像和几十条历史闲聊一起批量 POST 过去，明显超出这个
+   * 预期。画像要等当事人下次被 remember 时再编码（那时是当轮内容，符合预期）。
+   *
+   * `local` 不出机器，补什么都行。
+   */
+  const allowProfiles = embedder.kind === 'local'
+  /**
    * 判断一条记忆是否「需要（重新）编码」。
    *
    * 不只是 `emb === undefined`：**维度变了**（换过模型）的条目也必须重编，否则它们
@@ -72,7 +84,13 @@ export async function backfillChat(options: BackfillOptions): Promise<BackfillRe
     if (targetDim > 0 && emb.length !== targetDim) return true
     return false
   }
-  const pendingEntries = readAllMemories(memoryDir, chatId).filter((entry) => needsEmbedding(entry.emb))
+  const shouldBackfill = (entry: { emb?: readonly number[]; kind?: string }): boolean => {
+    if (!needsEmbedding(entry.emb)) return false
+    // http 模式跳过 profile（见 allowProfiles 的注释）
+    if (!allowProfiles && entry.kind === 'profile') return false
+    return true
+  }
+  const pendingEntries = readAllMemories(memoryDir, chatId).filter((entry) => shouldBackfill(entry))
   const pending = pendingEntries.length
   if (pending === 0 || budget === 0) {
     return { embedded: 0, pending, remaining: pending, cancelled: false }
@@ -90,7 +108,7 @@ export async function backfillChat(options: BackfillOptions): Promise<BackfillRe
     const batch = pendingEntries.slice(start, start + Math.min(batchSize, room))
     if (batch.length === 0) break
     processed += batch.length
-    const vectors = await embedSafely(embedder, batch.map((entry) => entry.text))
+    const vectors = await embedSafely(embedder, batch.map((entry) => entry.text), options.onFailure)
     if (vectors === undefined || vectors.length !== batch.length) {
       // 整批失败：不逐条重试（那会把一次故障放大成 N 次请求），留给下一轮。
       continue
@@ -109,6 +127,6 @@ export async function backfillChat(options: BackfillOptions): Promise<BackfillRe
     await new Promise<void>((resolve) => { setTimeout(resolve, 0) })
   }
 
-  const remaining = readAllMemories(memoryDir, chatId).filter((entry) => needsEmbedding(entry.emb)).length
+  const remaining = readAllMemories(memoryDir, chatId).filter((entry) => shouldBackfill(entry)).length
   return { embedded, pending, remaining, cancelled }
 }

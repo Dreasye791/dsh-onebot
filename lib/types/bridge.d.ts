@@ -360,6 +360,13 @@ export declare class ChatBridge {
      * 两份会各自读一遍文件、各写一遍，后写的把前一份的结果覆盖掉（内容相同但白做功）。
      */
     private readonly memoryBackfillInFlight;
+    /**
+     * 语义编码失败的**节流时间戳**（每个 chat 一条）。
+     *
+     * 端点配错/挂掉时，`embedSafely` 在每次 recall、每批 backfill 都会失败 —— 不节流的话
+     * 一次对话能刷几十条 warn，反而把真正有用的日志淹掉。
+     */
+    private readonly embedFailureAt;
     /** Plugin version + git commit, read once for /ver. */
     private pluginVersion;
     private pluginCommit;
@@ -407,6 +414,16 @@ export declare class ChatBridge {
     memoryEmbedder(): Embedder | undefined;
     /** 混合召回的语义权重（0~1）；缺省 0.6，越界值按边界处理。 */
     memorySemanticWeight(): number;
+    /**
+     * 上报一次语义编码失败（此时已经降级为纯关键词）。
+     *
+     * 为什么需要：`embedSafely` 的降级是**静默**的 —— 端点配错、模型目录缺失、超时，
+     * 用户侧只看到「语义召回好像没用」，日志里一条线索都没有。这个方法是唯一的出口。
+     *
+     * 同一 chat 5 分钟只记一次：失败会在每次 recall、每批 backfill 重复发生，
+     * 不节流会把日志淹掉。
+     */
+    reportEmbedFailure(chatId: ChatId, error: unknown): void;
     /**
      * `turn/end` 之后在后台补齐这个会话缺失的记忆向量（第二批 2b′）。
      *

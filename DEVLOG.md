@@ -1316,3 +1316,57 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 
 **验证**：`tsc` exit 0；新增 `memory-tools.spec` **22 条**、`commands.spec` **+7**、
 `memory.spec` **+14**（敏感 7 / 原子性 3 / upsert 4）；**11 文件 299 用例全绿**（此前 256）。
+
+## 2026-10-30 记忆系统加固（第二批）：面板 / 发言者 / 编码器
+
+### 6. 面板五个记忆方法补实现级测试（`settings-remote.spec`）
+
+- 此前该文件里 `memory` 命中数为 **0**。面板是用户**唯一的手工入口**，而它的分页夹取、
+  服务端过滤、敏感拦截、上限裁剪任一处写错，表现都只是「数字不对」或「保存被拒」，
+  不会报错。
+- 覆盖 12 条：会话枚举（忽略非记忆文件）/ 缺 `chatId` 抛错 / `kind` 过滤与 total 同步 /
+  limit 与 offset 夹取 / query 排序 / create 的四类拒绝 / 标签过闸 / 重复新建 refreshed /
+  超上限裁剪 / update 缺 ts 与向量失效 / update 敏感拒绝 / delete 返回剩余总数。
+- **顺带修上一批的遗漏**：本文件 5 处 `ALL_KEYS` 长度断言（38→50）与 3 处
+  `SETTINGS_GROUPS.behavior` 键序断言（漏了记忆 4 键与语义 5 键）—— 上一批加键时只同步了
+  `client-settings.spec`，漏了服务端这份。
+
+### 7. 语义编码失败不再静默（`embedSafely` 加 `onFailure` + bridge 节流上报）
+
+- 原来 `embedSafely` 是裸 `catch { return undefined }`：端点配错、模型缺失、超时，
+  用户侧只看到「语义召回好像没用」，**日志里一条线索都没有**。
+- 现在 `embedSafely(embedder, texts, onFailure?)` 把错误递出去；`bridge.reportEmbedFailure`
+  按 chat **5 分钟节流**报一条 warn（含 chatId 与原因）。不节流会在每次 recall、每批
+  backfill 重复刷屏，反而淹掉真正有用的日志。
+- **HTTP 超时改为随批量放大**：`min(30s, 5s + 1s/条)`。固定 5s 对「一次补 8 条 + 冷启动的
+  本地 ONNX / 慢 CPU 上的 Ollama」不够，整批超时后又被静默降级 —— 正是上一条要解决的
+  那类「查不出原因」。
+
+### 8. `pendingTurnUsers` FIFO 补语义测试（`turn-speaker.spec`）
+
+- 这条队列存在的**唯一理由**是防串号（忙时 A 排队、B 又发 → 两轮都读到 B 的 QQ，
+  画像记到别人头上）。而此前 `bridge.spec` 的字段快照只检查了 `pendingTurnRoles`，
+  `activeTurnUser` 一条断言都没有 —— 退化成「只存最后一个」也全绿。
+- 覆盖 4 条：连续两条不同人 → 两轮**依次**冻结各自的发言人 / 角色与发言人成对出队
+  （admin 轮的 role 与 user 不串）/ 空队列 → `undefined` 且角色 fail-closed 为 member /
+  未知 session → `undefined`。
+- `turn/start` 是 private，但它是唯一会出队的入口，测试用反射驱动它，而不是复制出队逻辑。
+
+### 9. `LocalEmbedder` 失败改退避重试 + 「无向量不打折」加精确断言
+
+- 原来 `failed = true` **永不复位**：模型目录临时不可用（网络盘掉线、杀软锁、OOM）
+  就会让语义召回整进程失效，只有重启才恢复。现在记 `failedAt`，**5 分钟后允许重试**；
+  窗口内不重试，避免每条消息都重新 `import`。窗口可由构造参数覆盖（测试传 0）。
+- 「无向量 / 维度不符的条目只按关键词打分、**不打折**」原来只有排序断言 —— 把实现改成
+  `0.5 × keyword` 也全绿。现在直接比数值：分数必须**严格等于** `keywordScore`。
+
+### 10. 后台补齐在 http 模式不再外发画像
+
+- `Embedder` 加 `readonly kind: 'local' | 'http'`。补齐是**后台批量**（一轮最多 32 条），
+  而用户开启 http 端点时预期的是「我让它记的那条会发出去」—— 把别人的画像和几十条
+  历史闲聊一起批量 POST，明显超出预期。
+- 现在 http 模式只补 `note`，画像等当事人下次被 `remember` 时再编码（那时是当轮内容，
+  符合预期）；`local` 不出机器，照常全补。
+
+**验证**：`tsc` exit 0；**13 文件 358 用例全绿**（上一批 11 文件 299；本批新增
+`turn-speaker.spec`，并把此前从未纳入回归的 `settings-remote.spec` 一并跑通）。

@@ -39,6 +39,9 @@ async function makeHarness(options: HarnessOptions = {}) {
   const mediaDir = join(root, 'media')
   mkdirSync(mediaDir, { recursive: true })
 
+  /** 捕获 bridge 的日志，用于断言「编码失败会留下线索」。 */
+  const logs: string[] = []
+
   const bridge = new ChatBridge({
     ctx: new Context(),
     connection: { call: async () => ({ message_id: 1 }) } as never,
@@ -63,7 +66,7 @@ async function makeHarness(options: HarnessOptions = {}) {
       dmPolicy: 'open', groupPolicy: 'open', allowFrom: [], groupAllowFrom: [],
       adminUsers: ['10001'], allowAllUsers: false, requireMention: true,
     },
-    log: () => undefined,
+    log: (level: string, message: string) => { logs.push(level + ':' + message) },
   })
 
   /**
@@ -126,7 +129,7 @@ async function makeHarness(options: HarnessOptions = {}) {
     throw new Error('expected ' + name + ' to reject, but it resolved')
   }
 
-  return { bridge, call, rejectOf, tool, seed, memoryDir, mediaDir }
+  return { bridge, call, rejectOf, tool, seed, memoryDir, mediaDir, logs }
 }
 
 const DM_ADMIN = { chatId: 'private:10001', sessionId: 's-dm-admin', role: 'admin' as const, user: '10001' }
@@ -371,6 +374,30 @@ describe('记忆工具：未启用时完全不注册', () => {
     expect(names).not.toContain('qq_memory_remember')
     expect(names).not.toContain('qq_memory_recall')
     expect(names).not.toContain('qq_memory_forget')
+  })
+})
+
+describe('语义编码失败的上报（避免静默降级）', () => {
+  it('同一 chat 5 分钟内只记一次，不同 chat 各自计数', async () => {
+    const h = await makeHarness()
+    const warns = () => h.logs.filter((line) => line.startsWith('warn:记忆语义编码失败'))
+
+    h.bridge.reportEmbedFailure('private:10001', new Error('boom'))
+    h.bridge.reportEmbedFailure('private:10001', new Error('boom'))
+    // 端点挂掉时失败会在每次 recall / 每批 backfill 重复发生 —— 不节流会刷屏
+    expect(warns()).toHaveLength(1)
+
+    h.bridge.reportEmbedFailure('group:20001', new Error('boom'))
+    expect(warns()).toHaveLength(2)
+  })
+
+  it('日志里带 chatId 与错误原因（否则运维不知道是哪个会话、为什么）', async () => {
+    const h = await makeHarness()
+    h.bridge.reportEmbedFailure('private:10001', new Error('HTTP 500'))
+    const line = h.logs.find((item) => item.startsWith('warn:记忆语义编码失败'))
+    expect(line).toContain('private:10001')
+    expect(line).toContain('HTTP 500')
+    expect(line).toContain('已降级为纯关键词')
   })
 })
 

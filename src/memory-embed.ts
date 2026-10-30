@@ -15,6 +15,14 @@
 
 /** 一次编码请求的抽象：本地 ONNX 与远程 HTTP 共用同一签名。 */
 export interface Embedder {
+  /**
+   * 实现类型：`'local'`（进程内，**不出机器**）/ `'http'`（原文会 POST 到外部端点）。
+   *
+   * 调用方用它决定「哪些内容可以送去编码」：后台补齐在 http 模式下**跳过画像**，
+   * 因为用户开启 http 时预期的是「我让它记的那条会发出去」，而不是「把别人的画像
+   * 与几十条历史闲聊一起批量外发」。
+   */
+  readonly kind: 'local' | 'http'
   /** 可用性探针：模型缺失 / 服务未配置 → false，调用方应降级到纯关键词。 */
   isAvailable(): Promise<boolean>
   /** 向量维度；不可用（或尚未编码过）时为 0。 */
@@ -81,20 +89,35 @@ function toVectors(raw: unknown): number[][] {
   return list as number[][]
 }
 
-/** 本地（进程内）编码器。懒加载模型，加载失败后不再重试。 */
+/**
+ * 本地（进程内）编码器。懒加载模型。
+ *
+ * 加载失败后进入**退避窗口**（默认 5 分钟）再允许重试，而不是永久放弃：
+ * 模型目录可能只是因为网络盘掉线、杀软临时锁定、内存不足才加载失败 —— 让用户
+ * 为了这种临时故障重启整个进程，代价太大。窗口内不重试是为了避免每条消息都
+ * 重新 `import` 一遍（那是几十毫秒级的无谓开销）。
+ */
 export class LocalEmbedder implements Embedder {
   private readonly modelDir: string
   private readonly factory: PipelineFactory
+  private readonly retryAfterMs: number
   private pipeline: FeaturePipeline | undefined
   private loading: Promise<FeaturePipeline | undefined> | undefined
-  /** 已经尝试过且失败 —— 避免每次调用都重新 import 一遍。 */
-  private failed = false
+  /** 上次加载失败的时刻；`undefined` = 从未失败（或已恢复）。 */
+  private failedAt: number | undefined
   private dimension = 0
 
-  constructor(modelDir: string, factory: PipelineFactory = loadTransformersPipeline) {
+  constructor(
+    modelDir: string,
+    factory: PipelineFactory = loadTransformersPipeline,
+    retryAfterMs = 5 * 60_000,
+  ) {
     this.modelDir = modelDir
     this.factory = factory
+    this.retryAfterMs = retryAfterMs
   }
+
+  readonly kind = 'local' as const
 
   get dim(): number {
     return this.dimension
@@ -104,18 +127,22 @@ export class LocalEmbedder implements Embedder {
     return (await this.ensurePipeline()) !== undefined
   }
 
-  /** 懒加载：并发调用共享同一个 loading Promise，失败只记一次。 */
+  /** 懒加载：并发调用共享同一个 loading Promise；退避窗口内不重试。 */
   private ensurePipeline(): Promise<FeaturePipeline | undefined> {
     if (this.pipeline !== undefined) return Promise.resolve(this.pipeline)
     if (this.loading !== undefined) return this.loading
-    if (this.failed || this.modelDir === '') return Promise.resolve(undefined)
+    if (this.modelDir === '') return Promise.resolve(undefined)
+    if (this.failedAt !== undefined && Date.now() - this.failedAt < this.retryAfterMs) {
+      return Promise.resolve(undefined)
+    }
     this.loading = this.factory(this.modelDir)
       .then((pipe) => {
         this.pipeline = pipe
+        this.failedAt = undefined
         return pipe
       })
       .catch(() => {
-        this.failed = true
+        this.failedAt = Date.now()
         return undefined
       })
       .finally(() => {
@@ -179,6 +206,8 @@ export class HttpEmbedder implements Embedder {
     this.dimension = options.dim ?? 0
   }
 
+  readonly kind = 'http' as const
+
   get dim(): number {
     return this.dimension
   }
@@ -207,7 +236,13 @@ export class HttpEmbedder implements Embedder {
       : base + '/api/embed'
     const doFetch = this.options.fetchImpl ?? fetch
     const controller = new AbortController()
-    const timer = setTimeout(() => { controller.abort() }, this.options.timeoutMs ?? 5000)
+    // 超时随批量放大，而不是写死 5s。
+    //
+    // 一次补 8 条时，本地 ONNX 冷启动或慢 CPU 上的 Ollama 完全可能超过 5s —— 整批
+    // 超时后 `embedSafely` 会把它吞成「这轮不补了」，日志里什么都没有，表现成
+    // 「语义召回时灵时不灵」且查不出原因。上限 30s：再长就等于让 recall 卡住。
+    const timeoutMs = this.options.timeoutMs ?? Math.min(30_000, 5_000 + texts.length * 1_000)
+    const timer = setTimeout(() => { controller.abort() }, timeoutMs)
     let payload: unknown
     try {
       const response = await doFetch(endpoint, {
@@ -280,11 +315,16 @@ export function createEmbedder(
 export async function embedSafely(
   embedder: Embedder | undefined,
   texts: readonly string[],
+  onFailure?: ((error: unknown) => void) | undefined,
 ): Promise<number[][] | undefined> {
   if (embedder === undefined) return undefined
   try {
     return await embedder.embed(texts)
-  } catch {
+  } catch (error) {
+    // **必须上报**：静默吞掉会让「端点配错 / 模型缺失 / 超时」变成永久静默降级 ——
+    // 用户只看到「语义召回好像没用」，日志里一条线索都没有。节流由调用方负责
+    // （同一 chat 5 分钟一次），这里只负责把错误递出去。
+    onFailure?.(error)
     return undefined
   }
 }

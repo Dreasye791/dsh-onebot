@@ -20,9 +20,10 @@ interface FakeEmbedder extends Embedder {
   calls: string[][]
 }
 
-function fakeEmbedder(dim: number, behavior: { fail?: boolean } = {}): FakeEmbedder {
+function fakeEmbedder(dim: number, behavior: { fail?: boolean; kind?: 'local' | 'http' } = {}): FakeEmbedder {
   const calls: string[][] = []
   return {
+    kind: behavior.kind ?? 'local',
     dim,
     calls,
     async isAvailable(): Promise<boolean> {
@@ -133,6 +134,30 @@ describe('memory-backfill: 幂等与维度迁移', () => {
     const [entry] = readAllMemories(dir, 'private:10001')
     expect(entry.text).toBe('新文本')
     expect(entry.emb).toBeUndefined()
+  })
+})
+
+describe('memory-backfill: http 模式不外发画像', () => {
+  it('http 编码器跳过 profile，只补 note（画像等当事人下次被 remember 时再编）', async () => {
+    const dir = makeDir()
+    appendMemory(dir, 'group:1', { ts: 1, text: '群规' })
+    appendMemory(dir, 'group:1', { ts: 2, text: 'A 的画像', kind: 'profile', subject: '10001' })
+    const embedder = fakeEmbedder(2, { kind: 'http' })
+    const result = await backfillChat({ memoryDir: dir, chatId: 'group:1', embedder })
+    expect(result).toMatchObject({ embedded: 1, pending: 1, remaining: 0 })
+    const entries = readAllMemories(dir, 'group:1')
+    expect(entries.find((entry) => entry.kind === 'profile')?.emb).toBeUndefined()
+    // 只发出去了 note 那一条
+    expect(embedder.calls.flat()).toEqual(['群规'])
+  })
+
+  it('local 编码器照常补 profile（进程内，不出机器）', async () => {
+    const dir = makeDir()
+    appendMemory(dir, 'group:1', { ts: 1, text: '群规' })
+    appendMemory(dir, 'group:1', { ts: 2, text: 'A 的画像', kind: 'profile', subject: '10001' })
+    const embedder = fakeEmbedder(2, { kind: 'local' })
+    await expect(backfillChat({ memoryDir: dir, chatId: 'group:1', embedder }))
+      .resolves.toMatchObject({ embedded: 2, pending: 2, remaining: 0 })
   })
 })
 

@@ -14,6 +14,14 @@
  */
 /** 一次编码请求的抽象：本地 ONNX 与远程 HTTP 共用同一签名。 */
 export interface Embedder {
+    /**
+     * 实现类型：`'local'`（进程内，**不出机器**）/ `'http'`（原文会 POST 到外部端点）。
+     *
+     * 调用方用它决定「哪些内容可以送去编码」：后台补齐在 http 模式下**跳过画像**，
+     * 因为用户开启 http 时预期的是「我让它记的那条会发出去」，而不是「把别人的画像
+     * 与几十条历史闲聊一起批量外发」。
+     */
+    readonly kind: 'local' | 'http';
     /** 可用性探针：模型缺失 / 服务未配置 → false，调用方应降级到纯关键词。 */
     isAvailable(): Promise<boolean>;
     /** 向量维度；不可用（或尚未编码过）时为 0。 */
@@ -44,19 +52,28 @@ export type FeaturePipeline = (texts: string[], options: {
 }) => Promise<unknown>;
 /** 加载 pipeline 的工厂；默认动态 import 可选依赖，测试可注入假实现。 */
 export type PipelineFactory = (modelDir: string) => Promise<FeaturePipeline>;
-/** 本地（进程内）编码器。懒加载模型，加载失败后不再重试。 */
+/**
+ * 本地（进程内）编码器。懒加载模型。
+ *
+ * 加载失败后进入**退避窗口**（默认 5 分钟）再允许重试，而不是永久放弃：
+ * 模型目录可能只是因为网络盘掉线、杀软临时锁定、内存不足才加载失败 —— 让用户
+ * 为了这种临时故障重启整个进程，代价太大。窗口内不重试是为了避免每条消息都
+ * 重新 `import` 一遍（那是几十毫秒级的无谓开销）。
+ */
 export declare class LocalEmbedder implements Embedder {
     private readonly modelDir;
     private readonly factory;
+    private readonly retryAfterMs;
     private pipeline;
     private loading;
-    /** 已经尝试过且失败 —— 避免每次调用都重新 import 一遍。 */
-    private failed;
+    /** 上次加载失败的时刻；`undefined` = 从未失败（或已恢复）。 */
+    private failedAt;
     private dimension;
-    constructor(modelDir: string, factory?: PipelineFactory);
+    constructor(modelDir: string, factory?: PipelineFactory, retryAfterMs?: number);
+    readonly kind: "local";
     get dim(): number;
     isAvailable(): Promise<boolean>;
-    /** 懒加载：并发调用共享同一个 loading Promise，失败只记一次。 */
+    /** 懒加载：并发调用共享同一个 loading Promise；退避窗口内不重试。 */
     private ensurePipeline;
     embed(texts: readonly string[]): Promise<number[][]>;
 }
@@ -76,6 +93,7 @@ export declare class HttpEmbedder implements Embedder {
     private readonly options;
     private dimension;
     constructor(options: HttpEmbedderOptions);
+    readonly kind: "http";
     get dim(): number;
     /**
      * **不主动探活**：每次 recall 多一次网络往返不值得。
@@ -102,4 +120,4 @@ export declare function createEmbedder(config: EmbedderConfig, options?: Embedde
  * 所有调用点都应该走这里，而不是各自 `try/catch` —— 否则迟早有一处忘记捕获，
  * 让「记忆是增强功能」变成「记忆坏了整个回合失败」。
  */
-export declare function embedSafely(embedder: Embedder | undefined, texts: readonly string[]): Promise<number[][] | undefined>;
+export declare function embedSafely(embedder: Embedder | undefined, texts: readonly string[], onFailure?: ((error: unknown) => void) | undefined): Promise<number[][] | undefined>;

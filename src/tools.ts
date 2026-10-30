@@ -17,7 +17,8 @@ import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import type { ChatBridge } from './bridge.js'
 import type { OneBotConnection } from './connection.js'
 import { fileToBase64, isUrl } from './media.js'
-import { deleteMemoriesWhere, findSensitive, readAllMemories, readMemories, searchMemories, selectForRecall, speakerFromUserEvents, trimMemories, upsertMemory } from './memory.js'
+import { deleteMemoriesWhere, findSensitive, readAllMemories, readMemories, searchMemories, searchMemoriesHybrid, selectForRecall, speakerFromUserEvents, trimMemories, upsertMemory } from './memory.js'
+import { embedSafely } from './memory-embed.js'
 import { splitChatId } from './chat.js'
 import type { OneBotSegment } from './cq.js'
 import { parseMessage, cqUnescape } from './cq.js'
@@ -729,6 +730,14 @@ export function registerTools(
           }
         }
 
+        // 语义向量（可选）：编码失败**不影响写入** —— 这条记忆仍然能被关键词召回，
+        // 只是暂时不参与语义匹配。让「编码挂了」变成「记忆写不进去」是本末倒置。
+        const embedder = bridge.memoryEmbedder()
+        const [vector] = (await embedSafely(embedder, [clipped])) ?? []
+        const embedded = vector !== undefined && vector.length > 0
+          ? { emb: vector, dim: vector.length }
+          : {}
+
         // upsert：完全相同的条目只刷新「最近提及」，不重复堆行（与面板新建同一口径）。
         const write = upsertMemory(memoryDir, chatId, {
           ts: Date.now(),
@@ -737,10 +746,12 @@ export function registerTools(
           ...(kind === 'profile' && subject !== undefined ? { kind: 'profile' as const, subject } : {}),
           ...(speaker !== undefined ? { by: speaker } : {}),
           role,
+          ...embedded,
         })
         const dropped = trimMemories(memoryDir, chatId, cap)
         const stored = readMemories(memoryDir, chatId, cap).length
-        return { ok: true, stored, dropped, kind, refreshed: write.refreshed }
+        // embedded 回给模型看，避免它以为「说了已记住」但其实连向量都没算出来。
+        return { ok: true, stored, dropped, kind, refreshed: write.refreshed, embedded: vector !== undefined }
       },
     }))
 
@@ -793,7 +804,15 @@ export function registerTools(
         const chatId = resolveChat(bridge, exec, a.chat_id)
         // 先按范围过滤（过期条目 / 别人的画像），再打分 —— 否则 top-k 会被不可见的条目占满。
         const visible = selectForRecall(readAllMemories(memoryDir, chatId), { speaker: dmSubject(chatId) })
-        const hits = searchMemories(visible, query, topK)
+        // 混合召回：查询向量算不出来（未启用 / 服务挂了）就退回纯关键词 ——
+        // `searchMemoriesHybrid` 在没有 queryVector 时与 `searchMemories` 等价。
+        const embedder = bridge.memoryEmbedder()
+        const [queryVector] = (await embedSafely(embedder, [query])) ?? []
+        const hits = searchMemoriesHybrid(visible, query, {
+          queryVector,
+          weight: bridge.memorySemanticWeight(),
+          topK,
+        })
         return {
           total: visible.length,
           hits: hits.map((hit) => ({
@@ -877,6 +896,8 @@ export function registerTools(
           return false
         }
         const all = readAllMemories(memoryDir, chatId)
+        // 删除匹配**刻意只用关键词**，不接语义：语义相似会命中「看起来相关但其实是
+        // 另一件事」的条目，而删除不可撤销。宁可删不掉，也不能删错。
         const targetTs = stamp > 0
           ? new Set([stamp])
           : new Set(searchMemories(all, keyword, all.length).map((hit) => hit.entry.ts))

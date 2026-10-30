@@ -1187,3 +1187,36 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **统一降级点** `embedSafely(embedder, texts)`：没有 encoder 或抛错都返回 `undefined`。所有调用点都该走它，否则迟早有一处忘记 `try/catch`，把「增强功能」变成「整轮失败」。
 - **两道数据校验**：返回条数必须与输入一致、输出形状必须可识别（Tensor 的 `tolist()` 与裸 `number[][]` 都接受）。脏向量一旦写进记忆，后续召回会一直错且极难定位。
 - **验证**：`tsc` exit 0；新增 `memory-embed.spec` **19 条**（三种 mode 的选型与缺项、本地懒加载只加载一次、失败不重试、并发共享、条数与形状校验、OpenAI/Ollama 两种协议解析、非 2xx、空入参不发请求、`embedSafely` 三条）；连同既有 6 个文件 **7 文件 215 用例全绿**。
+
+## 2026-10-30 记忆语义召回接通（第二批 2b）：混合打分 + 编辑失效 + 一个严重装配 bug
+
+- **⚠️ 顺带修掉一个严重 bug**：`index.ts` 的 bridge config 里**整段漏传**了记忆字段。`bridge.ts` 按
+  `memoryEnabled === true` 决定是否 `registerTools` 注册 `qq_memory_*`，漏传即恒为 `undefined`
+  → **三个记忆工具从未注册过**。表现极具迷惑性：模型「口头答应记住」但设置页永远空白，
+  服务端日志**没有任何异常**（工具不存在不会报错，模型只是不用它）；而 `/memory` 命令与设置页
+  卡片走的是另一条路，所以看起来「记忆功能是好的」。已在 `memory.spec` 加静态守卫
+  （断言 `index.ts` 里四个字段都写成 `xxx: config.xxx`），并把 `memoryEmbedder` /
+  `memorySemanticWeight` 一起接上。
+- **数据层**：`MemoryEntry` 加 `emb` / `dim`；`parseLine` 只在「非空 + 全是有限数字」时才认向量
+  —— 半个向量参与余弦会算出无意义的分，比没有向量更糟，所以整条按未编码处理。
+- **混合打分**：抽出 `keywordScore`（让「纯关键词」与「混合」共用同一份口径，避免两套实现漂移），
+  新增 `cosineSimilarity`（负相关压到 0）与 `searchMemoriesHybrid`：
+  - 有向量且维度匹配 → `w × cos + (1−w) × keyword`
+  - 无向量 / 维度不符 → **只按关键词分，不打折**（打折会让历史条目被系统性压低，
+    用户只看到「排序莫名其妙」）
+  - 关键词 0 但语义高 → 仍入选（这正是语义召回的意义）
+- **写入编码**：`remember` 先 `embedSafely` 再写入，**编码失败不影响写入**（仍然可被关键词召回）；
+  返回值多一个 `embedded: boolean`，避免模型以为「说了已记住」但其实连向量都没算出来。
+- **编辑失效（关键）**：`updateMemory` 改正文时**删除**该条的 `emb` / `dim`。保留旧向量比删掉更糟
+  —— 向量不变而文本变，这条记忆会在**不相关**的查询里被召回（虚假相似），且一切看起来正常。
+  只改 `tags` 不失效（标签不进 embedding）。
+- **`forget` 刻意不接语义**：删除匹配仍用纯关键词。语义相似会命中「看起来相关但其实是另一件事」
+  的条目，而删除不可撤销 —— 宁可删不掉，不能删错。
+- **配置**：5 个键（mode/model/url/key/weight），键集 45 → 50。`memoryEmbeddingKey` **不进**
+  `SECRET_KEYS`，而是新增 `REDACTED_ONLY_KEYS`：客户端 secret 编辑态是单例（`secretDraft` 一个
+  state），两个 secret 字段会互相覆盖；所以它走普通输入框，但快照里同样脱敏为 `''`。
+- **local 模型目录**：相对名拼到 `<mediaDir>/models/` 下，绝对路径原样用；`http` 模式原样返回
+  （那是模型名，拼路径会变成一段无意义字符串）。
+- **验证**：`tsc` exit 0；`memory.spec` 新增 16 条（余弦边界、向量解析与坏向量丢弃、编辑失效
+  三种情形、混合召回 7 条含「无向量不打折」「维度不符跳过」「权重越界」、装配守卫 3 条）；
+  `client-settings` 同步 50 键 / 9 枚举 / 20 文本框 / 11 个数字范围；**9 文件 244 用例全绿**。

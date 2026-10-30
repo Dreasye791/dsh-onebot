@@ -172,6 +172,20 @@ export interface Config {
      * 只能写自己。群聊默认关只是产品取舍 —— 群里给某人建画像容易被当成议论别人。
      */
     memoryProfileScope: 'dm' | 'all' | 'off';
+    /**
+     * 记忆语义编码器来源：`'off'`（默认，纯关键词）/ `'local'`（进程内）/ `'http'`。
+     *
+     * 编码失败一律降级为纯关键词 —— 记忆是增强功能，不能因为「嵌入服务挂了」就写不进去。
+     */
+    memoryEmbeddingMode: 'off' | 'local' | 'http';
+    /** `local`：模型目录（绝对路径或相对名，相对名拼到 `<mediaDir>/models/` 下）；`http`：模型名。 */
+    memoryEmbeddingModel: string;
+    /** `http` 端点：以 `/v1` 结尾走 OpenAI 协议，否则按 Ollama。 */
+    memoryEmbeddingUrl: string;
+    /** `http` 模式的 Bearer token（仅 OpenAI 协议使用）。 */
+    memoryEmbeddingKey: string;
+    /** 混合召回的语义权重（0~1，默认 0.6）：0 = 纯关键词，1 = 纯语义。 */
+    memorySemanticWeight: number;
     interimMessages: boolean;
     /** Per-interim auto-recall delay (ms) from each interim's send completion. */
     interimRecallMs: number;

@@ -72,6 +72,16 @@ export declare const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>
 export declare const SCHEMA_DEFAULTS: Readonly<Record<string, unknown>>;
 /** 快照返回侧脱敏的键（T1 §3 敏感字段行；写入侧明文落盘属宿主既有行为）。 */
 export declare const SECRET_KEYS: readonly string[];
+/**
+ * 只做「快照脱敏」、不进 `SECRET_KEYS` 的键。
+ *
+ * 为什么单独一组：客户端的 secret 编辑态是**单例**（`secretDraft` / `clearSecret` 各
+ * 一个 state），整套「留空=不修改 / 勾选清除 / 已配置徽标」只为 accessToken 设计。
+ * 把 embedding key 也标成 `type: 'secret'` 会让两个字段共写同一份草稿 —— 填一个，
+ * 另一个被清空。所以它走普通输入框，但**快照里同样不回显**（安全不打折），
+ * 代价只是界面上看不到「是否已配置」的徽标。
+ */
+export declare const REDACTED_ONLY_KEYS: readonly string[];
 /** 全部 45 键（校验与快照的唯一键集；8 枚举 + 10 数字 + 14 布尔 + 8 字符串 + 5 字符串数组）。 */
 export declare const ALL_KEYS: readonly string[];
 /** OnebotSettingsSnapshot（T1 §3 快照结构）。 */

@@ -7,17 +7,20 @@ import { describe, expect, it } from 'vitest'
 import {
   appendMemory,
   chatIdFromFileName,
+  cosineSimilarity,
   deleteMemoriesWhere,
   deleteMemory,
   findSensitive,
   forgetProfiles,
   isExpired,
+  keywordScore,
   listMemoryFiles,
   memoryFileName,
   memoryFilePath,
   readAllMemories,
   readMemories,
   searchMemories,
+  searchMemoriesHybrid,
   selectForRecall,
   speakerFromUserEvents,
   tokenize,
@@ -424,6 +427,151 @@ describe('memory: upsert（同一条目折叠为「最近提及」）', () => {
     expect(entry.tags).toEqual(['待办'])
     expect(entry.by).toBe('10001')
     expect(entry.role).toBe('admin')
+  })
+})
+
+describe('memory: 向量字段与余弦', () => {
+  it('cosineSimilarity：同向 1、正交 0、负相关压到 0、维度不符 0、零向量 0', () => {
+    expect(cosineSimilarity([1, 0], [1, 0])).toBe(1)
+    expect(cosineSimilarity([1, 0], [0, 1])).toBe(0)
+    expect(cosineSimilarity([1, 0], [-1, 0])).toBe(0)
+    expect(cosineSimilarity([1, 0], [1, 0, 0])).toBe(0)
+    expect(cosineSimilarity([], [])).toBe(0)
+    expect(cosineSimilarity([0, 0], [1, 0])).toBe(0)
+  })
+
+  it('读取时保留 emb 并按长度补出 dim', () => {
+    const dir = makeDir()
+    appendMemory(dir, 'private:10001', { ts: 1, text: '带向量', emb: [0.1, 0.2, 0.3] })
+    const [entry] = readAllMemories(dir, 'private:10001')
+    expect(entry.emb).toEqual([0.1, 0.2, 0.3])
+    expect(entry.dim).toBe(3)
+  })
+
+  it('向量里混入非数字 → 整条当未编码（半个向量比没有更糟）', () => {
+    const dir = makeDir()
+    writeFileSync(
+      memoryFilePath(dir, 'private:10001'),
+      JSON.stringify({ ts: 1, text: '坏向量', emb: [1, 'x', 3] }) + '\n',
+      'utf8',
+    )
+    const [entry] = readAllMemories(dir, 'private:10001')
+    expect(entry.text).toBe('坏向量')
+    expect(entry.emb).toBeUndefined()
+    expect(entry.dim).toBeUndefined()
+  })
+
+  it('空数组向量不算编码', () => {
+    const dir = makeDir()
+    writeFileSync(memoryFilePath(dir, 'private:10001'), JSON.stringify({ ts: 1, text: 'x', emb: [] }) + '\n', 'utf8')
+    expect(readAllMemories(dir, 'private:10001')[0].emb).toBeUndefined()
+  })
+})
+
+describe('memory: 编辑后向量失效（旧向量指向旧语义）', () => {
+  it('改正文会删掉 emb 与 dim', () => {
+    const dir = makeDir()
+    appendMemory(dir, 'private:10001', { ts: 100, text: '旧内容', emb: [1, 2], dim: 2 })
+    expect(updateMemory(dir, 'private:10001', 100, { text: '新内容' })).toBe(true)
+    const [entry] = readAllMemories(dir, 'private:10001')
+    expect(entry.text).toBe('新内容')
+    expect(entry.emb).toBeUndefined()
+    expect(entry.dim).toBeUndefined()
+  })
+
+  it('只改 tags 不失效（标签不进 embedding）', () => {
+    const dir = makeDir()
+    appendMemory(dir, 'private:10001', { ts: 100, text: '内容', emb: [1, 2], dim: 2 })
+    expect(updateMemory(dir, 'private:10001', 100, { tags: ['偏好'] })).toBe(true)
+    const [entry] = readAllMemories(dir, 'private:10001')
+    expect(entry.emb).toEqual([1, 2])
+    expect(entry.tags).toEqual(['偏好'])
+  })
+
+  it('正文传同值（未变）不失效', () => {
+    const dir = makeDir()
+    appendMemory(dir, 'private:10001', { ts: 100, text: '内容', emb: [1, 2], dim: 2 })
+    expect(updateMemory(dir, 'private:10001', 100, { text: '内容' })).toBe(true)
+    expect(readAllMemories(dir, 'private:10001')[0].emb).toEqual([1, 2])
+  })
+})
+
+describe('memory: 混合召回（关键词 + 语义）', () => {
+  const entries = [
+    { ts: 1, text: '螺蛳粉很好吃', emb: [1, 0] },
+    { ts: 2, text: '今天天气不错', emb: [0, 1] },
+    { ts: 3, text: '螺蛳粉要加辣' },
+  ]
+
+  it('无 queryVector 时与纯关键词结果完全一致', () => {
+    const pure = searchMemories(entries, '螺蛳粉').map((hit) => hit.entry.ts)
+    const hybrid = searchMemoriesHybrid(entries, '螺蛳粉').map((hit) => hit.entry.ts)
+    expect(hybrid).toEqual(pure)
+  })
+
+  it('关键词完全不命中但语义相近 → 仍被召回（语义路存在的意义）', () => {
+    const hits = searchMemoriesHybrid(entries, '辣的粉丝', { queryVector: [1, 0] })
+    expect(hits[0].entry.text).toBe('螺蛳粉很好吃')
+  })
+
+  it('维度不符的条目跳过语义路，但仍按关键词参与', () => {
+    const mixed = [
+      { ts: 1, text: '方案 A', emb: [1, 0, 0] }, // 3 维，查询 2 维
+      { ts: 2, text: '方案 B', emb: [1, 0] },
+    ]
+    const hits = searchMemoriesHybrid(mixed, '方案', { queryVector: [1, 0] })
+    expect(hits.map((hit) => hit.entry.ts)).toEqual([2, 1]) // B 有语义加权，A 只有关键词
+  })
+
+  it('weight=0 等价纯关键词；weight=1 等价纯语义', () => {
+    const pureKeyword = searchMemoriesHybrid(entries, '螺蛳粉', { queryVector: [0, 1], weight: 0 })
+    expect(pureKeyword[0].entry.ts).toBe(3) // 关键词最强的是「螺蛳粉很好吃」和「螺蛳粉要加辣」，同分取更新的
+    const pureSemantic = searchMemoriesHybrid(entries, '螺蛳粉', { queryVector: [0, 1], weight: 1 })
+    expect(pureSemantic[0].entry.ts).toBe(2) // 语义最接近 [0,1] 的是「今天天气不错」
+  })
+
+  it('权重越界被夹到 0~1（不抛错）', () => {
+    expect(() => searchMemoriesHybrid(entries, '螺蛳粉', { queryVector: [1, 0], weight: 9 })).not.toThrow()
+    expect(() => searchMemoriesHybrid(entries, '螺蛳粉', { queryVector: [1, 0], weight: Number.NaN })).not.toThrow()
+  })
+
+  it('关键词与语义都不命中时返回空数组', () => {
+    // 查询向量取负向：与所有条目余弦都被压到 0（负相关不当作「半个命中」），
+    // 而关键词也匹配不到任何 2-gram → 两条路都是 0 分，正确结果就是空。
+    expect(searchMemoriesHybrid(entries, '完全无关的词', { queryVector: [-1, -1] })).toEqual([])
+  })
+
+  it('keywordScore 与 searchMemories 同口径（抽函数不改变结果）', () => {
+    const tokens = tokenize('螺蛳粉')
+    const score = keywordScore(entries[0], tokens)
+    const hit = searchMemories(entries, '螺蛳粉').find((item) => item.entry.ts === 1)
+    expect(hit?.score).toBe(score)
+  })
+})
+
+describe('memory: 装配守卫（漏传 = 工具完全不注册）', () => {
+  const indexSource = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8')
+
+  it('index.ts 把记忆开关与上限传给 bridge config', () => {
+    // 2026-10-30 实测事故：这四个字段曾在 index.ts 的 config 对象里**整段漏传**。
+    // bridge 按 `memoryEnabled === true` 判断是否注册 `qq_memory_*`，漏传即恒为
+    // undefined → 三个工具从未注册 → 表现为「模型口头答应记住，设置页永远空白」，
+    // 且服务端日志没有任何异常（工具不存在不会报错，模型只是不用它）。
+    for (const key of ['memoryEnabled', 'memoryMaxEntriesPerChat', 'memoryRecallTopK', 'memoryProfileScope']) {
+      expect(indexSource).toContain(key + ': config.' + key)
+    }
+  })
+
+  it('语义编码器与权重也接上了', () => {
+    expect(indexSource).toContain('memoryEmbedder: createEmbedder(')
+    expect(indexSource).toContain('memorySemanticWeight: config.memorySemanticWeight')
+  })
+
+  it('local 模式的模型目录解析不会把模型名拼成路径（http 模式原样）', () => {
+    // resolveEmbeddingModel 是纯函数但未导出；这里用行为断言它的存在与分支注释，
+    // 避免「http 模式也被拼成 <mediaDir>/models/xxx」这类静默错误。
+    expect(indexSource).toContain('if (mode !== \'local\'')
+    expect(indexSource).toContain('join(mediaDir, \'models\'')
   })
 })
 

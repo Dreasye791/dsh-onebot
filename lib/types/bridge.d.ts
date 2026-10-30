@@ -15,6 +15,7 @@ import type { MediaStore } from './media.js';
 import type { Transcriber } from './stt.js';
 import type { ChatId } from './chat.js';
 import type { AccessPolicyConfig } from './chat.js';
+import type { Embedder } from './memory-embed.js';
 import type { OutboundSegment, SendOptions } from './outbound.js';
 import type { TraceSink } from './trace.js';
 import type { InjectChannel } from './inject.js';
@@ -125,6 +126,15 @@ export interface BridgeConfig {
     memoryRecallTopK?: number;
     /** 成员画像能在哪写：`'dm'`（默认，仅私聊）/ `'all'`（群聊也允许）/ `'off'`。主体由本轮发言者决定。 */
     memoryProfileScope?: 'dm' | 'all' | 'off';
+    /**
+     * 记忆语义编码器（第二批）：缺省 = 只走关键词，与第一批完全一致。
+     *
+     * 由 `index.ts` 按 `memoryEmbeddingMode` 构造后注入；这里持有一个已经建好的实例，
+     * 而不是配置串 —— 编码器内部要缓存模型/连接，每次调用重建会付双倍代价。
+     */
+    memoryEmbedder?: Embedder;
+    /** 混合召回的语义权重（0~1，缺省 0.6）。0 = 纯关键词，1 = 纯语义。 */
+    memorySemanticWeight?: number;
     /** T2 (P1): how a new ordinary message is handled while the chat's task
      * (agent turn) is running; absent → 'queue' (the default). 'queue' = the
      * message keeps the 0.8.1 dispatch path (agent.followup queues it as the
@@ -382,6 +392,14 @@ export declare class ChatBridge {
      * 别的判断（读会话事件）或要求显式 `subject`。
      */
     speakerFor(sessionId: string | undefined): string | undefined;
+    /**
+     * 记忆语义编码器（未启用时 `undefined`，调用方应退回纯关键词）。
+     *
+     * 返回的是**已构造好的实例**（内部缓存模型/连接），不要每次调用重建。
+     */
+    memoryEmbedder(): Embedder | undefined;
+    /** 混合召回的语义权重（0~1）；缺省 0.6，越界值按边界处理。 */
+    memorySemanticWeight(): number;
     /**
      * Outbound media fence roots for one agent session's current turn (M1-A3b):
      * the plugin media dir always, plus the chat's workspace directory when the

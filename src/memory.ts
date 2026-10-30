@@ -48,6 +48,18 @@ export interface MemoryEntry {
    * 很久没被提起 —— `ts` 只说明首次写入，不能回答这个问题。
    */
   lastSeenAt?: number
+  /**
+   * 语义向量（缺省 = 未编码：历史条目、编码失败、语义召回关闭）。
+   *
+   * 明文数组而非 base64：可读、可手改、坏行仍能被 `parseLine` 跳过。512 维约 5 KB/条，
+   * 200 条上限 ≈ 1 MB/会话 —— 这个代价是「召回能换个说法」换来的，可以接受。
+   */
+  emb?: number[]
+  /**
+   * 向量维度（= `emb.length`，单独存一份便于排查「换模型导致的不兼容」）。
+   * 与当前编码器维度不符时该条跳过语义路，仍走关键词。
+   */
+  dim?: number
 }
 
 /** 召回结果。 */
@@ -232,6 +244,14 @@ function parseLine(line: string): MemoryEntry | null {
     const lastSeenAt = typeof parsed.lastSeenAt === 'number' && Number.isFinite(parsed.lastSeenAt) && parsed.lastSeenAt > 0
       ? parsed.lastSeenAt
       : undefined
+    // 向量只在「全是有限数字且非空」时才认；任何一项坏了就整条丢弃 —— 半个向量
+    // 参与余弦会算出无意义的分，比没有向量更糟（正确做法是当作未编码，走关键词）。
+    const emb = Array.isArray(parsed.emb)
+      && parsed.emb.length > 0
+      && parsed.emb.every((value) => typeof value === 'number' && Number.isFinite(value))
+      ? parsed.emb as number[]
+      : undefined
+    const dim = emb !== undefined ? emb.length : undefined
     return {
       ts: typeof parsed.ts === 'number' && Number.isFinite(parsed.ts) ? parsed.ts : 0,
       text: parsed.text,
@@ -241,6 +261,8 @@ function parseLine(line: string): MemoryEntry | null {
       ...(role !== undefined ? { role } : {}),
       ...(subject !== undefined ? { subject } : {}),
       ...(lastSeenAt !== undefined ? { lastSeenAt } : {}),
+      ...(emb !== undefined ? { emb } : {}),
+      ...(dim !== undefined ? { dim } : {}),
     }
   } catch {
     return null
@@ -401,10 +423,22 @@ export function updateMemory(memoryDir: string, chatId: string, ts: number, patc
   const index = entries.findIndex((entry) => entry.ts === ts)
   if (index < 0) return false
   const next: MemoryEntry = { ...entries[index] }
+  const textChanged = patch.text !== undefined && patch.text !== entries[index].text
   if (patch.text !== undefined) next.text = patch.text
   if (patch.tags !== undefined) {
     if (patch.tags.length === 0) delete next.tags
     else next.tags = patch.tags
+  }
+  // 正文改了 → 旧向量指向的是**旧语义**，必须失效。
+  //
+  // 保留它比删掉更糟：向量不变而文本变，这条记忆会在**不相关**的查询里被召回
+  // （虚假相似），而且看起来「一切正常」，极难发现。`dim` 也一并清掉，让后台补齐
+  // 任务按 `emb === undefined` 统一处理「新增未编码」与「编辑后失效」两种来源。
+  //
+  // 只改 tags 不失效：标签只参与关键词打分，不进 embedding。
+  if (textChanged) {
+    delete next.emb
+    delete next.dim
   }
   entries[index] = next
   rewriteMemories(memoryDir, chatId, entries)
@@ -481,30 +515,113 @@ export function speakerFromUserEvents(events: readonly unknown[]): string | unde
 }
 
 /**
+ * 一条记忆的关键词相关度（0~1）：命中词数 / 查询词数，长词加权，长度做轻微惩罚。
+ *
+ * 抽成独立函数是为了让「纯关键词」与「混合召回」用**同一份口径** —— 两套实现
+ * 会慢慢漂移，表现为同一条记忆在 recall 与面板搜索里的命中顺序不一样。
+ *
+ * @param entry - 记忆条目（正文 + 标签一起参与匹配）。
+ * @param queryTokens - 已切好的查询词（调用方负责，避免每条重复分词）。
+ */
+export function keywordScore(entry: MemoryEntry, queryTokens: readonly string[]): number {
+  if (queryTokens.length === 0) return 0
+  const haystack = entry.text + (entry.tags !== undefined ? ' ' + entry.tags.join(' ') : '')
+  const entryTokens = new Set(tokenize(haystack))
+  let weight = 0
+  let matched = 0
+  for (const token of queryTokens) {
+    if (!entryTokens.has(token)) continue
+    matched += 1
+    // 长词更能代表意图（「螺蛳粉」比「粉」更有区分度）
+    weight += Math.min(token.length, 4)
+  }
+  if (matched === 0) return 0
+  const coverage = matched / queryTokens.length
+  const lengthPenalty = 1 / (1 + Math.log10(1 + entry.text.length / 100))
+  return Number((coverage * lengthPenalty + weight * 0.001).toFixed(4))
+}
+
+/**
  * 关键词召回：命中词数 / 查询词数，长词加权，长度做轻微惩罚。
  *
- * 这是「字面召回」——「辣的粉」搜不到「螺蛳粉」。第二批接 embedding 后可把
- * 这里换成余弦相似度，函数签名不变。
+ * 这是「字面召回」——「辣的粉」搜不到「螺蛳粉」。语义召回见 `searchMemoriesHybrid`。
  */
 export function searchMemories(entries: readonly MemoryEntry[], query: string, topK = 5): MemoryHit[] {
   const queryTokens = tokenize(query)
   if (queryTokens.length === 0 || topK <= 0) return []
   const hits: MemoryHit[] = []
   for (const entry of entries) {
-    const haystack = entry.text + (entry.tags !== undefined ? ' ' + entry.tags.join(' ') : '')
-    const entryTokens = new Set(tokenize(haystack))
-    let weight = 0
-    let matched = 0
-    for (const token of queryTokens) {
-      if (!entryTokens.has(token)) continue
-      matched += 1
-      // 长词更能代表意图（「螺蛳粉」比「粉」更有区分度）
-      weight += Math.min(token.length, 4)
+    const score = keywordScore(entry, queryTokens)
+    if (score <= 0) continue
+    hits.push({ entry, score })
+  }
+  hits.sort((a, b) => (b.score - a.score) || (b.entry.ts - a.entry.ts))
+  return hits.slice(0, topK)
+}
+
+/**
+ * 余弦相似度（0~1，负相关压到 0）。
+ *
+ * 维度不一致直接返回 0 —— 它只是一个打分分量，不该抛错；真正的「维度不兼容」
+ * 由调用方按 `emb.length` 过滤（见 `searchMemoriesHybrid`）。
+ */
+export function cosineSimilarity(left: readonly number[], right: readonly number[]): number {
+  if (left.length === 0 || left.length !== right.length) return 0
+  let dot = 0
+  let normLeft = 0
+  let normRight = 0
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index]
+    const b = right[index]
+    dot += a * b
+    normLeft += a * a
+    normRight += b * b
+  }
+  if (normLeft === 0 || normRight === 0) return 0
+  const cosine = dot / Math.sqrt(normLeft * normRight)
+  // 负相关当成 0：语义相反不该得到「半个命中」，否则它会挤掉真正无关但中性的条目。
+  return cosine > 0 ? Number(cosine.toFixed(4)) : 0
+}
+
+/** 混合召回选项。 */
+export interface HybridSearchOptions {
+  /** 查询向量；缺省 = 只走关键词（与第一批行为完全一致）。 */
+  queryVector?: readonly number[] | undefined
+  /** 语义权重 0~1，缺省 0.6（0 = 纯关键词，1 = 纯语义）。 */
+  weight?: number | undefined
+  topK?: number | undefined
+}
+
+/**
+ * 混合召回：关键词分与语义分加权。
+ *
+ * 三条口径：
+ * 1. **有向量且维度匹配** → `w × cos + (1−w) × keyword`；
+ * 2. **无向量 / 维度不符**（历史条目、编码失败、换过模型）→ **只按关键词分**，
+ *    不打折。打折会让历史条目被系统性压低，而用户看到的只是「排序莫名其妙」；
+ * 3. 关键词为 0 但语义很高 → 仍然入选，这正是语义召回存在的意义。
+ */
+export function searchMemoriesHybrid(
+  entries: readonly MemoryEntry[],
+  query: string,
+  options: HybridSearchOptions = {},
+): MemoryHit[] {
+  const topK = options.topK ?? 5
+  if (topK <= 0) return []
+  const queryTokens = tokenize(query)
+  const queryVector = options.queryVector
+  const semantic = queryVector !== undefined && queryVector.length > 0
+  if (queryTokens.length === 0 && !semantic) return []
+  const weight = Number.isFinite(options.weight) ? Math.max(0, Math.min(1, options.weight as number)) : 0.6
+  const hits: MemoryHit[] = []
+  for (const entry of entries) {
+    const keyword = keywordScore(entry, queryTokens)
+    let score = keyword
+    if (semantic && entry.emb !== undefined && entry.emb.length === queryVector.length) {
+      score = weight * cosineSimilarity(queryVector, entry.emb) + (1 - weight) * keyword
     }
-    if (matched === 0) continue
-    const coverage = matched / queryTokens.length
-    const lengthPenalty = 1 / (1 + Math.log10(1 + entry.text.length / 100))
-    hits.push({ entry, score: Number((coverage * lengthPenalty + weight * 0.001).toFixed(4)) })
+    if (score <= 0) continue
+    hits.push({ entry, score: Number(score.toFixed(4)) })
   }
   hits.sort((a, b) => (b.score - a.score) || (b.entry.ts - a.entry.ts))
   return hits.slice(0, topK)

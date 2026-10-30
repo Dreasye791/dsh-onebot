@@ -212,7 +212,7 @@ describe('T4 客户端 bundle — 四组 41 键（分组/键集/默认值 = T1 �
     expect(client.GROUP_KEYS).toEqual(SETTINGS_GROUPS)
     expect(groups.map((group) => group.id)).toEqual(['connection', 'permissions', 'behavior', 'diagnostics'])
     expect(allFields.map((field) => field.key).sort()).toEqual([...ALL_KEYS].sort())
-    expect(allFields).toHaveLength(45) // 上游 0.9.4 基线 29 键；T10/T11/T18/T20 扩到 38，NapCat 看护三项后 41，频道记忆四项后 45
+    expect(allFields).toHaveLength(50) // 上游 0.9.4 基线 29 键；T10/T11/T18/T20 扩到 38，NapCat 看护三项后 41，频道记忆四项后 45，语义召回五项后 50
   })
 
   it('默认值逐字对齐 host SCHEMA_DEFAULTS（重置按钮唯一来源）', () => {
@@ -279,7 +279,7 @@ describe('T4 客户端 bundle — 渲染函数模块级可测（renderGroup 纯�
     const titles = sections.map((section) => ((section.children[0] as StubElement).children[0] as string))
     expect(titles).toEqual(['连接', '权限', '行为', '诊断'])
     const fieldRows = sections.flatMap((section) => walk(section).filter((element) => element.type === 'div' && element.props.className === 'obx-field'))
-    expect(fieldRows).toHaveLength(45)
+    expect(fieldRows).toHaveLength(50)
   })
 
   it('persona 渲染为多行 textarea（rows 取字段声明，不能退化为单行 input）', () => {
@@ -294,15 +294,15 @@ describe('T4 客户端 bundle — 渲染函数模块级可测（renderGroup 纯�
     expect(String(personaArea!.props.placeholder)).toContain('\n') // 占位示例保留换行
   })
 
-  it('控件类型齐备：4 枚举下拉 + 3 多行文本 + 11 布尔勾选 + 5 文本框 + 1 密码框（secret 另含清除勾选）', () => {
+  it('控件类型齐备：9 枚举下拉 + 6 多行文本 + 15 布尔勾选 + 20 文本框 + 1 密码框（secret 另含清除勾选）', () => {
     const elements = renderAll(draft({ config: SCHEMA_DEFAULTS })).flatMap((section) => walk(section))
     const inputs = elements.filter((element) => element.type === 'input') as Array<StubElement & { props: Record<string, unknown> }>
     const selects = elements.filter((element) => element.type === 'select')
     const textareas = elements.filter((element) => element.type === 'textarea')
-    expect(selects).toHaveLength(8) // 6 上游枚举 + T10 reasoningEffort（按模型档位动态收窄）+ memoryProfileScope
+    expect(selects).toHaveLength(9) // 6 上游枚举 + T10 reasoningEffort（按模型档位动态收窄）+ memoryProfileScope + memoryEmbeddingMode
     expect(textareas).toHaveLength(6) // 4 个 stringArray + T11 persona + napcatLauncherArgs（多行可编辑）
     expect(inputs.filter((input) => input.props.type === 'checkbox')).toHaveLength(14 + 1) // 14 布尔（5 原有 + 6 W6 + T15 attachInboundImages + autoStartNapcat + memoryEnabled）+ secret 清除勾选
-    expect(inputs.filter((input) => input.props.type === 'text')).toHaveLength(16) // 44 键除去 7 枚举 / 14 布尔 / 6 多行 / 1 密码后的其余键（字符串 + 数字，以文本框渲染）
+    expect(inputs.filter((input) => input.props.type === 'text')).toHaveLength(20) // 50 键除去 9 枚举 / 15 布尔 / 6 多行 / 1 密码后的其余键（字符串 + 数字，以文本框渲染）
     expect(inputs.filter((input) => input.props.type === 'password')).toHaveLength(1)
   })
 
@@ -833,9 +833,11 @@ describe('T6 批 3 — 数字行内校验（UX §5.6：blur 触发、非法标�
       attachmentSaveTimeoutMs: [0, 600_000], // 0=不超时，上限 10 分钟
       memoryMaxEntriesPerChat: [1, 5000], // 频道记忆：条数上限
       memoryRecallTopK: [1, 20], // 频道记忆：召回条数
+      memorySemanticWeight: [0, 1], // 频道记忆（第二批）：混合召回的语义权重
     })
     expect(Object.keys(NUMBER_RANGE).sort()).toEqual(allFields.filter((field) => field.type === 'number').map((field) => field.key).sort())
-    expect(CLIENT_SOURCE).toContain('src/settings-remote.ts L129-134') // 来源行号注明
+    // 断言「同口径」而不是行号：行号会随 host 增删而漂移，写死它只会制造无意义的红。
+    expect(CLIENT_SOURCE).toContain('逐字抄自 host NUMBER_RANGE')
   })
 
   it('numberRangeInvalid 与 host validatePatch 同语义：越界/NaN 判非法返回范围文案，边界含端点；非 number 不校验', () => {

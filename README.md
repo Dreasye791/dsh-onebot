@@ -207,6 +207,7 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `interimRecall` | `true` | 中间消息撤回与回合末小结卡开关；`false` = 只发不撤（降级：无小结卡、不撤回，中间消息留在屏幕上） |
 | `sendErrorNotice` | `true` | 一轮运行出错时向用户发送 ⚠️ 错误提示 |
 | `sensitivePatterns` | `[]` | 出站敏感内容审计正则（内置 `rm -rf`/关机/删库/密钥 等模式；留空用内置默认） |
+| `redactLocalPaths` | `true` | 出站正文里的本机绝对路径（盘符 / UNC / `\\?\` 长路径）替换为 `<本机路径>`：模型用绝对路径读文件后常把它复述进回复，群里会泄露目录结构；`false` = 原样发送。命中会打 warn 日志并进 trace |
 | `sttEnabled` | `true` | 语音转写（需 ffmpeg + whisper CLI） |
 | `sttEngine` | `auto` | STT 引擎：`auto`(自动探测 whisper-cli/whisper/mlx_whisper)/`openai`/`whisper-cpp`/`custom` |
 | `sttModel` | `small` | whisper 模型 |

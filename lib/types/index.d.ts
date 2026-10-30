@@ -182,6 +182,8 @@ export interface Config {
     rateLimitPerMinute: number;
     restrictedMemberPrefix: boolean;
     sensitivePatterns: string[];
+    /** 出站回复中的本机绝对路径（盘符 / UNC）替换为 <本机路径>。 */
+    redactLocalPaths: boolean;
     mediaDir: string;
     tempTtlHours: number;
     outboundImageMaxBytes: number;

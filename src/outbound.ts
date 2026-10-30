@@ -16,6 +16,7 @@ import type { BridgeConfig } from './bridge.js'
 import type { ChatId } from './chat.js'
 import { splitChatId } from './chat.js'
 import { OneBotActionError, OneBotNotConnectedError } from './connection.js'
+import { redactLocalPaths } from './redact.js'
 import { extractForwardBlocks, scanSensitive, stripMarkdown } from './split.js'
 import { renderTextImage } from './t2i/index.js'
 import { describeError } from './errors.js'
@@ -73,7 +74,7 @@ export interface OutboundContext {
   /** The only config fields the outbound pipeline reads. The W2-③ write-gate
    * fields ride as optional intersection members so the bridge's BridgeConfig
    * type stays untouched (absent → the defaults below). */
-  config: Pick<BridgeConfig, 'botQQ' | 'sensitivePatterns' | 'textImageThreshold' | 'maxImageBytes' | 'cardFooter' | 'fontFiles' | 'fontFamilies'> & Partial<{
+  config: Pick<BridgeConfig, 'botQQ' | 'sensitivePatterns' | 'redactLocalPaths' | 'textImageThreshold' | 'maxImageBytes' | 'cardFooter' | 'fontFiles' | 'fontFamilies'> & Partial<{
     /** Audit file directory (W2-③: mediaDir/qq-actions.log); absent → no audit. */
     mediaDir: string
     /** W2-③ bridge-wide proactive-write cap per sliding minute; 0 disables. */
@@ -144,8 +145,18 @@ export class OutboundPipeline {
         this.ctx.log('warn', 'sensitive outbound audit for ' + chatId + ': ' + hits.join(', '))
         this.ctx.trace?.(chatId, { stage: 'outbound', ok: true, reason: TRACE_REASONS.outboundSensitive, data: { hits: hits.slice(0, 5) } })
       }
+      // 模型读文件（read_image 等）必须拿到绝对路径，但它常把路径顺手复述进回复，
+      // 群里就泄露了目录结构。工具返回值不能动（模型还要用），所以在发送前统一脱敏。
+      // 放在 extractForwardBlocks 之前：t2i 卡片、纯文本、转发块共用这一份正文。
+      const redacted = this.ctx.config.redactLocalPaths === false
+        ? { text, count: 0 }
+        : redactLocalPaths(text)
+      if (redacted.count > 0) {
+        this.ctx.log('warn', `出站文本已脱敏 ${redacted.count} 处本机路径: ` + chatId)
+        this.ctx.trace?.(chatId, { stage: 'outbound', ok: true, reason: '本机路径已脱敏', data: { count: redacted.count } })
+      }
       const ids: string[] = []
-      const { body, nodes } = extractForwardBlocks(text, '助手')
+      const { body, nodes } = extractForwardBlocks(redacted.text, '助手')
       if (nodes.length > 0) {
         // Passive reply path: [[qq_forward]] blocks inside a turn reply are
         // NOT gated as proactive writes (see the W2-③ 口径 note).

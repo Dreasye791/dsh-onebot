@@ -564,6 +564,16 @@ NapCat (QQ) ←— 反向 WS —→ dsh-onebot 插件 ←— dsh Agent（每个�
 - **验证**：新增回归 tests/t2i-render.spec.ts「renders the top-bar title emoji in color (no white tofu)」：渲染 `title: '📋 本轮中间记录'` 后对顶部栏做像素判定——统计非白、非顶部栏蓝 #2196f3、非白蓝抗锯齿（蓝通道 ≥240）的墨水像素，无 emoji 对照渲染证明方法本身零假阳性；实测（本机 Noto Color Emoji）：修复前豆腐块 0 px、修后彩色 emoji 1409 px、对照 0 px，阈值取 >1000 / <200；修复前红、修复后绿。vitest 全量 343/343（改动前工作树基线 342 全绿 + 新增 1）、tsc 0 错、./scripts/build.sh 重建 lib 入库
 
 ---
+### 2026-10-30（出站路径脱敏 S-09）
+
+| 时间 | 工作 |
+|---|---|
+| 上午 | **出站路径脱敏**：QQ 群里机器人把 `video_material` 返回的素材目录复述进了回复，泄露本机目录结构。根因是模型用绝对路径读文件（`read_image` 等）后顺手照抄，而原有 `scanSensitive` 只做软审计（返回命中的模式名，不改写正文）。新增 `src/redact.ts` 的 `redactLocalPaths()`：盘符 / 正斜杠 / UNC / `\\?\` 长路径 → `<本机路径>`；盘符规则加 `(?<![A-Za-z0-9])` 前置断言，避免把 `https://` 里的 `s:/` 当成盘符 |
+| 上午 | 接入点在 `OutboundPipeline.sendToChat` 的 `extractForwardBlocks` **之前**：t2i 卡片、纯文本、转发块共用同一份脱敏后的正文；命中时打 warn 日志并写 trace（`本机路径已脱敏` + count）。新增配置 `redactLocalPaths`（默认 true，`false` 原样发送） |
+| 上午 | **为什么放在发送前而不是工具返回时**：模型必须拿到绝对路径才能读关键帧，改工具返回值会让它读不到文件；只有「发出去的文字」是该收口的地方 |
+| 上午 | 验证：`npx tsc --noEmit` exit 0；新增 `tests/redact.spec.ts` 7 用例（三类路径形态 / 多处 / 不误伤 URL 与相对路径 / 空文本 / 接入点断言 / 关闭开关）；受影响四文件（outbound / interim / bridge / redact）**49 用例全绿**；`npx tsc -p tsconfig.json` 重新生成 `lib/`（`lib/redact.js` 新增，`lib/outbound.js` 含脱敏调用）。备注：本机直接跑 `tsc -p tsconfig.json`，等价于 `build.sh` 的编译步骤（`link-host.sh` 的符号链接此前已就位） |
+| 上午 | 配套（另一仓库）：B 站视频插件的 `video_material` 描述与 skill 正文各加一条「返回的路径只用于自己读文件，不要在回复里复述」——只降低概率，兜底仍靠本仓库的出站脱敏 |
+
 ## 4. 功能清单（当前状态）
 
 ### 入站

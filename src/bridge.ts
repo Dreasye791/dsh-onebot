@@ -101,6 +101,8 @@ export interface BridgeConfig {
   rateLimitPerMinute?: number
   restrictedMemberPrefix: boolean
   sensitivePatterns: readonly string[]
+  /** 出站回复中的本机绝对路径（盘符 / UNC）替换为 <本机路径>；缺省 = 开启。 */
+  redactLocalPaths?: boolean
   /** S-08：OneBot access token（只给诊断包脱敏用；空串 = 未配置）。
    * 原先 HealthDeps.secrets 恒为空数组，导致「归档里不得含明文密钥」的
    * fail-closed 断言空转，只剩 access_token/bearer 一类正则兜底。 */

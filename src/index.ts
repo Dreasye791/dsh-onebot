@@ -197,6 +197,8 @@ export interface Config {
   rateLimitPerMinute: number
   restrictedMemberPrefix: boolean
   sensitivePatterns: string[]
+  /** 出站回复中的本机绝对路径（盘符 / UNC）替换为 <本机路径>。 */
+  redactLocalPaths: boolean
   mediaDir: string
   tempTtlHours: number
   outboundImageMaxBytes: number
@@ -369,6 +371,8 @@ export const Config: Z<Config> = z.object({
     .description('群聊非管理员消息注入 [受限用户:仅问答] 前缀（软限制）'),
   sensitivePatterns: z.array(z.string()).default([])
     .description('出站敏感内容审计正则（默认内置 rm -rf/关机/删库/密钥 等模式；留空用默认）'),
+  redactLocalPaths: z.boolean().default(true)
+    .description('出站回复中的本机绝对路径（盘符 / UNC）替换为 <本机路径>，避免在群里泄露目录结构；false=原样发送'),
   mediaDir: z.string().default('')
     .description('入站媒体与映射文件目录；留空默认 <dsh-home>/media/onebot'),
   tempTtlHours: z.number().default(6)
@@ -751,6 +755,7 @@ export function apply(ctx: Context, config: Config): void {
       rateLimitPerMinute: config.rateLimitPerMinute,
       restrictedMemberPrefix: config.restrictedMemberPrefix,
       sensitivePatterns: config.sensitivePatterns,
+      redactLocalPaths: config.redactLocalPaths,
       accessToken: config.accessToken,
       mediaDir,
       maxImageBytes: config.outboundImageMaxBytes,

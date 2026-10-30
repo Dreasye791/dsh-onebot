@@ -11,4 +11,7 @@ lib/*.bak-*
 CODEBUDDY.md
 # 提交信息草稿（一次性的）
 commit-msg.txt
+# 内部设计案：含未发布方案的取舍细节与风险分析，永久不进公开库
+# （已入库的历史设计文档不受影响 —— gitignore 只对未跟踪文件生效）
+docs/*-design.md
 

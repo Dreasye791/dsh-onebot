@@ -1166,4 +1166,24 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - **数据层**：新增 `deleteMemoriesWhere(dir, chatId, predicate)`（一次重写文件，返回被删条目供回显）。
 - **顺手**：清掉 `tools.ts` 里上一轮遗留的重复注释（两段「取本轮发言者」）。
 - **验证**：`tsc` exit 0；`memory.spec` 加 4 条（只删命中 / 无命中不重写 / 按 `by` 批量删 / 删空保留空文件）、`prompt.spec` 加 3 条（含 `qq_memory_forget` / 「记忆会过时」/「不要靠再记一条来覆盖」）→ memory + prompt + client-settings + plugin **4 文件 121 用例全绿**。
-- **既有问题（未修，已取证）**：`commands.spec` 有 2 条在本机稳定失败 —— `/workspace <file>` 与 `/workspace` 编号列表的断言期望完整文件名/目录名，但 `realpath` 会把 `mkdtemp` 产物展开成 **Windows 8.3 短名**（`NOT-A-~1.TXT`）。用 `git stash` 在未改动的 HEAD 上做对照实验，**同样 2 failed / 36 passed**，确认与本轮改动无关。修法：断言改用 `realpathSync` 归一化后的值，或只比不区分短名的片段。
+- **既有问题（已修，见下节）**：`commands.spec` 那 2 条稳定失败的真正原因**不是** 8.3 短名 —— 是出站路径脱敏的 `STOP` 集合漏了全角左括号，把 `（1 会话）` 里的 `（1` 连同路径一起替换掉了。
+
+## 2026-10-30 出站路径脱敏补齐全角括号（修 2 条稳定失败）
+
+- **现象**：`/workspace` 的编号列表发给用户后变成 `1. <本机路径> 会话） ← 当前` —— 会话计数被吞；`/workspace <file>` 的错误提示里文件名也随路径消失。
+- **根因**：`src/redact.ts` 的 `STOP` 只列了全角右括号 `）`，没有左括号 `（`。`[^STOP]*` 一路吃到空格，把 `（1` 当成路径的一部分。
+- **修法**：补齐成对标点 `（）《》【】「」『』`（右括号本来就有，缺的是所有左/开符号）。
+- **两次误判的教训**：先后猜过「Windows 8.3 短名」和「并发 flaky」，`git stash` 对照实验只证明了「与本轮改动无关」，并没有证明「是什么原因」。真正定位靠的是**打印出站消息的实际文本**（临时 spec 里 `console.log(JSON.stringify(frame.params))`）。对照实验能排除，不能归因。
+- **测试侧**：`commands.spec` 那两条断言「发出的文本含具体路径/文件名」的用例显式 `redactLocalPaths: false` —— 它们验的是命令文案，脱敏本身由 `redact.spec` 覆盖；`makeCmdHarness` 增加同名开关。
+- **验证**：`tsc` exit 0；`redact.spec` 加 2 条（全角左括号后的计数不被吞 / 成对标点的闭合符不被吃）；redact + commands 2 文件 47 用例全绿。
+
+## 2026-10-30 记忆语义编码（第二批 2a）：接口 + 双实现 + 统一降级
+
+- **范围**：只新增 `src/memory-embed.ts`，**不接线** —— `index` / `bridge` / `tools` 都不引用它，行为与第一批完全一致。
+- **接口**：`Embedder { isAvailable(); dim; embed(texts) }` —— 本地与远程共用，切换只改配置。
+- **零新依赖**：`@xenova/transformers`（约 5MB + onnxruntime-web）**不进 dependencies**，用动态 `import()` 加载；包名放在变量里，避免 TypeScript 去解析这个不存在的模块。未安装 → reject → `isAvailable()` 为 false → 调用方降级。这样「不装也能跑，装了才有语义召回」。
+- **`LocalEmbedder`**：懒加载；并发调用共享同一个 loading Promise；**失败后不再重试**（记 `failed`，否则每次调用都重新 import 一遍）；维度从首次编码结果推导。
+- **`HttpEmbedder`**：`url` 以 `/v1` 结尾走 OpenAI 协议（`POST /v1/embeddings` + Bearer），否则走 Ollama（`POST /api/embed`）；5s 超时（AbortController）；**不主动探活** —— 不为「能不能用」多付一次网络往返，可用性由 `embed` 抛错体现。
+- **统一降级点** `embedSafely(embedder, texts)`：没有 encoder 或抛错都返回 `undefined`。所有调用点都该走它，否则迟早有一处忘记 `try/catch`，把「增强功能」变成「整轮失败」。
+- **两道数据校验**：返回条数必须与输入一致、输出形状必须可识别（Tensor 的 `tolist()` 与裸 `number[][]` 都接受）。脏向量一旦写进记忆，后续召回会一直错且极难定位。
+- **验证**：`tsc` exit 0；新增 `memory-embed.spec` **19 条**（三种 mode 的选型与缺项、本地懒加载只加载一次、失败不重试、并发共享、条数与形状校验、OpenAI/Ollama 两种协议解析、非 2xx、空入参不发请求、`embedSafely` 三条）；连同既有 6 个文件 **7 文件 215 用例全绿**。

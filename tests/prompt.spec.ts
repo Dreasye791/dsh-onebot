@@ -32,6 +32,10 @@ describe('buildPlatformPrompt', () => {
     expect(on).toContain('负面评判')
     expect(on).toContain('观察')
     expect(on).toContain('群聊里默认不建画像')
+    // 主动性：没有这条，记忆就是纯响应式的（用户不说「记住」就永远不记）
+    expect(on).toContain('主动记忆')
+    expect(on).toContain('不要等用户开口说')
+    expect(on).toContain('一轮最多记一条')
   })
 
   it('记忆提示与人设层共存，且人设仍在最前', () => {

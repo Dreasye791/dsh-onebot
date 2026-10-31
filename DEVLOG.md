@@ -1483,10 +1483,29 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - `docs/*-design.md` 只匹配一级目录，漏掉 `docs/design/` 子目录与 `*-review.md` 命名 ——
   后果是「新写的设计案直接进库」，而 gitignore 无法回溯已提交的文件。补成三条。
 
+### 同日补：`/embeddings` 端点（Infinity）不再被判成 Ollama
+
+- 实测 Infinity（`michaelf34/infinity:0.0.77-cpu` + `BAAI/bge-small-zh-v1.5`）：只提供
+  `POST /embeddings`，`POST /v1/embeddings` 返回 `{"detail":"Not Found"}`，但响应体是
+  **标准 OpenAI 形状** `{"object":"list","data":[{"object":"embedding","embedding":[...]}]}`。
+- 插件的协议判定原来只认 `/\/v1(\/embeddings)?$/`，于是三种常见配法**全部 404**：
+  `…:7997`（判成 Ollama）、`…:7997/v1`（拼出 `/v1/embeddings`）、
+  `…:7997/embeddings`（判成 Ollama）。而降级是静默的，只表现为「语义召回好像没用」。
+- 现在 `/\/v1$/` 或 `/\/embeddings$/` 都算 OpenAI 协议（已含 `/embeddings` 时不重复拼接）；
+  一并修掉 Ollama 完整端点 `…/api/embed` 被拼成 `…/api/embed/api/embed` 的老问题。
+- **接线配置**（Infinity 场景）：
+  ```yaml
+  memoryEmbeddingMode: http
+  memoryEmbeddingUrl: http://<IP>:7997/embeddings
+  memoryEmbeddingModel: BAAI/bge-small-zh-v1.5
+  ```
+- 验证：`memory-embed.spec` +2（Infinity 形态走 OpenAI 且不双拼 / Ollama 完整端点不双拼）；
+  **13 文件 385 用例全绿**。
+
 **验证**：`tsc` exit 0；`memory-embed` +3（指纹形状、同维度不同模型、同模型不同端点）、
 `memory-backfill` +3（指纹变了重编、写回带指纹、历史条目无指纹重编）、`memory` +2
 （embedderId 不匹配跳过语义）、`settings-remote` +2（四种状态、模型名为空）、
-`commands` +2（reindex 两条分支）；**13 文件 382 用例全绿**（此前 370）。
+`commands` +2（reindex 两条分支）；连同上面「同日补」的 2 条，**13 文件 385 用例全绿**（此前 370）。
 
 ## 2026-10-31 记忆配置从「行为」组独立成「记忆」组（含关闭时置灰）
 

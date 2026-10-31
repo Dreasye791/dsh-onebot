@@ -167,6 +167,37 @@ describe('memory-embed: HttpEmbedder（Ollama）', () => {
     expect(endpoint).toBe('https://api.example.com/v1/embeddings')
   })
 
+  it('Infinity 形态：url 以 /embeddings 结尾（无 /v1）也走 OpenAI 协议，且不重复拼接', async () => {
+    // 实测 Infinity（michaelf34/infinity）只提供 POST /embeddings，没有
+    // /v1/embeddings（404），但响应体是标准 OpenAI 形状。只认 /v1 时三种写法
+    // 都会 404 —— 而且降级是静默的，只表现为「语义召回好像没用」。
+    const doFetch = vi.fn(async () => jsonResponse({
+      object: 'list',
+      data: [{ object: 'embedding', embedding: [0.1, 0.2] }],
+    }))
+    const embedder = new HttpEmbedder({
+      url: 'http://127.0.0.1:7997/embeddings',
+      model: 'BAAI/bge-small-zh-v1.5',
+      fetchImpl: doFetch as unknown as typeof fetch,
+    })
+    // 响应里是 512 维，这里用 2 维替身，只验证走对了端点
+    await expect(embedder.embed(['x'])).resolves.toEqual([[0.1, 0.2]])
+    const [endpoint] = doFetch.mock.calls[0] as unknown as [string]
+    expect(endpoint).toBe('http://127.0.0.1:7997/embeddings')
+  })
+
+  it('Ollama 完整端点 /api/embed 不再被双拼', async () => {
+    const doFetch = vi.fn(async () => jsonResponse({ embeddings: [[0.3]] }))
+    const embedder = new HttpEmbedder({
+      url: 'http://127.0.0.1:11434/api/embed',
+      model: 'bge-m3',
+      fetchImpl: doFetch as unknown as typeof fetch,
+    })
+    await expect(embedder.embed(['x'])).resolves.toEqual([[0.3]])
+    const [endpoint] = doFetch.mock.calls[0] as unknown as [string]
+    expect(endpoint).toBe('http://127.0.0.1:11434/api/embed')
+  })
+
   it('非 2xx → 抛错（由 embedSafely 降级）', async () => {
     const doFetch = vi.fn(async () => jsonResponse({ error: 'boom' }, 500))
     const embedder = new HttpEmbedder({

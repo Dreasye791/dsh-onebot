@@ -1563,3 +1563,33 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
   —— 成功路径不发、失败才发；也不能看 `dispatch` 事件，那条 `reason` 是固定文案，
   会被 5 分钟限频吞掉。看 followup 文本是 `[图片]` 还是 `[图片:<路径>]`、
   `attachment-ledger.json` 是否增长。
+
+## 2026-10-31 入站图片块投递从来没生效过（T20：cordis 的未 inject 服务属性访问会抛）
+
+- **症状**：T19 验证时发现引用图虽然落盘成功，文本却是 `[图片:<本地路径>]` 而不是
+  T15 设计的 `[图片]`，模型得自己调 `read_image` 才看得到像素；`mediaDir/attachment-ledger.json`
+  **从未生成**（账本只在首次成功投递时写）。等于整条图片块投递对**所有**入站图都是断的，
+  只是模型能 `read_image`，把问题盖住了。
+- **根因**：`src/index.ts` 的取值器写的是 `ctx.attachments`。cordis 的 Context 代理对
+  **未在插件 `inject` 数组里声明**的服务，属性访问会直接 `throw new Error('cannot get
+  property "attachments" without inject')`，被外层 `catch` 吞成 `undefined` →
+  `attach.deliverImage` 判定 `host-unavailable` → 静默退回路径文本。静默是因为所有
+  失败分支都是 `debug` 级，而默认日志级别是 `info`。
+- **取证（静态，不必真机）**：
+  1. asar 内 `@deepseek-ai/cordis/lib/index.js` 有那行 `without inject` 抛错；
+  2. 同文件的 `get(name, strict = true)` 注释明说「Read a service from the store without
+     the inject requirement」，未提供时返回 undefined、不抛；
+  3. `@deepseek-ai/dsh-base/cordis.patch.yml` 无条件挂了 `attachment-local`，
+     `dsh-attachment` 的服务名确为 `super(ctx, "attachments")`。
+  → 服务是存在的，纯粹是被 inject 检查挡在门外。
+- **改法**：取值器改走 `ctx.get('attachments')`。**不**把 `attachments` 写进 `inject`——
+  cordis 的 inject 是硬依赖门槛，写进去会让插件在没有该服务的部署上直接不启动；
+  `ctx.get` 既拿到服务又不引入启动风险，且取值器是闭包、每次投递实时求值，
+  `attachment-local` 晚于插件就绪也不影响。
+- **可观测性**（同一改动）：取值器缺失 / 取值抛错 / `host-unavailable` / `save-failed` /
+  `unsupported-type` 首次出现时打一条 `warn`（`attachmentWarned` 一次性标记，避免每条
+  入站图刷屏）；`too-large` / `budget` 是设计内闸门，保持 `debug`，不误报成故障。
+- **验证**：`tsc` exit 0；全量 `47 passed | 3 failed`（4 条失败与改动前逐条一致，无新增）。
+  真机一轮：`attachment-ledger.json` 首次生成（1 条 `sha256:` 记录 / 20784 B）、
+  followup 文本从 `[图片:G:\…]` 变成 `[图片]`、模型**零工具调用**直接在 image 块上描述
+  画面（`tool/call` 总数不变），自评「变成了图片块直接送进来，不用再去看原文件了」。

@@ -552,6 +552,12 @@ export declare class ChatBridge {
     private buildBody;
     /** Resolve one media ref to a text annotation with a local path. */
     private resolveMediaRef;
+    /** 附件服务缺失 / 首次投递失败的告警只打一次：入站图片每条都会走到这里，
+     * 逐条 warn 会把日志刷满；而原来全是 debug，默认日志级别下等于完全静默
+     * （实测症状：图片块投递断了很久没人发现）。 */
+    private attachmentWarned;
+    /** 打一条「只此一次」的附件投递告警，用于把静默降级变成可观测。 */
+    private warnAttachmentOnce;
     /** T15：把一张入站图片投递成宿主附件引用（inbound ctx.deliverInboundImage）。
      *
      * 三道闸门（单图大小 / 总预算 / 宿主能力）都在 `attach.deliverImage` 里，

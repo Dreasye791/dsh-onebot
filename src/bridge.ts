@@ -1126,6 +1126,18 @@ export class ChatBridge {
     return this.inbound.resolveMediaRef(ref, chatId)
   }
 
+  /** 附件服务缺失 / 首次投递失败的告警只打一次：入站图片每条都会走到这里，
+   * 逐条 warn 会把日志刷满；而原来全是 debug，默认日志级别下等于完全静默
+   * （实测症状：图片块投递断了很久没人发现）。 */
+  private attachmentWarned = false
+
+  /** 打一条「只此一次」的附件投递告警，用于把静默降级变成可观测。 */
+  private warnAttachmentOnce(message: string): void {
+    if (this.attachmentWarned) return
+    this.attachmentWarned = true
+    this.deps.log('warn', message + '（后续同类问题只记 debug）')
+  }
+
   /** T15：把一张入站图片投递成宿主附件引用（inbound ctx.deliverInboundImage）。
    *
    * 三道闸门（单图大小 / 总预算 / 宿主能力）都在 `attach.deliverImage` 里，
@@ -1133,11 +1145,15 @@ export class ChatBridge {
    * 异常都吞掉并记 debug：视觉增强失败绝不能影响消息本身可达。 */
   private async deliverInboundImage(path: string, chatId: ChatId): Promise<ImageAttachmentRef | undefined> {
     const attachment = this.deps.attachments
-    if (attachment === undefined) return undefined
+    if (attachment === undefined) {
+      this.warnAttachmentOnce('宿主附件服务取值器缺失，入站图片退回路径文本')
+      return undefined
+    }
     let host: unknown
     try {
       host = attachment()
-    } catch {
+    } catch (error) {
+      this.warnAttachmentOnce('宿主附件服务取值失败（' + describeError(error) + '），入站图片退回路径文本')
       return undefined
     }
     const policy = resolveAttachPolicy({
@@ -1155,10 +1171,15 @@ export class ChatBridge {
       return result.ref
     }
     if (result.skipped !== undefined && result.skipped !== 'disabled') {
+      const detail = result.detail !== undefined ? ': ' + result.detail : ''
+      // too-large / budget 是设计内的闸门（不是故障），只有能力类原因才值得
+      // 在 warn 级别喊一次；否则一超预算就误报成故障。
+      if (result.skipped === 'host-unavailable' || result.skipped === 'save-failed'
+        || result.skipped === 'unsupported-type') {
+        this.warnAttachmentOnce('入站图片未投递为图片块（' + result.skipped + detail + '），退回路径文本')
+      }
       // R-08：带上 detail（宿主异常原文），否则 save-failed 无法区分超时/配额/权限。
-      this.deps.log('debug', '入站图片未投递为图片块（' + result.skipped
-        + (result.detail !== undefined ? ': ' + result.detail : '')
-        + '），退回路径文本: ' + path)
+      this.deps.log('debug', '入站图片未投递为图片块（' + result.skipped + detail + '），退回路径文本: ' + path)
     }
     return undefined
   }

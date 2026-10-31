@@ -217,6 +217,31 @@ export interface UpsertResult {
 }
 
 /**
+ * 为一个新条目分配**本会话内唯一**的 `ts`。
+ *
+ * 为什么需要：`ts` 同时承担「写入时间」和**条目标识**两个角色 —— `updateMemory` /
+ * `deleteMemory` / 面板编辑与删除都按它定位。而唯一的写入路径用的是 `Date.now()`：
+ * 面板保存与模型工具调用并发时可能落在同一毫秒，于是两条不同记忆共享一个标识，
+ * 「删一条」变成「删两条」、「改一条」改到另一条头上。
+ *
+ * 分配方式：从 `now` 起找第一个未被占用的毫秒。最大差值只有几条毫秒，而 `ts` 只被
+ * 用于排序、TTL（天级）与面板显示（分钟级），这点偏移完全不可见。
+ *
+ * 为什么不引入 `id` 字段：那要改模型侧契约（`forget` 的参数）、面板 descriptor 的
+ * 宿主/客户端两侧，以及 54 处测试断言；这里十几行就能从**源头**消除冲突。
+ *
+ * @param entries - 该会话当前的全部条目（调用方通常已经读过文件）。
+ * @param now - 期望的时间戳，缺省 `Date.now()`。
+ */
+export function allocateTs(entries: readonly MemoryEntry[], now: number = Date.now()): number {
+  const used = new Set<number>()
+  for (const entry of entries) used.add(entry.ts)
+  let candidate = Math.floor(now)
+  while (used.has(candidate)) candidate += 1
+  return candidate
+}
+
+/**
  * 写入一条记忆，并把「完全相同的条目」折成一次提及。
  *
  * 判重口径是 **kind + subject + text 三者全等**，只做精确匹配 —— 近似去重需要相似度
@@ -233,7 +258,11 @@ export function upsertMemory(memoryDir: string, chatId: string, entry: MemoryEnt
     && (existing.subject ?? '') === (entry.subject ?? '')
     && existing.text === entry.text)
   if (index < 0) {
-    appendMemory(memoryDir, chatId, { ...entry, lastSeenAt: entry.ts })
+    // 分配唯一 `ts`（见 `allocateTs`）：`ts` 是条目标识，撞毫秒会让「删/改一条」
+    // 变成「删/改多条」或「改错条」。`lastSeenAt` 与 `ts` 保持一致，表示「首次写入、
+    // 尚未被再次提及」。
+    const fresh = allocateTs(entries, entry.ts)
+    appendMemory(memoryDir, chatId, { ...entry, ts: fresh, lastSeenAt: fresh })
     return { refreshed: false }
   }
   const previous = entries[index]
@@ -594,12 +623,19 @@ export function updateMemory(memoryDir: string, chatId: string, ts: number, patc
   return true
 }
 
-/** 按 `ts` 删除一条记忆；返回是否命中。 */
+/**
+ * 按 `ts` 删除**一条**记忆；返回是否命中。
+ *
+ * 只删第一条命中：`ts` 现在由 `allocateTs` 保证唯一，正常情况下本来就只有一条。
+ * 这里仍用「定位一条、删一条」而不是 `filter`，是对**修复前写入的存量数据**兜底 ——
+ * 万一文件里真有同 `ts` 的两条，`filter` 会把它们一起删掉，而删除不可撤销。
+ */
 export function deleteMemory(memoryDir: string, chatId: string, ts: number): boolean {
   const entries = readAllMemories(memoryDir, chatId)
-  const kept = entries.filter((entry) => entry.ts !== ts)
-  if (kept.length === entries.length) return false
-  rewriteMemories(memoryDir, chatId, kept)
+  const index = entries.findIndex((entry) => entry.ts === ts)
+  if (index < 0) return false
+  entries.splice(index, 1)
+  rewriteMemories(memoryDir, chatId, entries)
   return true
 }
 

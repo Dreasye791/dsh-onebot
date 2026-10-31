@@ -133,6 +133,24 @@ export interface UpsertResult {
     refreshed: boolean;
 }
 /**
+ * 为一个新条目分配**本会话内唯一**的 `ts`。
+ *
+ * 为什么需要：`ts` 同时承担「写入时间」和**条目标识**两个角色 —— `updateMemory` /
+ * `deleteMemory` / 面板编辑与删除都按它定位。而唯一的写入路径用的是 `Date.now()`：
+ * 面板保存与模型工具调用并发时可能落在同一毫秒，于是两条不同记忆共享一个标识，
+ * 「删一条」变成「删两条」、「改一条」改到另一条头上。
+ *
+ * 分配方式：从 `now` 起找第一个未被占用的毫秒。最大差值只有几条毫秒，而 `ts` 只被
+ * 用于排序、TTL（天级）与面板显示（分钟级），这点偏移完全不可见。
+ *
+ * 为什么不引入 `id` 字段：那要改模型侧契约（`forget` 的参数）、面板 descriptor 的
+ * 宿主/客户端两侧，以及 54 处测试断言；这里十几行就能从**源头**消除冲突。
+ *
+ * @param entries - 该会话当前的全部条目（调用方通常已经读过文件）。
+ * @param now - 期望的时间戳，缺省 `Date.now()`。
+ */
+export declare function allocateTs(entries: readonly MemoryEntry[], now?: number): number;
+/**
  * 写入一条记忆，并把「完全相同的条目」折成一次提及。
  *
  * 判重口径是 **kind + subject + text 三者全等**，只做精确匹配 —— 近似去重需要相似度
@@ -230,7 +248,13 @@ export interface MemoryEditPatch {
 }
 /** 按 `ts` 更新一条记忆；返回是否命中（同毫秒多条时只改第一条）。 */
 export declare function updateMemory(memoryDir: string, chatId: string, ts: number, patch: MemoryEditPatch): boolean;
-/** 按 `ts` 删除一条记忆；返回是否命中。 */
+/**
+ * 按 `ts` 删除**一条**记忆；返回是否命中。
+ *
+ * 只删第一条命中：`ts` 现在由 `allocateTs` 保证唯一，正常情况下本来就只有一条。
+ * 这里仍用「定位一条、删一条」而不是 `filter`，是对**修复前写入的存量数据**兜底 ——
+ * 万一文件里真有同 `ts` 的两条，`filter` 会把它们一起删掉，而删除不可撤销。
+ */
 export declare function deleteMemory(memoryDir: string, chatId: string, ts: number): boolean;
 /** 中文按 2-gram、英文/数字按连续片段切词；结果去重并小写。 */
 export declare function tokenize(text: string): string[];

@@ -1418,3 +1418,26 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 
 **验证**：`tsc` exit 0；`memory.spec` +4、`settings-remote.spec` +2、
 `client-settings.spec` +1 等；**13 文件 366 用例全绿**（上一批 358）。
+
+## 2026-10-31 记忆 `ts` 唯一性（标识冲突根治）+ 删除只删一条
+
+- **问题**：`ts` 同时是「写入时间」和**条目标识** —— `updateMemory` / `deleteMemory` /
+  面板编辑与删除都按它定位，而唯一写入路径用的是 `Date.now()`。面板保存与模型工具调用
+  并发时可能落在同一毫秒，于是两条不同记忆共享一个标识：「删一条」删掉两条、
+  「改一条」改到另一条头上。而删除不可撤销。
+- **取证三条**：
+  1. `appendMemory` 的唯一生产调用方是 `upsertMemory`（工具 `remember` 与面板
+     `createMemoryEntry` 都走它）→ 唯一性只需落在这一处；
+  2. `qq_memory_remember` / `qq_memory_forget` 都是 `isConcurrencySafe: () => false`
+     （同一 agent 内串行），所以撞车只可能发生在「工具 vs 面板」之间，窗口窄但非零；
+  3. 按 `ts` 定位的点共 **12 处** —— 这决定了「引入 `id` 字段」的代价：7 个文件、
+     约 300 行、**54 处**测试断言，还要改模型侧契约（`forget` 的参数）与面板
+     descriptor 的宿主/客户端两侧。
+- **采用：写入时分配唯一 `ts`**（`allocateTs`，约 15 行）。从 `now` 起找第一个未被
+  占用的毫秒；差值 0–2ms，而 `ts` 只用于排序、TTL（天级）与面板显示（分钟级），
+  完全不可见。零契约变更、零数据迁移，其余 6 个文件一行不动。
+- **兜底：`deleteMemory` 改成「定位一条、删一条」**（原来 `filter(entry.ts !== ts)`
+  会把同 `ts` 的一起删掉）。`ts` 现在已唯一，这条只对**修复前写入的存量数据**生效。
+- **验证**：`tsc` exit 0；`memory.spec` 加 4 条（同毫秒两条 → `ts` 递增 / `allocateTs`
+  跳过已占用毫秒 / `deleteMemory` 只删一条（构造存量同 `ts`）/ 首次写入
+  `lastSeenAt === ts`）；**13 文件 370 用例全绿**（此前 366）。

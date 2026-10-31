@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import {
+  allocateTs,
   appendMemory,
   chatIdFromFileName,
   cosineSimilarity,
@@ -682,6 +683,46 @@ describe('memory: 混合召回（关键词 + 语义）', () => {
     const score = keywordScore(entries[0], tokens)
     const hit = searchMemories(entries, '螺蛳粉').find((item) => item.entry.ts === 1)
     expect(hit?.score).toBe(score)
+  })
+})
+
+describe('memory: ts 唯一性（标识冲突会让「删一条」变成「删两条」）', () => {
+  it('同一毫秒写入两条不同内容 → ts 自动递增，不共用标识', () => {
+    const dir = makeDir()
+    const now = 1_700_000_000_000
+    upsertMemory(dir, 'private:10001', { ts: now, text: '第一条' })
+    // 面板保存与模型工具调用并发时可能落在同一毫秒
+    upsertMemory(dir, 'private:10001', { ts: now, text: '第二条' })
+    const [first, second] = readAllMemories(dir, 'private:10001')
+    expect(first.ts).toBe(now)
+    expect(second.ts).toBe(now + 1)
+    expect(new Set([first.ts, second.ts]).size).toBe(2)
+  })
+
+  it('allocateTs 跳过所有已占用的毫秒，未被占用时原样返回', () => {
+    const entries = [{ ts: 100, text: 'a' }, { ts: 101, text: 'b' }]
+    expect(allocateTs(entries, 100)).toBe(102) // 100、101 都占用
+    expect(allocateTs(entries, 50)).toBe(50)   // 未占用，不偏移
+    expect(allocateTs([], 100)).toBe(100)
+  })
+
+  it('deleteMemory 只删一条（存量数据真有同 ts 时不误删）', () => {
+    const dir = makeDir()
+    // 绕过 upsert 的唯一性分配，模拟本次修复之前写入的存量数据
+    writeFileSync(memoryFilePath(dir, 'private:10001'), [
+      JSON.stringify({ ts: 100, text: '撞车 A' }),
+      JSON.stringify({ ts: 100, text: '撞车 B' }),
+    ].join('\n') + '\n', 'utf8')
+    expect(deleteMemory(dir, 'private:10001', 100)).toBe(true)
+    // 原来是 filter(ts !== 100)，会把两条一起删掉
+    expect(readAllMemories(dir, 'private:10001')).toHaveLength(1)
+  })
+
+  it('首次写入时 lastSeenAt 与 ts 一致（表示未被再次提及）', () => {
+    const dir = makeDir()
+    upsertMemory(dir, 'private:10001', { ts: 500, text: 'x' })
+    const [entry] = readAllMemories(dir, 'private:10001')
+    expect(entry.lastSeenAt).toBe(entry.ts)
   })
 })
 

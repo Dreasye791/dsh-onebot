@@ -195,8 +195,8 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `memoryRecallTopK` | `5` | `qq_memory_recall` 的默认返回条数（1–20），调用时可用 `limit` 覆盖。设置页 behavior 组可改 |
 | `memoryProfileScope` | `dm` | 成员画像（`kind: profile`）能在哪写：`dm`（默认，只有私聊）/ `all`（群聊也允许）/ `off`（关闭画像）。**主体自动取「本轮发言者」**：私聊是对话对方，群聊读本轮消息里的 `<user_message qq="…">`；非管理员只能写自己（显式填别人会被拒），管理员不限。群聊默认关只是产品取舍（群里给某人建画像容易被当成议论别人），不是技术限制。设置页 behavior 组可改 |
 | 保留时长（按 `tags`） | — | 不单独配置：`待办` 14 天、`偏好` 不过期、`事实` 365 天、无标签 90 天。**绝对过期**（从写入时刻起算，被 recall 多少次都不续期）；过期只是不再被检索，文件里的原文保留（软过期），可用 `/memory forget` 真删 |
-| `memoryEmbeddingMode` | `off` | 语义召回：`off`（默认，纯关键词）/ `local`（进程内 ONNX）/ `http`（外部端点）。开启后 `recall` 按「语义相似 × 权重 + 关键词 × (1−权重)」混合打分，能回答「上次那个方案」这类模糊描述。**任何编码失败都自动退回纯关键词**，不影响记忆写入；没有向量或维度不符的条目只按关键词打分（不会被压低） |
-| `memoryEmbeddingModel` | `''` | `local`：模型目录（相对名会拼到 `<mediaDir>/models/` 下，也可填绝对路径）；`http`：模型名（如 `bge-m3` / `nomic-embed-text`）。`local` 依赖可选的 `@xenova/transformers`（未安装则自动退回关键词）。放好模型后跑 `node scripts/check-embedding-model.mjs` 校验 `config.json` / `tokenizer.json` / `*.onnx` 是否齐全 |
+| `memoryEmbeddingMode` | `off` | 语义召回：`off`（默认，纯关键词）/ `local`（进程内 ONNX）/ `http`（外部端点）。开启后 `recall` 按「语义相似 × 权重 + 关键词 × (1−权重)」混合打分，能回答「上次那个方案」这类模糊描述。**任何编码失败都自动退回纯关键词**，不影响记忆写入；没有向量或维度不符的条目只按关键词打分（不会被压低）。**换模型后旧向量自动失效**：每条记忆都记了编码器指纹（`local:<目录>` / `http:<端点>#<模型名>`），指纹不符的条目退回关键词并交给后台重编 —— 只比维度是不够的（BGE-M3 与 Qwen3-Embedding 都是 1024 维，两个语义空间的向量不可比） |
+| `memoryEmbeddingModel` | `''` | `local`：模型目录（相对名会拼到 `<mediaDir>/models/` 下，也可填绝对路径）；`http`：模型名（如 `bge-m3` / `nomic-embed-text`）。`local` 依赖可选的 `@xenova/transformers`（未安装则自动退回关键词）。放好模型后跑 `node scripts/check-embedding-model.mjs` 校验 `config.json` / `tokenizer.json` / `*.onnx` 是否齐全。设置页的记忆卡片会显示「模型已就绪 / 模型缺失（列出缺哪些文件）」与模型目录路径 —— **只展示、不提供下载按钮**（Remote 没有进度通道，大文件下载会让面板看起来卡死；下载入口只保留那个脚本） |
 | `memoryEmbeddingUrl` | `''` | `http` 端点：**以 `/v1` 结尾走 OpenAI 协议**（`POST {url}/embeddings` + Bearer），否则走 Ollama 协议（`POST {url}/api/embed`）。⚠️ 该模式会把记忆原文发送到该端点 |
 | `memoryEmbeddingKey` | `''` | `http` + OpenAI 协议的 Bearer。**快照脱敏不回显**（与访问令牌同款处理），留空 = 不修改 |
 | `memorySemanticWeight` | `0.6` | 混合召回的语义权重（0–1）：0 = 纯关键词，1 = 纯语义。**没有向量或维度不符的条目只按关键词打分、不打折**（否则历史条目被系统性压低）；设为 `1` 时这些条目**不参与**召回（纯语义 = 只看语义）。设置页 behavior 组可改 |
@@ -357,7 +357,7 @@ dsh Web GUI 的设置页提供本插件的可视化配置（host-plane Remote `o
 | `/session [序号]` | 查看本会话可切回的历史会话（无参编号列表，每项含内容预览、建立时间与退休时间，id 截短显示；日志不可读的项显示「（内容不可读）」且不影响其余项），回复序号切回：当前会话退休进列表、目标会话恢复其历史上下文（含 per-chat 设置），支持来回切换；列表跨重启保留（switchable-sessions.json，每 chat 上限 20 条） |
 | `/status` | 会话全景：chat/session/preset/model/cwd/出站模式/agent/可切回数 状态 |
 | `/storage` | 存储占用：`mediaDir` 总占用与文件数、本插件在宿主附件库里的贡献（`/storage` 会实时遍历附件库按本插件的写入路径统计）、`attachmentBudgetMB` 软上限与百分比、`attachmentRetentionHours` 回收窗口（未启用时会显式标注「记账只增不减」） |
-| `/memory [forget]` | **所有成员可用**（目前唯一非管理员命令）：查看本会话记忆条数 + 关于你自己的画像（别人的画像看不到）；`forget` 删除你自己的全部画像。这是隐私兜底 —— 被记录的人要能自己查、自己删 |
+| `/memory [forget\|reindex]` | **所有成员可用**（目前唯一非管理员命令）：查看本会话记忆条数 + 关于你自己的画像（别人的画像看不到）；`forget` 删除你自己的全部画像；`reindex` 立刻触发一次本会话的语义向量补齐（平时在回合结束后自动补，这条只是「不想等」的出口，只触发不阻塞）。这是隐私兜底 —— 被记录的人要能自己查、自己删 |
 | `/doctor [export [参考号]]` | 运行体检（别名 `/healthcheck`）：连接/工具/存储/最近故障参考号全景；`export` 导出脱敏诊断包 `qq-diagnostics-*.zip`（文件名带触发参考号），非法参考号回用法提示且不落盘 |
 | `/retry` | 重跑上一条用户消息（上一轮出错后重试） |
 | `/id` | 只看 chat/session/cwd（排查用） |

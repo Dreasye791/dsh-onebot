@@ -21,6 +21,7 @@ import { Transcriber } from '../../src/stt.js'
 import { TraceSink } from '../../src/trace.js'
 import { InboundRecorder } from '../../src/record.js'
 import { InjectChannel } from '../../src/inject.js'
+import type { Embedder } from '../../src/memory-embed.js'
 
 /** A fake agent handle for the bridge. */
 export function makeFakeAgents(
@@ -237,6 +238,13 @@ export async function makeCmdHarness(opts?: {
    * 开启时才读 `<mediaDir>/memory/`。断言真实输出的用例必须显式打开。
    */
   memoryEnabled?: boolean
+  /**
+   * 语义编码器（absent = 只走关键词）。
+   *
+   * 测试传一个假实现即可 —— 用来验证「有编码器」与「没有编码器」两条分支
+   * （`/memory reindex`、混合召回），不需要真的加载模型。
+   */
+  memoryEmbedder?: Embedder
   /** T4 (P3): optional log capture for reference-number assertions. */
   log?: (level: string, message: string) => void
 }) {
@@ -289,6 +297,7 @@ export async function makeCmdHarness(opts?: {
       ...(opts?.deferredTimeoutMs !== undefined ? { deferredTimeoutMs: opts.deferredTimeoutMs } : {}),
       sensitivePatterns: [], mediaDir, maxImageBytes: 8 * 1024 * 1024,
       memoryEnabled: opts?.memoryEnabled ?? false,
+      ...(opts?.memoryEmbedder !== undefined ? { memoryEmbedder: opts.memoryEmbedder } : {}),
       maxVoiceBytes: 15 * 1024 * 1024, maxFileBytes: 20 * 1024 * 1024,
       textImageThreshold: 0, cardFooter: 'dsh', fontFiles: [], fontFamilies: [],
       agentPreset: 'standard', workspacePath: mediaDir,

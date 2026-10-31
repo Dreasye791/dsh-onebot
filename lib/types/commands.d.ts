@@ -109,6 +109,13 @@ export interface CommandContext {
     memoryReport?: ((chatId: ChatId, userId: string) => string) | undefined;
     /** `/memory forget`：删除调用者本人的画像（absent = 记忆未启用）。 */
     memoryForget?: ((chatId: ChatId, userId: string) => string) | undefined;
+    /**
+     * `/memory reindex`：立刻触发一次本会话的向量补齐（absent = 记忆未启用）。
+     *
+     * 只**触发**不等待：补齐 32 条在 4 核 CPU 上可能十几秒，命令不能阻塞 ——
+     * 群里等十几秒才回一条消息，用户会以为机器人挂了。
+     */
+    memoryReindex?: ((chatId: ChatId) => string) | undefined;
     /** W1/T5 /healthcheck export: pack the redacted diagnostics archive,
      * returning its path. T4 (P3): the optional trigger reference is stamped
      * into the archive file name (absent = the bridge's latest fault reference,

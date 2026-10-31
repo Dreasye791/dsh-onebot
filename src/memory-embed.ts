@@ -23,6 +23,18 @@ export interface Embedder {
    * 与几十条历史闲聊一起批量外发」。
    */
   readonly kind: 'local' | 'http'
+  /**
+   * 模型指纹：**只有同一个 `id` 算同一个语义空间**。
+   *
+   * 为什么维度不够：BGE-M3 与 Qwen3-Embedding-0.6B 默认都是 **1024 维**，但两个
+   * 模型训练出来的向量空间完全不可比。若只按维度判断兼容性，换模型后旧向量会被
+   * 拿去和新模型的查询向量算余弦 —— 结果毫无意义，而且**没有任何报错**，
+   * 表现为「换了个更好的模型，检索反而变差」。
+   *
+   * 形式：`local:<模型目录>` / `http:<endpoint>#<模型名>`。`local` 用路径是因为
+   * 同一个目录名可能对应不同权重；路径变化会触发一次重编，代价可接受。
+   */
+  readonly id: string
   /** 可用性探针：模型缺失 / 服务未配置 → false，调用方应降级到纯关键词。 */
   isAvailable(): Promise<boolean>
   /** 向量维度；不可用（或尚未编码过）时为 0。 */
@@ -107,6 +119,10 @@ export class LocalEmbedder implements Embedder {
   private failedAt: number | undefined
   private dimension = 0
 
+  readonly kind = 'local' as const
+  /** 模型指纹：目录变了就是换了模型（见 `Embedder.id` 的说明）。 */
+  readonly id: string
+
   constructor(
     modelDir: string,
     factory: PipelineFactory = loadTransformersPipeline,
@@ -115,9 +131,8 @@ export class LocalEmbedder implements Embedder {
     this.modelDir = modelDir
     this.factory = factory
     this.retryAfterMs = retryAfterMs
+    this.id = 'local:' + modelDir
   }
-
-  readonly kind = 'local' as const
 
   get dim(): number {
     return this.dimension
@@ -201,12 +216,20 @@ export class HttpEmbedder implements Embedder {
   private readonly options: HttpEmbedderOptions
   private dimension: number
 
+  readonly kind = 'http' as const
+  /**
+   * 模型指纹：`endpoint#模型名`。
+   *
+   * 带上 endpoint 是必要的 —— 同一个模型名在不同服务上（比如一个 Ollama 跑
+   * `bge-m3`，另一个 OpenAI 兼容端点也自称 `bge-m3`）不保证权重相同。
+   */
+  readonly id: string
+
   constructor(options: HttpEmbedderOptions) {
     this.options = options
     this.dimension = options.dim ?? 0
+    this.id = 'http:' + options.url.replace(/\/+$/, '') + '#' + options.model
   }
-
-  readonly kind = 'http' as const
 
   get dim(): number {
     return this.dimension

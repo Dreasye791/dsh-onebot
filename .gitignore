@@ -13,5 +13,11 @@ CODEBUDDY.md
 commit-msg.txt
 # 内部设计案：含未发布方案的取舍细节与风险分析，永久不进公开库
 # （已入库的历史设计文档不受影响 —— gitignore 只对未跟踪文件生效）
+#
+# 三条而不是一条：`docs/*-design.md` 只匹配一级目录，会漏掉 `docs/design/`
+# 子目录与 `*-review.md` 这类命名。漏掉的后果是「新写的设计案直接进库」，
+# 而 .gitignore 无法回溯已提交的文件。
 docs/*-design.md
+docs/*-review.md
+docs/design/
 

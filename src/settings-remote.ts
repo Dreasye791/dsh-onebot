@@ -45,7 +45,7 @@
  */
 
 import { dirname, isAbsolute, join } from 'node:path'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { isDeepStrictEqual } from 'node:util'
 import { diagnoseNapcat, formatDiagnosis } from './napcat-diagnose.js'
 
@@ -577,6 +577,97 @@ function memoryDirOf(editor: ConfigEditorLike): string {
   return memoryDirFor(typeof raw.mediaDir === 'string' ? raw.mediaDir : '')
 }
 
+/** 语义召回模型的状态（面板只展示，不提供安装入口）。 */
+export interface MemoryModelStatus {
+  mode: 'off' | 'local' | 'http'
+  /** 配置里的模型名（http）或模型目录名/路径（local） */
+  model: string
+  /** `off` 未启用 / `ready` 本地文件齐全 / `missing` 缺文件 / `remote` 外部服务（无法本地验证） */
+  state: 'off' | 'ready' | 'missing' | 'remote'
+  /** `local` 模式的绝对路径；其他为空串 */
+  dir: string
+  /** `missing` 时缺哪些文件 */
+  missing: string[]
+  /** 给面板显示的一行说明（含怎么补） */
+  hint: string
+}
+
+/** `<dir>` 下（含 `onnx/` 子目录）有没有 `.onnx` 文件。 */
+function hasOnnxFile(dir: string): boolean {
+  try {
+    const root = readdirSync(dir)
+    if (root.some((name) => name.toLowerCase().endsWith('.onnx'))) return true
+    if (root.includes('onnx')) {
+      return readdirSync(join(dir, 'onnx')).some((name) => name.toLowerCase().endsWith('.onnx'))
+    }
+  } catch {
+    return false
+  }
+  return false
+}
+
+/**
+ * 语义召回模型的状态。
+ *
+ * 为什么面板只「展示」不「下载」：Remote 是一次性请求-响应，没有进度通道 ——
+ * 25MB 在慢网下几分钟无反馈，用户会以为卡死并刷新页面。要做对还得处理磁盘空间、
+ * 断点续传、校验和、并发点击。下载入口只保留 `scripts/check-embedding-model.mjs`，
+ * 面板负责把「缺什么、放哪里」讲清楚。
+ */
+export function getMemoryModelStatus(editor: ConfigEditorLike): MemoryModelStatus {
+  const raw = findEntry(editor).options.config ?? {}
+  const mode: MemoryModelStatus['mode'] = raw.memoryEmbeddingMode === 'local'
+    ? 'local'
+    : raw.memoryEmbeddingMode === 'http' ? 'http' : 'off'
+  const model = typeof raw.memoryEmbeddingModel === 'string' ? raw.memoryEmbeddingModel.trim() : ''
+
+  if (mode === 'off') {
+    return { mode, model, state: 'off', dir: '', missing: [], hint: '语义召回未启用：当前只按关键词检索。' }
+  }
+  if (mode === 'http') {
+    return {
+      mode,
+      model,
+      state: 'remote',
+      dir: '',
+      missing: [],
+      hint: '外部服务模式：可用性由运行时决定（编码失败会自动退回关键词，并在日志里留一条告警）。',
+    }
+  }
+  // local：模型目录 = 绝对路径原样，相对名拼到 <mediaDir>/models/ 下。
+  const dir = model === ''
+    ? ''
+    : isAbsolute(model) ? model : join(dirname(memoryDirOf(editor)), 'models', model)
+  if (dir === '') {
+    return {
+      mode, model, state: 'missing', dir, missing: ['模型目录未填写'],
+      hint: '请填写模型目录（相对 mediaDir/models/ 的目录名，或绝对路径）。',
+    }
+  }
+  const has = (name: string): boolean => {
+    try {
+      return statSync(join(dir, name)).isFile()
+    } catch {
+      return false
+    }
+  }
+  const missing: string[] = []
+  if (!has('config.json')) missing.push('config.json')
+  if (!has('tokenizer.json')) missing.push('tokenizer.json')
+  if (!hasOnnxFile(dir)) missing.push('*.onnx')
+  if (missing.length === 0) {
+    return { mode, model, state: 'ready', dir, missing: [], hint: '本地模型已就绪。' }
+  }
+  return {
+    mode,
+    model,
+    state: 'missing',
+    dir,
+    missing,
+    hint: '缺少 ' + missing.join('、') + '。把模型目录放到上面这个路径，再运行 node scripts/check-embedding-model.mjs 复核。',
+  }
+}
+
 /** 会话列表：只 stat 不解析，几百个文件也是毫秒级。 */
 export function listMemoryChats(editor: ConfigEditorLike): MemoryChatsResult {
   const raw = findEntry(editor).options.config ?? {}
@@ -1039,6 +1130,7 @@ export function createOnebotSettingsMethods(
   listWorkspaces(): Promise<WorkspaceListResult>
   listReasoningEfforts(): Promise<ReasoningEffortsResult>
   listMemoryChats(): MemoryChatsResult
+  memoryModelStatus(): MemoryModelStatus
   readMemoryEntries(chatId: string, offset: number, limit: number, query: string, kind: string): MemoryEntriesResult
   createMemoryEntry(chatId: string, text: string, kind: string, subject: string, tags: string[]): MemoryMutationResult
   updateMemoryEntry(chatId: string, ts: number, text: string, tags: string[]): MemoryMutationResult
@@ -1050,6 +1142,7 @@ export function createOnebotSettingsMethods(
     listWorkspaces: async () => listWorkspaces(workspaceRegistry),
     listReasoningEfforts: async () => listReasoningEfforts(llm, defaultModel),
     listMemoryChats: () => listMemoryChats(editor),
+    memoryModelStatus: () => getMemoryModelStatus(editor),
     readMemoryEntries: (chatId, offset, limit, query, kind) => readMemoryEntries(editor, chatId, offset, limit, query, kind),
     createMemoryEntry: (chatId, text, kind, subject, tags) => createMemoryEntry(editor, chatId, text, kind, subject, tags),
     updateMemoryEntry: (chatId, ts, text, tags) => updateMemoryEntry(editor, chatId, ts, text, tags),
@@ -1134,6 +1227,11 @@ if (protocol?.TypertRemoteService) {
       return listMemoryChats(this.configEditor())
     }
 
+    /** 记忆：语义召回模型状态（只读；面板只展示，不提供下载入口）。 */
+    memoryModelStatus(): MemoryModelStatus {
+      return getMemoryModelStatus(this.configEditor())
+    }
+
     /** 记忆：分页读取某会话的条目（新→旧；带 query 时按相关度；kind 只看某一类）。 */
     readMemoryEntries(chatId: string, offset: number, limit: number, query: string, kind: string): MemoryEntriesResult {
       return readMemoryEntries(this.configEditor(), chatId, offset, limit, query, kind)
@@ -1162,6 +1260,7 @@ if (protocol?.TypertRemoteService) {
   // 记忆管理：必须与 lib/client.js 的 ONEBOT_SETTINGS_DESCRIPTORS 同步声明，
   // 否则与 getNapcatStatus 一样——服务端有、网关不认。
   markRemote(OnebotSettingsRemote, 'listMemoryChats')
+  markRemote(OnebotSettingsRemote, 'memoryModelStatus')
   markRemote(OnebotSettingsRemote, 'readMemoryEntries')
   markRemote(OnebotSettingsRemote, 'createMemoryEntry')
   markRemote(OnebotSettingsRemote, 'updateMemoryEntry')
@@ -1204,6 +1303,10 @@ if (protocol?.TypertRemoteService) {
     /** 记忆：与 typert 分支同一实现（降级只为「无网关发现」，方法面保持一致）。 */
     listMemoryChats(): MemoryChatsResult {
       return listMemoryChats(this.configEditor())
+    }
+
+    memoryModelStatus(): MemoryModelStatus {
+      return getMemoryModelStatus(this.configEditor())
     }
 
     readMemoryEntries(chatId: string, offset: number, limit: number, query: string, kind: string): MemoryEntriesResult {

@@ -392,6 +392,16 @@ export declare class ChatBridge {
     private memoryReport;
     /** `/memory forget`：删掉调用者本人的全部画像（note 与别人的画像不受影响）。 */
     private memoryForget;
+    /**
+     * `/memory reindex`：立刻触发一次本会话的向量补齐。
+     *
+     * 只**触发**不等待结果 —— 补齐 32 条在 4 核 CPU 上可能十几秒，命令若阻塞，
+     * 群里要等十几秒才收到一条消息，用户会以为机器人挂了。
+     *
+     * 与 `turn/end` 的后台补齐共用同一个去重集合：正在跑时直接告诉用户「进行中」，
+     * 而不是排第二份（两份会各自读写一遍文件，白做功）。
+     */
+    private memoryReindex;
     /** Whether a caller backing an agent session may perform file edits. QQ chats
      * require the currently running turn's initiator to be an admin (role frozen
      * from the dispatch queue at turn/start); non-QQ sessions (Web and other

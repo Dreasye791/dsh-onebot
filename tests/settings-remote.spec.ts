@@ -16,7 +16,7 @@
  */
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 
 import { Context } from '@deepseek-ai/cordis'
@@ -33,6 +33,7 @@ import {
   createOnebotSettingsMethods,
   createRevisionState,
   deleteMemoryEntry,
+  getMemoryModelStatus,
   getSettings,
   listMemoryChats,
   listWorkspaces,
@@ -783,6 +784,51 @@ describe('面板记忆方法（分页 / 过滤 / 校验 / 裁剪）', () => {
     const [entry] = readMemoryEntries(editor, 'private:10001', 0, 50, '', '').entries
     expect(entry).not.toHaveProperty('by')
     expect(entry.role).toBe('member')
+  })
+
+  it('memoryModelStatus：off / local 齐备 / local 缺件 / http 四种状态', () => {
+    // off：未启用语义召回
+    const off = getMemoryModelStatus(new FakeConfigEditor({ mediaDir: tmpdir() }))
+    expect(off).toMatchObject({ mode: 'off', state: 'off', missing: [] })
+
+    // local 缺件：只放 config.json，缺 tokenizer 与 onnx
+    const root = mkdtempSync(join(tmpdir(), 'model-status-'))
+    const mediaDir = join(root, 'media')
+    const modelDir = join(mediaDir, 'models', 'bge-small-zh')
+    mkdirSync(modelDir, { recursive: true })
+    writeFileSync(join(modelDir, 'config.json'), '{}', 'utf8')
+    const partial = getMemoryModelStatus(new FakeConfigEditor({
+      mediaDir, memoryEmbeddingMode: 'local', memoryEmbeddingModel: 'bge-small-zh',
+    }))
+    expect(partial.state).toBe('missing')
+    expect(partial.dir).toBe(modelDir)
+    expect(partial.missing).toEqual(['tokenizer.json', '*.onnx'])
+    // 面板要能直接告诉用户「放哪里」
+    expect(partial.hint).toContain('scripts/check-embedding-model.mjs')
+
+    // 补齐 tokenizer 与 onnx（onnx 放在子目录也算）
+    writeFileSync(join(modelDir, 'tokenizer.json'), '{}', 'utf8')
+    mkdirSync(join(modelDir, 'onnx'), { recursive: true })
+    writeFileSync(join(modelDir, 'onnx', 'model_quantized.onnx'), 'x', 'utf8')
+    const ready = getMemoryModelStatus(new FakeConfigEditor({
+      mediaDir, memoryEmbeddingMode: 'local', memoryEmbeddingModel: 'bge-small-zh',
+    }))
+    expect(ready).toMatchObject({ state: 'ready', missing: [] })
+
+    // http：无法本地验证，只说明可用性由运行时决定
+    const remote = getMemoryModelStatus(new FakeConfigEditor({
+      mediaDir, memoryEmbeddingMode: 'http', memoryEmbeddingModel: 'bge-m3', memoryEmbeddingUrl: 'http://x:11434',
+    }))
+    expect(remote).toMatchObject({ mode: 'http', state: 'remote', model: 'bge-m3' })
+    expect(remote.hint).toContain('运行时')
+  })
+
+  it('memoryModelStatus：local 模式模型名为空时提示未填写', () => {
+    const status = getMemoryModelStatus(new FakeConfigEditor({
+      mediaDir: tmpdir(), memoryEmbeddingMode: 'local', memoryEmbeddingModel: '',
+    }))
+    expect(status).toMatchObject({ state: 'missing', dir: '' })
+    expect(status.missing).toEqual(['模型目录未填写'])
   })
 
   it('deleteMemoryEntry：按 ts 删除并返回剩余总数', () => {

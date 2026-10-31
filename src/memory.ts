@@ -60,6 +60,14 @@ export interface MemoryEntry {
    * 与当前编码器维度不符时该条跳过语义路，仍走关键词。
    */
   dim?: number
+  /**
+   * 算出 `emb` 的那个编码器的指纹（`local:<目录>` / `http:<endpoint>#<模型名>`）。
+   *
+   * **为什么不能只靠 `dim`**：BGE-M3 与 Qwen3-Embedding-0.6B 都是 1024 维，但两个
+   * 语义空间不可比。换模型后若只比维度，旧向量会被拿去和新模型的查询向量算余弦 ——
+   * 结果毫无意义，而且完全静默。缺省（历史条目）= 无法确认来源，按不兼容处理。
+   */
+  model?: string
 }
 
 /** 召回结果。 */
@@ -349,6 +357,10 @@ function parseLine(line: string): MemoryEntry | null {
       ? parsed.emb as number[]
       : undefined
     const dim = emb !== undefined ? emb.length : undefined
+    // 模型指纹只在「确实有向量」时才有意义 —— 没有向量就谈不上语义空间。
+    const model = emb !== undefined && typeof parsed.model === 'string' && parsed.model !== ''
+      ? parsed.model
+      : undefined
     // `ts` 是条目的**标识**：`deleteMemory` / `updateMemory` / 面板编辑都按它定位。
     // 缺失或非法时用 `lastSeenAt` 兜底；两者都没有就整行跳过。
     //
@@ -370,6 +382,7 @@ function parseLine(line: string): MemoryEntry | null {
       ...(lastSeenAt !== undefined ? { lastSeenAt } : {}),
       ...(emb !== undefined ? { emb } : {}),
       ...(dim !== undefined ? { dim } : {}),
+      ...(model !== undefined ? { model } : {}),
     }
   } catch {
     return null
@@ -507,23 +520,34 @@ export function deleteMemoriesWhere(
 export function writeMemoryEmbeddings(
   memoryDir: string,
   chatId: string,
-  updates: readonly { ts: number; text: string; emb: readonly number[] }[],
+  updates: readonly { ts: number; text: string; emb: readonly number[]; model?: string }[],
 ): number {
   if (updates.length === 0) return 0
   /** `ts` 与 `text` 用 `\u0000` 连接：正文里不会有 NUL，避免拼接歧义。 */
   const keyOf = (ts: number, text: string): string => ts + '\u0000' + text
-  const byKey = new Map<string, readonly number[]>()
+  const byKey = new Map<string, { emb: readonly number[]; model?: string }>()
   for (const item of updates) {
-    if (item.emb.length > 0) byKey.set(keyOf(item.ts, item.text), item.emb)
+    if (item.emb.length === 0) continue
+    byKey.set(keyOf(item.ts, item.text), {
+      emb: item.emb,
+      ...(item.model !== undefined && item.model !== '' ? { model: item.model } : {}),
+    })
   }
   if (byKey.size === 0) return 0
   const entries = readAllMemories(memoryDir, chatId)
   let written = 0
   const next = entries.map((entry) => {
-    const vector = byKey.get(keyOf(entry.ts, entry.text))
-    if (vector === undefined) return entry
+    const hit = byKey.get(keyOf(entry.ts, entry.text))
+    if (hit === undefined) return entry
     written += 1
-    return { ...entry, emb: [...vector], dim: vector.length }
+    return {
+      ...entry,
+      emb: [...hit.emb],
+      dim: hit.emb.length,
+      // 指纹与向量必须**同源写入**：调用方没给 model 就清掉旧的，否则会出现
+      // 「新向量 + 旧指纹」—— 那比没有指纹更糟（会被误判为兼容）。
+      model: hit.model,
+    }
   })
   if (written === 0) return 0
   rewriteMemories(memoryDir, chatId, next)
@@ -775,6 +799,16 @@ export interface HybridSearchOptions {
   /** 语义权重 0~1，缺省 0.6（0 = 纯关键词，1 = 纯语义）。 */
   weight?: number | undefined
   topK?: number | undefined
+  /**
+   * 当前编码器的模型指纹。
+   *
+   * 给了就**只认同一个指纹的向量**：`model` 缺失的历史条目视为「来源不明」，
+   * 不参与语义路（退回关键词）。只比维度是不够的 —— BGE-M3 与 Qwen3-Embedding
+   * 都是 1024 维，两个语义空间的向量算出来的余弦毫无意义。
+   *
+   * 不给则退回「只比维度」的老行为（单测与不需要指纹的调用方用）。
+   */
+  embedderId?: string | undefined
 }
 
 /**
@@ -802,12 +836,27 @@ export function searchMemoriesHybrid(
   // （否则「1 = 纯语义」名不副实）。`weight < 1` 仍保持「无向量不打折」—— 那才是
   // 默认配置下历史条目不被系统性压低的关键。
   const pureSemantic = semantic && weight >= 1
+  /**
+   * 这条的向量是否属于**同一个语义空间**（给了指纹时才判）。
+   *
+   * 少了这条判断，换模型后（1024 维 → 1024 维）旧向量会被当成兼容，算出垃圾
+   * 结果且完全静默 —— 表现为「换了个更好的模型，检索反而变差」。
+   */
+  const sameSpace = (entry: MemoryEntry): boolean =>
+    options.embedderId === undefined || entry.model === options.embedderId
   const hits: MemoryHit[] = []
   for (const entry of entries) {
     const keyword = keywordScore(entry, queryTokens)
+    const embedding = entry.emb
     let score = 0
-    if (semantic && entry.emb !== undefined && entry.emb.length === queryVector.length) {
-      score = weight * cosineSimilarity(queryVector, entry.emb) + (1 - weight) * keyword
+    // 三个条件缺一不可：查询向量存在、条目向量存在且维度相同、模型指纹相同。
+    if (
+      queryVector !== undefined
+      && embedding !== undefined
+      && embedding.length === queryVector.length
+      && sameSpace(entry)
+    ) {
+      score = weight * cosineSimilarity(queryVector, embedding) + (1 - weight) * keyword
     } else if (pureSemantic) {
       continue
     } else {

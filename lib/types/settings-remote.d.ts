@@ -242,6 +242,29 @@ export interface MemoryMutationResult {
     /** 仅新建时出现：true = 命中了完全相同的既有条目，只刷新了「最近提及」而没新增行 */
     refreshed?: boolean;
 }
+/** 语义召回模型的状态（面板只展示，不提供安装入口）。 */
+export interface MemoryModelStatus {
+    mode: 'off' | 'local' | 'http';
+    /** 配置里的模型名（http）或模型目录名/路径（local） */
+    model: string;
+    /** `off` 未启用 / `ready` 本地文件齐全 / `missing` 缺文件 / `remote` 外部服务（无法本地验证） */
+    state: 'off' | 'ready' | 'missing' | 'remote';
+    /** `local` 模式的绝对路径；其他为空串 */
+    dir: string;
+    /** `missing` 时缺哪些文件 */
+    missing: string[];
+    /** 给面板显示的一行说明（含怎么补） */
+    hint: string;
+}
+/**
+ * 语义召回模型的状态。
+ *
+ * 为什么面板只「展示」不「下载」：Remote 是一次性请求-响应，没有进度通道 ——
+ * 25MB 在慢网下几分钟无反馈，用户会以为卡死并刷新页面。要做对还得处理磁盘空间、
+ * 断点续传、校验和、并发点击。下载入口只保留 `scripts/check-embedding-model.mjs`，
+ * 面板负责把「缺什么、放哪里」讲清楚。
+ */
+export declare function getMemoryModelStatus(editor: ConfigEditorLike): MemoryModelStatus;
 /** 会话列表：只 stat 不解析，几百个文件也是毫秒级。 */
 export declare function listMemoryChats(editor: ConfigEditorLike): MemoryChatsResult;
 /**
@@ -323,6 +346,7 @@ export declare function createOnebotSettingsMethods(editor: ConfigEditorLike, st
     listWorkspaces(): Promise<WorkspaceListResult>;
     listReasoningEfforts(): Promise<ReasoningEffortsResult>;
     listMemoryChats(): MemoryChatsResult;
+    memoryModelStatus(): MemoryModelStatus;
     readMemoryEntries(chatId: string, offset: number, limit: number, query: string, kind: string): MemoryEntriesResult;
     createMemoryEntry(chatId: string, text: string, kind: string, subject: string, tags: string[]): MemoryMutationResult;
     updateMemoryEntry(chatId: string, ts: number, text: string, tags: string[]): MemoryMutationResult;

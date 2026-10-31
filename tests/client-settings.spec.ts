@@ -118,7 +118,9 @@ describe('T4 客户端 bundle — descriptor 契约核对（与 T3 src/settings-
   it('方法集逐字对齐：getSettings() 0 参；updateSettings(patch, expectedRevision)；listWorkspaces() / listReasoningEfforts() 0 参；记忆四条全 positional', () => {
     expect(descriptors.map((descriptor) => descriptor.method)).toEqual([
       'getSettings', 'updateSettings', 'listWorkspaces', 'listReasoningEfforts',
-      'listMemoryChats', 'readMemoryEntries', 'createMemoryEntry', 'updateMemoryEntry', 'deleteMemoryEntry',
+      // 记忆五条：状态查询 + 会话列表 + 分页条目 + 新建/编辑/删除
+      'listMemoryChats', 'memoryModelStatus', 'readMemoryEntries',
+      'createMemoryEntry', 'updateMemoryEntry', 'deleteMemoryEntry',
     ])
     const getSettings = descriptors[0] as { parameters: Array<unknown>; result: { schema: { parse(value: unknown): unknown } } }
     expect(getSettings.parameters).toEqual([])
@@ -147,9 +149,19 @@ describe('T4 客户端 bundle — descriptor 契约核对（与 T3 src/settings-
     // 宿主降级形态（拿不到 llm/默认模型）同样可解析。
     expect(listReasoningEfforts.result.schema.parse({ available: false, efforts: [] })).toEqual({ available: false, efforts: [] })
 
-    // 记忆管理四条：服务端 markRemote 与客户端 descriptor 必须成对，否则面板调不到
+    // 记忆方法：服务端 markRemote 与客户端 descriptor 必须成对，否则面板调不到
     // （getNapcatStatus 只做了服务端，就是反例）。
-    const listMemoryChats = descriptors[4] as { parameters: Array<unknown>; result: { typeSymbol: string; schema: { parse(value: unknown): unknown } } }
+    //
+    // **按方法名取而不是用下标**：这里原来写死 `descriptors[4..8]`，新增一个方法
+    // 就全部错位、断言指向别的方法 —— 报错信息还看得出来是「参数名不对」而不是
+    // 「下标漂了」，很费时间。
+    const byMethod = (name: string): { parameters: Array<{ name: string }>; result: { typeSymbol: string; schema: { parse(value: unknown): unknown } } } => {
+      const found = descriptors.find((descriptor) => descriptor.method === name)
+      if (found === undefined) throw new Error('descriptor not declared: ' + name)
+      return found as never
+    }
+
+    const listMemoryChats = byMethod('listMemoryChats')
     expect(listMemoryChats.parameters).toEqual([])
     expect(listMemoryChats.result.typeSymbol).toBe('MemoryChatsResult')
     expect(listMemoryChats.result.schema.parse({
@@ -161,14 +173,26 @@ describe('T4 客户端 bundle — descriptor 契约核对（与 T3 src/settings-
       enabled: true,
       chats: [{ chatId: 'private:10001', kind: 'private', bytes: 128, mtimeMs: 1 }],
     })
-    const readMemoryEntries = descriptors[5] as { parameters: Array<{ name: string }> }
-    expect(readMemoryEntries.parameters.map((parameter) => parameter.name)).toEqual(['chatId', 'offset', 'limit', 'query', 'kind'])
-    const createMemoryEntry = descriptors[6] as { parameters: Array<{ name: string }> }
-    expect(createMemoryEntry.parameters.map((parameter) => parameter.name)).toEqual(['chatId', 'text', 'kind', 'subject', 'tags'])
-    const updateMemoryEntry = descriptors[7] as { parameters: Array<{ name: string }> }
-    expect(updateMemoryEntry.parameters.map((parameter) => parameter.name)).toEqual(['chatId', 'ts', 'text', 'tags'])
-    const deleteMemoryEntry = descriptors[8] as { parameters: Array<{ name: string }> }
-    expect(deleteMemoryEntry.parameters.map((parameter) => parameter.name)).toEqual(['chatId', 'ts'])
+
+    const memoryModelStatus = byMethod('memoryModelStatus')
+    expect(memoryModelStatus.parameters).toEqual([])
+    expect(memoryModelStatus.result.typeSymbol).toBe('MemoryModelStatus')
+    // 四种状态都要能解析：off（model 为空串）/ missing（带 missing 列表）/ ready / remote
+    expect(memoryModelStatus.result.schema.parse({
+      mode: 'off', model: '', state: 'off', dir: '', missing: [], hint: '未启用',
+    })).toMatchObject({ state: 'off' })
+    expect(memoryModelStatus.result.schema.parse({
+      mode: 'local', model: 'bge-small-zh', state: 'missing', dir: 'G:/m', missing: ['*.onnx'], hint: '缺 onnx',
+    })).toMatchObject({ state: 'missing', missing: ['*.onnx'] })
+
+    expect(byMethod('readMemoryEntries').parameters.map((parameter) => parameter.name))
+      .toEqual(['chatId', 'offset', 'limit', 'query', 'kind'])
+    expect(byMethod('createMemoryEntry').parameters.map((parameter) => parameter.name))
+      .toEqual(['chatId', 'text', 'kind', 'subject', 'tags'])
+    expect(byMethod('updateMemoryEntry').parameters.map((parameter) => parameter.name))
+      .toEqual(['chatId', 'ts', 'text', 'tags'])
+    expect(byMethod('deleteMemoryEntry').parameters.map((parameter) => parameter.name))
+      .toEqual(['chatId', 'ts'])
   })
 
   it('result codec 可解析宿主形态快照（T1 §3：19 键 config + secrets 脱敏标记 + groups + effect=restart）', () => {

@@ -20,10 +20,15 @@ interface FakeEmbedder extends Embedder {
   calls: string[][]
 }
 
-function fakeEmbedder(dim: number, behavior: { fail?: boolean; kind?: 'local' | 'http' } = {}): FakeEmbedder {
+function fakeEmbedder(
+  dim: number,
+  behavior: { fail?: boolean; kind?: 'local' | 'http'; id?: string } = {},
+): FakeEmbedder {
   const calls: string[][] = []
+  const kind = behavior.kind ?? 'local'
   return {
-    kind: behavior.kind ?? 'local',
+    kind,
+    id: behavior.id ?? 'test:' + kind,
     dim,
     calls,
     async isAvailable(): Promise<boolean> {
@@ -40,7 +45,8 @@ function fakeEmbedder(dim: number, behavior: { fail?: boolean; kind?: 'local' | 
 describe('memory-backfill: 基本流程', () => {
   it('没有缺失向量时不做任何编码', async () => {
     const dir = makeDir()
-    appendMemory(dir, 'private:10001', { ts: 1, text: 'A', emb: [1, 1], dim: 2 })
+    // model 与编码器指纹一致才算「已编码」；缺 model 的历史条目会被重编一次
+    appendMemory(dir, 'private:10001', { ts: 1, text: 'A', emb: [1, 1], dim: 2, model: 'test:local' })
     const embedder = fakeEmbedder(2)
     const result = await backfillChat({ memoryDir: dir, chatId: 'private:10001', embedder })
     expect(result).toEqual({ embedded: 0, pending: 0, remaining: 0, cancelled: false })
@@ -104,9 +110,9 @@ describe('memory-backfill: 幂等与维度迁移', () => {
     expect(readAllMemories(dir, 'private:10001')[0].dim).toBe(4)
   })
 
-  it('embedder.dim 未知（0）时不误伤已有向量', async () => {
+  it('embedder.dim 未知（0）时，同模型指纹的已有向量不被误伤', async () => {
     const dir = makeDir()
-    appendMemory(dir, 'private:10001', { ts: 1, text: 'A', emb: [1, 1], dim: 2 })
+    appendMemory(dir, 'private:10001', { ts: 1, text: 'A', emb: [1, 1], dim: 2, model: 'test:local' })
     const unknown = fakeEmbedder(0)
     const result = await backfillChat({ memoryDir: dir, chatId: 'private:10001', embedder: unknown })
     expect(result.pending).toBe(0)
@@ -158,6 +164,40 @@ describe('memory-backfill: http 模式不外发画像', () => {
     const embedder = fakeEmbedder(2, { kind: 'local' })
     await expect(backfillChat({ memoryDir: dir, chatId: 'group:1', embedder }))
       .resolves.toMatchObject({ embedded: 2, pending: 2, remaining: 0 })
+  })
+})
+
+describe('memory-backfill: 模型指纹（维度相同 ≠ 语义空间相同）', () => {
+  it('指纹变了 → 重编，即使维度完全相同', async () => {
+    const dir = makeDir()
+    // 旧模型算出的向量：3 维，指纹是 bge-m3
+    appendMemory(dir, 'private:10001', { ts: 1, text: 'A', emb: [1, 1, 1], dim: 3, model: 'http:#bge-m3' })
+    // 换成同样维度的另一个模型 —— 只比维度会误判兼容，算出无意义的余弦
+    const qwen = fakeEmbedder(3, { kind: 'http', id: 'http:#qwen3-embedding:0.6b' })
+    const result = await backfillChat({ memoryDir: dir, chatId: 'private:10001', embedder: qwen })
+    expect(result).toMatchObject({ embedded: 1, pending: 1, remaining: 0 })
+    expect(readAllMemories(dir, 'private:10001')[0].model).toBe('http:#qwen3-embedding:0.6b')
+  })
+
+  it('补出来的向量带指纹（否则下次仍无法判断兼容）', async () => {
+    const dir = makeDir()
+    appendMemory(dir, 'private:10001', { ts: 1, text: 'A' })
+    await backfillChat({
+      memoryDir: dir,
+      chatId: 'private:10001',
+      embedder: fakeEmbedder(2, { id: 'local:/opt/models/bge-small-zh' }),
+    })
+    const [entry] = readAllMemories(dir, 'private:10001')
+    expect(entry.model).toBe('local:/opt/models/bge-small-zh')
+    expect(entry.dim).toBe(2)
+  })
+
+  it('历史条目没有 model → 视为来源不明，重编一次', async () => {
+    const dir = makeDir()
+    appendMemory(dir, 'private:10001', { ts: 1, text: 'A', emb: [1, 1], dim: 2 })
+    const result = await backfillChat({ memoryDir: dir, chatId: 'private:10001', embedder: fakeEmbedder(2) })
+    expect(result.pending).toBe(1)
+    expect(result.remaining).toBe(0)
   })
 })
 

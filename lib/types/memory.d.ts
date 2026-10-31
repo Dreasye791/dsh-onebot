@@ -54,6 +54,14 @@ export interface MemoryEntry {
      * 与当前编码器维度不符时该条跳过语义路，仍走关键词。
      */
     dim?: number;
+    /**
+     * 算出 `emb` 的那个编码器的指纹（`local:<目录>` / `http:<endpoint>#<模型名>`）。
+     *
+     * **为什么不能只靠 `dim`**：BGE-M3 与 Qwen3-Embedding-0.6B 都是 1024 维，但两个
+     * 语义空间不可比。换模型后若只比维度，旧向量会被拿去和新模型的查询向量算余弦 ——
+     * 结果毫无意义，而且完全静默。缺省（历史条目）= 无法确认来源，按不兼容处理。
+     */
+    model?: string;
 }
 /** 召回结果。 */
 export interface MemoryHit {
@@ -225,6 +233,7 @@ export declare function writeMemoryEmbeddings(memoryDir: string, chatId: string,
     ts: number;
     text: string;
     emb: readonly number[];
+    model?: string;
 }[]): number;
 /** `private_123.jsonl` → `private:123`；不是记忆文件时返回 undefined（`memoryFileName` 的逆）。 */
 export declare function chatIdFromFileName(name: string): string | undefined;
@@ -301,6 +310,16 @@ export interface HybridSearchOptions {
     /** 语义权重 0~1，缺省 0.6（0 = 纯关键词，1 = 纯语义）。 */
     weight?: number | undefined;
     topK?: number | undefined;
+    /**
+     * 当前编码器的模型指纹。
+     *
+     * 给了就**只认同一个指纹的向量**：`model` 缺失的历史条目视为「来源不明」，
+     * 不参与语义路（退回关键词）。只比维度是不够的 —— BGE-M3 与 Qwen3-Embedding
+     * 都是 1024 维，两个语义空间的向量算出来的余弦毫无意义。
+     *
+     * 不给则退回「只比维度」的老行为（单测与不需要指纹的调用方用）。
+     */
+    embedderId?: string | undefined;
 }
 /**
  * 混合召回：关键词分与语义分加权。

@@ -738,8 +738,9 @@ export function registerTools(
         // 「语义召回好像没用」，而日志里什么都没有。
         const [vector] = (await embedSafely(embedder, [clipped],
           error => bridge.reportEmbedFailure(chatId, error))) ?? []
-        const embedded = vector !== undefined && vector.length > 0
-          ? { emb: vector, dim: vector.length }
+        // 指纹随向量一起落盘：只有 `emb` + `dim` 时，换模型（1024 → 1024）会被误判兼容。
+        const embedded = vector !== undefined && vector.length > 0 && embedder !== undefined
+          ? { emb: vector, dim: vector.length, model: embedder.id }
           : {}
 
         // upsert：完全相同的条目只刷新「最近提及」，不重复堆行（与面板新建同一口径）。
@@ -825,6 +826,8 @@ export function registerTools(
           queryVector,
           weight: bridge.memorySemanticWeight(),
           topK,
+          // 只认同模型算出的向量：换模型后旧向量自动退回关键词，不参与余弦。
+          embedderId: embedder?.id,
         })
         return {
           total: visible.length,

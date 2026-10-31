@@ -117,6 +117,13 @@ export interface CommandContext {
   memoryReport?: ((chatId: ChatId, userId: string) => string) | undefined
   /** `/memory forget`：删除调用者本人的画像（absent = 记忆未启用）。 */
   memoryForget?: ((chatId: ChatId, userId: string) => string) | undefined
+  /**
+   * `/memory reindex`：立刻触发一次本会话的向量补齐（absent = 记忆未启用）。
+   *
+   * 只**触发**不等待：补齐 32 条在 4 核 CPU 上可能十几秒，命令不能阻塞 ——
+   * 群里等十几秒才回一条消息，用户会以为机器人挂了。
+   */
+  memoryReindex?: ((chatId: ChatId) => string) | undefined
   /** W1/T5 /healthcheck export: pack the redacted diagnostics archive,
    * returning its path. T4 (P3): the optional trigger reference is stamped
    * into the archive file name (absent = the bridge's latest fault reference,
@@ -723,8 +730,23 @@ async function handleMemoryCommand(ctx: CommandContext, chatId: ChatId, arg: str
     await ctx.sendToChat(chatId, text)
     return
   }
+  if (sub === 'reindex') {
+    if (ctx.memoryReindex === undefined) {
+      await ctx.sendToChat(chatId, '⚠️ 频道记忆未启用（设置页「启用频道记忆」）。')
+      return
+    }
+    let text: string
+    try {
+      text = ctx.memoryReindex(chatId)
+    } catch (error) {
+      await ctx.sendToChat(chatId, '⚠️ 触发补齐失败：' + describeError(error))
+      return
+    }
+    await ctx.sendToChat(chatId, text)
+    return
+  }
   if (sub !== '') {
-    await ctx.sendToChat(chatId, '用法：/memory 查看；/memory forget 删除你自己的画像。')
+    await ctx.sendToChat(chatId, '用法：/memory 查看；/memory forget 删除你自己的画像；/memory reindex 立刻补齐向量。')
     return
   }
   if (ctx.memoryReport === undefined) {

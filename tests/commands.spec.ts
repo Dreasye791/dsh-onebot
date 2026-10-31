@@ -13,6 +13,7 @@ import { join } from 'node:path'
 import { COMMANDS, helpText, packageVersion } from '../src/commands.js'
 import { MediaStore } from '../src/media.js'
 import { appendMemory, readAllMemories } from '../src/memory.js'
+import type { Embedder } from '../src/memory-embed.js'
 import { makeCmdHarness } from './helpers/bridge-harness.js'
 
 describe('commands', () => {
@@ -1224,6 +1225,30 @@ describe('/memory 与 /memory forget 的行为（成员自查自删）', () => {
     h.sendText('/memory forget')
     await vi.waitFor(() => {
       expect(textOf(h)).toContain('没有找到关于你的画像')
+    })
+  })
+
+  it('/memory reindex：没有语义编码器时说明「没有需要补的向量」', async () => {
+    const h = await makeCmdHarness({ memoryEnabled: true })
+    h.sendText('/memory reindex')
+    await vi.waitFor(() => {
+      expect(textOf(h)).toContain('没有需要补的向量')
+    })
+  })
+
+  it('/memory reindex：有编码器时只触发后台补齐，不阻塞等结果', async () => {
+    const embedder: Embedder = {
+      kind: 'local',
+      id: 'test:fake',
+      dim: 2,
+      async isAvailable(): Promise<boolean> { return true },
+      async embed(texts: readonly string[]): Promise<number[][]> { return texts.map(() => [1, 1]) },
+    }
+    const h = await makeCmdHarness({ memoryEnabled: true, memoryEmbedder: embedder })
+    h.sendText('/memory reindex')
+    await vi.waitFor(() => {
+      // 命令立刻返回「已在后台开始」，而不是等补齐跑完（32 条在 CPU 上可能十几秒）
+      expect(textOf(h)).toContain('已在后台开始补齐')
     })
   })
 

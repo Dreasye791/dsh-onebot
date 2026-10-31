@@ -647,6 +647,34 @@ describe('memory: 混合召回（关键词 + 语义）', () => {
     expect(searchMemoriesHybrid(entries, '完全无关的词', { queryVector: [-1, -1] })).toEqual([])
   })
 
+  it('embedderId 不匹配 → 跳过语义路，即使维度完全相同', () => {
+    // BGE-M3 与 Qwen3-Embedding 都是 1024 维；只比维度会把两个语义空间的向量
+    // 拿去算余弦，结果无意义且完全静默。
+    const entry = { ts: 1, text: '完全无关的内容', emb: [1, 0], dim: 2, model: 'http:#bge-m3' }
+    const hits = searchMemoriesHybrid([entry], '完全无关的内容', {
+      queryVector: [1, 0],
+      embedderId: 'http:#qwen3-embedding:0.6b',
+      weight: 1,
+    })
+    // weight=1 + 指纹不符 → 该条没有可用的语义分，直接出局
+    expect(hits).toEqual([])
+  })
+
+  it('embedderId 匹配 → 参与语义；不传 embedderId → 只比维度（老行为）', () => {
+    const entry = { ts: 1, text: '完全无关的内容', emb: [1, 0], dim: 2, model: 'm1' }
+    // 匹配：纯语义（关键词 0 分也不影响）
+    const matched = searchMemoriesHybrid([entry], '完全不同', {
+      queryVector: [1, 0],
+      embedderId: 'm1',
+      weight: 1,
+    })
+    expect(matched).toHaveLength(1)
+    expect(matched[0].score).toBe(1)
+    // 不传指纹：退回只比维度
+    const legacy = searchMemoriesHybrid([entry], '完全不同', { queryVector: [1, 0], weight: 1 })
+    expect(legacy).toHaveLength(1)
+  })
+
   it('weight=1 是纯语义：无向量的条目不再靠关键词挤进来', () => {
     const entries = [
       { ts: 1, text: '螺蛳粉很好吃' },                 // 无向量（关键词满分）

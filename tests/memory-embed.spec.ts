@@ -213,6 +213,29 @@ describe('memory-embed: HttpEmbedder（Ollama）', () => {
   })
 })
 
+describe('memory-embed: 编码器指纹（维度相同也要能区分模型）', () => {
+  it('local 用模型目录、http 用 endpoint#模型名', () => {
+    const local = new LocalEmbedder('/opt/models/bge-small-zh', async () => fakePipeline(4))
+    expect(local.id).toBe('local:/opt/models/bge-small-zh')
+    const http = new HttpEmbedder({ url: 'http://127.0.0.1:11434/', model: 'bge-m3' })
+    // 尾部斜杠被归一化：否则同一端点写成两种形式会算出两个指纹，触发全量重编
+    expect(http.id).toBe('http:http://127.0.0.1:11434#bge-m3')
+  })
+
+  it('同维度不同模型 → 指纹不同（这正是只比维度会漏掉的情形）', () => {
+    const bge = new HttpEmbedder({ url: 'http://127.0.0.1:11434', model: 'bge-m3', dim: 1024 })
+    const qwen = new HttpEmbedder({ url: 'http://127.0.0.1:11434', model: 'qwen3-embedding:0.6b', dim: 1024 })
+    expect(bge.dim).toBe(qwen.dim)
+    expect(bge.id).not.toBe(qwen.id)
+  })
+
+  it('同一模型名但不同端点也算不同指纹（权重不保证一致）', () => {
+    const a = new HttpEmbedder({ url: 'http://host-a:11434', model: 'bge-m3' })
+    const b = new HttpEmbedder({ url: 'http://host-b:11434', model: 'bge-m3' })
+    expect(a.id).not.toBe(b.id)
+  })
+})
+
 describe('memory-embed: embedSafely 统一降级', () => {
   it('没有 embedder → undefined（调用方走纯关键词）', async () => {
     await expect(embedSafely(undefined, ['x'])).resolves.toBeUndefined()

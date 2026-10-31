@@ -234,7 +234,8 @@ describe('T4 客户端 bundle — descriptor 契约核对（与 T3 src/settings-
 describe('T4 客户端 bundle — 四组 41 键（分组/键集/默认值 = T1 §4 表 + W6 诊断组 + W7 workspacePath + T2 newMessagePolicy + T9 autoSteerPolicy + T3 deferredTimeoutMs = T3 常量）', () => {
   it('分组与键序逐字对齐 host SETTINGS_GROUPS', () => {
     expect(client.GROUP_KEYS).toEqual(SETTINGS_GROUPS)
-    expect(groups.map((group) => group.id)).toEqual(['connection', 'permissions', 'behavior', 'diagnostics'])
+    // 记忆从 behavior 独立成组：behavior 管「怎么回应」，记忆管「存什么、怎么检索」
+    expect(groups.map((group) => group.id)).toEqual(['connection', 'permissions', 'behavior', 'memory', 'diagnostics'])
     expect(allFields.map((field) => field.key).sort()).toEqual([...ALL_KEYS].sort())
     expect(allFields).toHaveLength(50) // 上游 0.9.4 基线 29 键；T10/T11/T18/T20 扩到 38，NapCat 看护三项后 41，频道记忆四项后 45，语义召回五项后 50
   })
@@ -264,7 +265,7 @@ describe('T4 客户端 bundle — 四组 41 键（分组/键集/默认值 = T1 �
   })
 
   it('分组标题与字段 label 为中文（T4 要求）', () => {
-    expect(groups.map((group) => group.title)).toEqual(['连接', '权限', '行为', '诊断'])
+    expect(groups.map((group) => group.title)).toEqual(['连接', '权限', '行为', '记忆', '诊断'])
     for (const field of allFields) expect(field.label).toMatch(/\p{Script=Han}/u)
   })
 
@@ -305,11 +306,11 @@ describe('T4 客户端 bundle — 渲染函数模块级可测（renderGroup 纯�
     }))
   }
 
-  it('四组各产出标题与逐字段控件行（28 行 obx-field）', () => {
+  it('五组各产出标题与逐字段控件行（50 行 obx-field）', () => {
     const sections = renderAll(draft({ config: SCHEMA_DEFAULTS }))
-    expect(sections.map((section) => (section.props as Record<string, unknown>)['data-group'])).toEqual(['connection', 'permissions', 'behavior', 'diagnostics'])
+    expect(sections.map((section) => (section.props as Record<string, unknown>)['data-group'])).toEqual(['connection', 'permissions', 'behavior', 'memory', 'diagnostics'])
     const titles = sections.map((section) => ((section.children[0] as StubElement).children[0] as string))
-    expect(titles).toEqual(['连接', '权限', '行为', '诊断'])
+    expect(titles).toEqual(['连接', '权限', '行为', '记忆', '诊断'])
     const fieldRows = sections.flatMap((section) => walk(section).filter((element) => element.type === 'div' && element.props.className === 'obx-field'))
     expect(fieldRows).toHaveLength(50)
   })
@@ -684,6 +685,27 @@ describe('T5 批 2 — 交互派生纯函数（computeDirtyKeys / deriveModeInac
     expect(deriveModeInactiveKeys('forward')).toEqual(['host', 'port'])
     expect(deriveModeInactiveKeys(undefined)).toEqual([])
     expect(deriveModeInactiveKeys('nonsense')).toEqual([])
+  })
+
+  it('记忆总开关关闭时，从属 8 项全部标记为不生效（总开关自身不置灰）', () => {
+    const deriveInactiveKeys = client.deriveInactiveKeys as (draft: Record<string, unknown>) => string[]
+    const memoryDependents = [
+      'memoryMaxEntriesPerChat', 'memoryRecallTopK', 'memoryProfileScope',
+      'memoryEmbeddingMode', 'memoryEmbeddingModel',
+      'memoryEmbeddingUrl', 'memoryEmbeddingKey', 'memorySemanticWeight',
+    ]
+
+    const off = deriveInactiveKeys({ mode: 'reverse', memoryEnabled: false })
+    // 连接模式的失效项仍在（两个来源合成一个数组，键不重叠）
+    expect(off).toContain('url')
+    for (const key of memoryDependents) expect(off).toContain(key)
+    // 总开关本身不能置灰，否则用户没法再打开记忆
+    expect(off).not.toContain('memoryEnabled')
+
+    // 开启后只剩模式相关的失效项
+    expect(deriveInactiveKeys({ mode: 'reverse', memoryEnabled: true })).toEqual(['url'])
+    // 缺省（历史快照没有该字段）= 关闭，按关闭处理
+    expect(deriveInactiveKeys({ mode: 'reverse' })).toEqual(expect.arrayContaining(memoryDependents))
   })
 })
 

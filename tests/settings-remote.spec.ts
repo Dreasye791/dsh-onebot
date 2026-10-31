@@ -507,6 +507,9 @@ describe('onebotSettings remote — P1/T2 newMessagePolicy 白名单扩展（键
     expect(SCHEMA_DEFAULTS.newMessagePolicy).toBe('queue')
     expect(SETTINGS_GROUPS.behavior).toEqual([
       'interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'reasoningEffort', 'persona',
+    ])
+    // 记忆从 behavior 独立成组（9 键，含语义召回 5 键）
+    expect(SETTINGS_GROUPS.memory).toEqual([
       'memoryEnabled', 'memoryMaxEntriesPerChat', 'memoryRecallTopK', 'memoryProfileScope',
       'memoryEmbeddingMode', 'memoryEmbeddingModel', 'memoryEmbeddingUrl', 'memoryEmbeddingKey', 'memorySemanticWeight',
     ])
@@ -552,6 +555,9 @@ describe('onebotSettings remote — T9 autoSteerPolicy 白名单扩展（behavio
     expect(SCHEMA_DEFAULTS.autoSteerPolicy).toBe('admin')
     expect(SETTINGS_GROUPS.behavior).toEqual([
       'interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'reasoningEffort', 'persona',
+    ])
+    // 记忆从 behavior 独立成组（9 键，含语义召回 5 键）
+    expect(SETTINGS_GROUPS.memory).toEqual([
       'memoryEnabled', 'memoryMaxEntriesPerChat', 'memoryRecallTopK', 'memoryProfileScope',
       'memoryEmbeddingMode', 'memoryEmbeddingModel', 'memoryEmbeddingUrl', 'memoryEmbeddingKey', 'memorySemanticWeight',
     ])
@@ -597,6 +603,9 @@ describe('onebotSettings remote — T3 deferredTimeoutMs 白名单扩展（behav
     expect(SCHEMA_DEFAULTS.deferredTimeoutMs).toBe(600_000)
     expect(SETTINGS_GROUPS.behavior).toEqual([
       'interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'reasoningEffort', 'persona',
+    ])
+    // 记忆从 behavior 独立成组（9 键，含语义召回 5 键）
+    expect(SETTINGS_GROUPS.memory).toEqual([
       'memoryEnabled', 'memoryMaxEntriesPerChat', 'memoryRecallTopK', 'memoryProfileScope',
       'memoryEmbeddingMode', 'memoryEmbeddingModel', 'memoryEmbeddingUrl', 'memoryEmbeddingKey', 'memorySemanticWeight',
     ])

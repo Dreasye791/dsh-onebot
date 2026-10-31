@@ -65,7 +65,9 @@ export const NAMESPACE = 'onebotSettings'
 /** 快照固定值：38 键均为插件级热重启生效（T1 §5；W1/W2 新增 6 布尔键同粒度）。 */
 export const REMOTE_EFFECT = 'restart'
 
-/** 设置页 UI 四组 38 键（T1 §4 + T9 autoSteerPolicy + T3 deferredTimeoutMs + T10 reasoningEffort + T11 persona；与 src/index.ts Config schema 一一对应）。
+/** 设置页 UI 五组 50 键（T1 §4 + T9 autoSteerPolicy + T3 deferredTimeoutMs + T10 reasoningEffort + T11 persona；与 src/index.ts Config schema 一一对应）。
+ *  记忆 9 键（第一批 4 + 语义召回 5）从 behavior 独立成组：behavior 管「怎么回应」，
+ *  记忆管「存什么、怎么检索」，且总开关关闭时其余 8 键全部不生效（面板据此置灰）。
  *  W6：permissions/behavior 三组 19 键保持不动，W1/W2 的 6 个布尔键独立成
  *  「diagnostics（诊断）」组——它们全部默认关（除 actionAuditEnabled 默认开）、
  *  属观测/调试面，与连接权限行为组的使用频率与风险等级都不同，独立分组让
@@ -87,10 +89,11 @@ export const SETTINGS_GROUPS: Readonly<Record<string, readonly string[]>> = {
     // SETTINGS_GROUPS(38) 漂移，tests/client-settings.spec.ts 有 4 条断言长期红。
     'napcatLauncher', 'napcatLauncherArgs', 'autoStartNapcat'],
   permissions: ['requireMention', 'adminUsers', 'dmPolicy', 'groupPolicy', 'allowAllUsers', 'allowFrom', 'groupAllowFrom', 'mcpToolAllow'],
-  behavior: ['interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'reasoningEffort', 'persona',
-    // 频道记忆：开关、两个上限、画像范围。关闭时不注册任何记忆工具。
-    'memoryEnabled', 'memoryMaxEntriesPerChat', 'memoryRecallTopK', 'memoryProfileScope',
-    // 第二批：语义召回（off/local/http + 模型/端点/key + 混合权重）。
+  behavior: ['interimMessages', 'interimRecall', 'interimRecallMs', 'sendErrorNotice', 'unknownCommand', 'rateLimitPerMinute', 'newMessagePolicy', 'autoSteerPolicy', 'deferredTimeoutMs', 'reasoningEffort', 'persona'],
+  // 频道记忆独立成组：behavior 管「机器人怎么回应」（输出侧），记忆管「存什么、
+  // 怎么检索」（持久化侧）。9 个键有强内聚 —— 总开关 + 3 个检索参数 + 5 个语义
+  // 召回参数，且关闭总开关时后面 8 个全部无效（面板据此置灰）。
+  memory: ['memoryEnabled', 'memoryMaxEntriesPerChat', 'memoryRecallTopK', 'memoryProfileScope',
     'memoryEmbeddingMode', 'memoryEmbeddingModel', 'memoryEmbeddingUrl', 'memoryEmbeddingKey', 'memorySemanticWeight'],
   diagnostics: ['actionAuditEnabled', 'traceEnabled', 'recordInbound', 'inboxRedact', 'injectEnabled', 'injectDryRun'],
 }

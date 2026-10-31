@@ -1487,3 +1487,28 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 `memory-backfill` +3（指纹变了重编、写回带指纹、历史条目无指纹重编）、`memory` +2
 （embedderId 不匹配跳过语义）、`settings-remote` +2（四种状态、模型名为空）、
 `commands` +2（reindex 两条分支）；**13 文件 382 用例全绿**（此前 370）。
+
+## 2026-10-31 记忆配置从「行为」组独立成「记忆」组（含关闭时置灰）
+
+- **动机**：`behavior` 组原有 20 个键，其中 **9 个是记忆相关（45%）**。behavior 管「机器人
+  怎么回应」（插播 / 错误通知 / 限流 / 消息策略 / 人设），记忆管「存什么、怎么检索」——
+  一个管输出，一个管持久化。更要紧的是二者有**主从关系**：`memoryEnabled: false` 时
+  其余 8 键全部无效，而平铺在 20 项里表达不了这一点，用户改了参数也不知道没生效。
+- **取证三条**（决定成本，也是这次敢动的原因）：
+  1. `ALL_KEYS` 由 `ENUM_KEYS` / `NUMBER_KEYS` / … 按**类型**派生，与 `SETTINGS_GROUPS`
+     完全独立 → 改组不动键集，50 键的长度断言零改动；
+  2. 客户端 `GROUPS` 是数组、渲染 `GROUPS.map(...)` 自动出卡片 → 加组不需要改渲染逻辑；
+  3. 客户端**已有** `modeInactiveKeys` 通道（禁用变暗 + hint 追加提示）→ 置灰不需要新写交互。
+- **改法**：`SETTINGS_GROUPS` 新增 `memory` 组（9 键，`memoryEnabled` 在首位）；客户端
+  `GROUPS` 在 behavior 之后插入同构的一组（字段定义从 behavior **摘出**，不重复定义）。
+- **关闭时置灰**：新增 `deriveInactiveKeys(draft)` = `deriveModeInactiveKeys(draft.mode)` +
+  （`memoryEnabled !== true` 时）8 个从属键。合并成一个数组是为了复用同一条渲染通道 ——
+  两组键不重叠，并集互不干扰。**值保留不清空**（与 mode 联动同一语义）。
+  - 总开关自身**不置灰**，否则用户没法再打开记忆；
+  - 缺省（历史快照没有该字段）按关闭处理。
+- **文案**：`field.modeInactive` 从「当前模式不生效」改为「当前配置下不生效」（中英同步）
+  —— 两个来源共用同一句提示，说「模式」已经不准。
+- **验证**：`tsc` exit 0；`client-settings` 同步组名 / 标题 / 行数断言，新增 1 条置灰语义
+  测试（关闭时 8 项全在列表里、总开关自身不在、开启后只剩模式相关项）；
+  `settings-remote` 3 处 `behavior` 键序断言拆成 `behavior`(11) + `memory`(9)；
+  **13 文件 383 用例全绿**（此前 382）。

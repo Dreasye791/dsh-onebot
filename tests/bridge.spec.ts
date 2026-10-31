@@ -264,13 +264,13 @@ describe('ChatBridge', () => {
     await h2.connection.stop()
   })
 
-  it('inbound pipeline order: policy gate → mention gate → command router → media → quote → dispatch (M2-T0 pipeline)', async () => {
+  it('inbound pipeline order: policy gate → mention gate → command router → quote expansion → media → dispatch (M2-T0 pipeline)', async () => {
     const h = await makeCmdHarness()
     const order: string[] = []
     const target = h.bridge as unknown as {
       tryHandleCommand(chatId: string, text: string, userId: string): Promise<boolean>
-      buildBody(text: string, media: unknown[], chatId: string): Promise<string>
-      expandQuote(messageId: string): Promise<string>
+      buildBody(text: string, media: unknown[], chatId: string, images?: unknown[], registerRecent?: boolean): Promise<string>
+      expandQuote(messageId: string): Promise<{ text: string; media: unknown[] }>
       dispatchFollowup(chatId: string, text: string, role: string, nickname?: string): Promise<void>
     }
     const realCommand = target.tryHandleCommand.bind(h.bridge)
@@ -279,9 +279,9 @@ describe('ChatBridge', () => {
       return await realCommand(chatId, text, userId)
     }
     const realBody = target.buildBody.bind(h.bridge)
-    target.buildBody = async (text, media, chatId) => {
+    target.buildBody = async (text, media, chatId, images, registerRecent) => {
       order.push('media')
-      return await realBody(text, media, chatId)
+      return await realBody(text, media, chatId, images, registerRecent)
     }
     const realQuote = target.expandQuote.bind(h.bridge)
     target.expandQuote = async (messageId) => {
@@ -336,7 +336,9 @@ describe('ChatBridge', () => {
       sender: { user_id: 10001, nickname: '小明' },
     }))
     await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
-    expect(order).toEqual(['command', 'media', 'quote', 'dispatch'])
+    // T19：展开（纯解析）现在先于任何 buildBody，且 buildBody 按最终文本里
+    // 的出现顺序 forward → quote → body 依次执行——否则图块顺序与文本顺序相反。
+    expect(order).toEqual(['command', 'quote', 'media', 'dispatch'])
     const text = h.captured.followups[0].text
     expect(text).toContain('[引用]引用来源: 被引用的原文')
     expect(text).toContain('[图片:')

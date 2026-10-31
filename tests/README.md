@@ -66,7 +66,7 @@
 | rate-limits normal messages with one notice per window and lets commands through (M1-B7) | 注意现状：每 chat 首条消息先于 ChatAgent 存在、不计窗（注释已写明）；命令豁免 |
 | rateLimitPerMinute 0 disables the inbound rate limit (M1-B7) | 0=禁用分支 |
 | injects RESTRICTED_PREFIX for restricted group members but not for admins（M2-T0） | 注入点在 processInbound 文本拼装（任务书把它列入出站闸门矩阵，但技术上属入站拼装——按实际归属迁入 inbound；管理员不注的反断言一并带走） |
-| inbound pipeline order: policy gate → mention gate → command router → media → quote → dispatch（M2-T0） | 用实例方法覆写（tryHandleCommand/buildBody/expandQuote/dispatchFollowup）记录调用序 + 前置门「无调用」反证；顺序即契约，五拆后顺序变了此测试先红 |
+| inbound pipeline order: policy gate → mention gate → command router → quote expansion → media → dispatch（M2-T0） | 用实例方法覆写（tryHandleCommand/buildBody/expandQuote/dispatchFollowup）记录调用序 + 前置门「无调用」反证；顺序即契约，五拆后顺序变了此测试先红。T19 起展开（纯解析）先于任何 buildBody：图块顺序必须与最终文本里 forward → quote → body 的出现顺序一致，否则引用里的图会被当成用户自己发的 |
 
 ### 3.3 outbound.spec.ts（PR4 目标）
 

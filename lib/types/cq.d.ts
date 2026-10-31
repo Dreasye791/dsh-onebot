@@ -83,7 +83,5 @@ export declare function parseCqString(raw: string): OneBotSegment[];
  * @returns parsed text, media refs, and the quoted message id.
  */
 export declare function parseMessage(segments: OneBotSegment[] | undefined, raw: string): ParsedMessage;
-/** Extract the plain text of a quoted (get_msg) message for [引用] expansion. */
-export declare function segmentText(segments: OneBotSegment[] | undefined, raw: string): string;
 /** Marker regex shared with split.ts (outbound [[qq_forward]]). */
 export declare const FORWARD_BLOCK_RE: RegExp;

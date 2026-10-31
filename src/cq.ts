@@ -254,10 +254,5 @@ export function parseMessage(segments: OneBotSegment[] | undefined, raw: string)
   return { text, media, replyId, forwardId }
 }
 
-/** Extract the plain text of a quoted (get_msg) message for [引用] expansion. */
-export function segmentText(segments: OneBotSegment[] | undefined, raw: string): string {
-  return parseMessage(segments, raw).text
-}
-
 /** Marker regex shared with split.ts (outbound [[qq_forward]]). */
 export const FORWARD_BLOCK_RE = /\[\[qq_forward\]\]([\s\S]*?)\[\[\/qq_forward\]\]/g

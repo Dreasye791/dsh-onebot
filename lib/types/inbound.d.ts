@@ -104,9 +104,13 @@ export interface InboundContext {
      * `images` (T15)：本轮消息已投递成功的图片引用收集器。由调用方按消息新建、
      * 随消息一路传到 dispatch——**不能**挂在 per-chat settings 上，那样同 chat
      * 并发入站（handleInbound 是 fire-and-forget）会互相取走对方的图。 */
-    buildBody(text: string, media: MediaRef[], chatId: ChatId, images?: ImageAttachmentRef[]): Promise<string>;
-    /** Quote (reply) expansion (bridge facade: overridable, see the pipeline-order test). */
-    expandQuote(messageId: string): Promise<string>;
+    buildBody(text: string, media: MediaRef[], chatId: ChatId, images?: ImageAttachmentRef[], registerRecent?: boolean, failedLabel?: string): Promise<string>;
+    /** Quote (reply) expansion (bridge facade: overridable, see the pipeline-order test).
+     * 返回被引用消息的文本与其中可投递的图片（只解析，不下载）。 */
+    expandQuote(messageId: string): Promise<{
+        text: string;
+        media: MediaRef[];
+    }>;
     /** Turn dispatch — bridge-owned orchestration (ensureChat + per-turn prefixes). */
     /** Turn dispatch — bridge-owned orchestration (ensureChat + per-turn prefixes).
      *
@@ -149,6 +153,14 @@ export declare const DEDUP_MAX_ENTRIES = 4096;
  * reasoning as DEDUP_MAX_ENTRIES: an unbounded map would leak under a flood of
  * distinct quoted ids. */
 export declare const QUOTE_MEMO_MAX_ENTRIES = 512;
+/** 单条引用消息最多解析/投递的图片张数。
+ *
+ * 为什么要有上限：`buildBody` 对 media 是**串行** `await`，而单张下载的硬超时
+ * 是 30s（`media.ts` 的 DOWNLOAD_TIMEOUT_MS），全部发生在 turn dispatch 之前。
+ * 引用一条 9 图消息且 CDN 全部无响应时，最坏会让这条消息在 dispatch 前卡
+ * 4 分半，用户看到的是机器人装死。超过上限的图在文本里显式标为未展开，
+ * 让模型知道「还有图但没取」，而不是拿着一个空占位符瞎猜。 */
+export declare const QUOTE_MEDIA_MAX = 4;
 /** Constructor tuning knobs for the inbound pipeline (tests inject a fake
  * clock / a small LRU cap; production uses the defaults). */
 export interface InboundPipelineOptions {
@@ -194,7 +206,7 @@ export declare class InboundPipeline {
      * Build the message body text: placeholders become annotated local paths
      * (images/voices/videos) and voice files are transcribed when enabled.
      */
-    buildBody(text: string, media: MediaRef[], chatId: ChatId, images?: ImageAttachmentRef[]): Promise<string>;
+    buildBody(text: string, media: MediaRef[], chatId: ChatId, images?: ImageAttachmentRef[], registerRecent?: boolean, failedLabel?: string): Promise<string>;
     /** Resolve one media ref to a text annotation with a local path.
      *
      * `attach` (T15): 图片走真图片块投递——成功时把引用压入调用方传入的
@@ -204,22 +216,36 @@ export declare class InboundPipeline {
      *
      * T18：图片引用经形参传递，不再挂在 per-chat settings 上——`handleInbound`
      * 是 fire-and-forget，同一会话并发处理两条消息时共享可变数组会互相取走。 */
-    resolveMediaRef(ref: MediaRef, chatId: ChatId, attach?: boolean, images?: ImageAttachmentRef[]): Promise<string>;
+    resolveMediaRef(ref: MediaRef, chatId: ChatId, attach?: boolean, images?: ImageAttachmentRef[], registerRecent?: boolean): Promise<string>;
     /** M3-D4c: transcribe in the background and deliver the labeled transcript
      * into the chat's turn (steer at the running turn's nearest step boundary,
      * or a new turn when the agent is idle). Failure keeps [语音] as final. */
     private transcribeLater;
     /** Memo shared by the mention gate (needs the author) and the quote
-     * expansion (needs the text) so one reply costs a single get_msg. */
+     * expansion (needs the text + images) so one reply costs a single get_msg. */
     private readonly quoteMemo;
-    /** Fetch a quoted message once: flattened [引用] text + the author's QQ. */
+    /** Fetch a quoted message once: flattened [引用] text, the author's QQ, and
+     * the quoted images (parsed but **not** downloaded — the mention gate calls
+     * this for every un-@'d reply and must not pay for media I/O). */
     private fetchQuote;
+    /**
+     * 阶段 0 取证探针的形状摘要：只描述 get_msg 返回的段结构，不解析、不下载。
+     *
+     * 脱敏约束：trace 文件会长期留在 mediaDir 并被打进 `/doctor export` 诊断包，
+     * 所以**绝不落完整 URL**（QQ 图片链接带 rkey 签名）。这里只保留 host、query
+     * 参数名集合（能看出有没有 rkey/term）、file 的形态分类与扩展名——足够回答
+     * 「url 能不能直接用」「只有 file 时是什么形状」，又不会泄签名。
+     */
+    private describeQuoteShape;
     /** Author QQ of the quoted message ('' when unknown or the fetch failed).
      * The mention gate uses this because OneBot's reply segment only carries an
      * id — an unknown author must never be mistaken for the bot itself. */
     resolveReplyTarget(messageId: string): Promise<string>;
-    /** Expand a quoted (reply) message into [引用] text via get_msg. */
-    expandQuote(messageId: string): Promise<string>;
+    /** Expand a quoted (reply) message into [引用] text + its images via get_msg. */
+    expandQuote(messageId: string): Promise<{
+        text: string;
+        media: MediaRef[];
+    }>;
     /**
      * Fetch an inbound QQ file to a local path. NapCat's get_file may return
      * container-internal paths unreachable from this host, so:

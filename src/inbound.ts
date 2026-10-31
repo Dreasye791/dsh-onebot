@@ -19,7 +19,7 @@ import { extForInboundName } from './media.js'
 import type { Transcriber } from './stt.js'
 import { transcriptLabel } from './stt.js'
 import type { OneBotSegment, MediaRef } from './cq.js'
-import { cqUnescape, detectMention, parseMessage, segmentText } from './cq.js'
+import { cqUnescape, detectMention, parseCqString, parseMessage } from './cq.js'
 import type { AccessPolicyConfig, ChatId, UserRole } from './chat.js'
 import {
   buildChatId, buildGroupMessagePrefix, classifyUserRole, dmAllowed, groupAllowed,
@@ -162,9 +162,10 @@ export interface InboundContext {
    * `images` (T15)：本轮消息已投递成功的图片引用收集器。由调用方按消息新建、
    * 随消息一路传到 dispatch——**不能**挂在 per-chat settings 上，那样同 chat
    * 并发入站（handleInbound 是 fire-and-forget）会互相取走对方的图。 */
-  buildBody(text: string, media: MediaRef[], chatId: ChatId, images?: ImageAttachmentRef[]): Promise<string>
-  /** Quote (reply) expansion (bridge facade: overridable, see the pipeline-order test). */
-  expandQuote(messageId: string): Promise<string>
+  buildBody(text: string, media: MediaRef[], chatId: ChatId, images?: ImageAttachmentRef[], registerRecent?: boolean, failedLabel?: string): Promise<string>
+  /** Quote (reply) expansion (bridge facade: overridable, see the pipeline-order test).
+   * 返回被引用消息的文本与其中可投递的图片（只解析，不下载）。 */
+  expandQuote(messageId: string): Promise<{ text: string; media: MediaRef[] }>
   /** Turn dispatch — bridge-owned orchestration (ensureChat + per-turn prefixes). */
   /** Turn dispatch — bridge-owned orchestration (ensureChat + per-turn prefixes).
    *
@@ -208,6 +209,15 @@ export const DEDUP_MAX_ENTRIES = 4096
  * reasoning as DEDUP_MAX_ENTRIES: an unbounded map would leak under a flood of
  * distinct quoted ids. */
 export const QUOTE_MEMO_MAX_ENTRIES = 512
+
+/** 单条引用消息最多解析/投递的图片张数。
+ *
+ * 为什么要有上限：`buildBody` 对 media 是**串行** `await`，而单张下载的硬超时
+ * 是 30s（`media.ts` 的 DOWNLOAD_TIMEOUT_MS），全部发生在 turn dispatch 之前。
+ * 引用一条 9 图消息且 CDN 全部无响应时，最坏会让这条消息在 dispatch 前卡
+ * 4 分半，用户看到的是机器人装死。超过上限的图在文本里显式标为未展开，
+ * 让模型知道「还有图但没取」，而不是拿着一个空占位符瞎猜。 */
+export const QUOTE_MEDIA_MAX = 4
 
 /** Constructor tuning knobs for the inbound pipeline (tests inject a fake
  * clock / a small LRU cap; production uses the defaults). */
@@ -326,27 +336,36 @@ export class InboundPipeline {
     // （串图），或 B 进入时清空把 A 尚未消费的图丢掉（丢图）。改成随消息显式
     // 传递后，两条消息各持一份，互不影响——各早退分支也不再需要「清空」这个
     // 补救动作，因为它们手里的数组随栈帧一起消失。
-    const images: ImageAttachmentRef[] = []
-    const body = await this.ctx.buildBody(inbound.text, inbound.media, chatId, images)
-
-    let quote = ''
-    if (inbound.replyId !== undefined) {
-      quote = await this.ctx.expandQuote(inbound.replyId)
-    }
+    // 先把两个展开做完（都只解析、不下载），再按最终文本里的出现顺序
+    // forward → quote → body 依次落盘投递。image 块在 content 里统一追加在
+    // 文本之后（见 bridge 的 dispatchFollowup），只有「图块顺序 == 文本占位符
+    // 顺序」模型才能把图和文字对上——先 body 再 expansion 会让引用/转发里的图
+    // 排到用户自己那张图的后面，等于张冠李戴。
     let forward = ''
+    let forwardMedia: MediaRef[] = []
     if (inbound.forwardId !== undefined) {
       const expansion = await this.expandForward(inbound.forwardId)
       forward = expansion.text
-      if (expansion.media.length > 0) {
-        // Forward-embedded images ride the same buildBody pipeline (their
-        // '[图片]' placeholders are inline in the expansion text). Preserve
-        // the pre-routing /ocr ref so a direct image in the same message
-        // stays the /ocr target.
-        const pending = this.ctx.getSettings(chatId).pendingImageRef
-        forward = await this.ctx.buildBody(expansion.text, expansion.media, chatId, images)
-        this.ctx.getSettings(chatId).pendingImageRef = pending
-      }
+      forwardMedia = expansion.media
     }
+    let quote = ''
+    let quoteMedia: MediaRef[] = []
+    if (inbound.replyId !== undefined) {
+      const expansion = await this.ctx.expandQuote(inbound.replyId)
+      quote = expansion.text
+      quoteMedia = expansion.media
+    }
+
+    const images: ImageAttachmentRef[] = []
+    // 展开内容里的图片不登记「最近图片」：`/ocr` 指的是用户自己发的图，引用/
+    // 转发里的图若顶掉 lastImagePath，下一条 /ocr 会去识别别人的图。
+    if (forwardMedia.length > 0) {
+      forward = await this.ctx.buildBody(forward, forwardMedia, chatId, images, false)
+    }
+    if (quoteMedia.length > 0) {
+      quote = await this.ctx.buildBody(quote, quoteMedia, chatId, images, false, '[引用图片:不可用]')
+    }
+    const body = await this.ctx.buildBody(inbound.text, inbound.media, chatId, images)
 
     const isAdmin = classifyUserRole(userId, policy.adminUsers) === 'admin'
     if (this.rateLimited(chatId)) {
@@ -462,6 +481,8 @@ export class InboundPipeline {
     media: MediaRef[],
     chatId: ChatId,
     images?: ImageAttachmentRef[],
+    registerRecent = true,
+    failedLabel?: string,
   ): Promise<string> {
     if (media.length === 0) return text
     let out = text
@@ -475,7 +496,7 @@ export class InboundPipeline {
     for (const ref of media) {
       const placeholder = placeholderFor(ref)
       const idx = out.indexOf(placeholder, searchFrom)
-      const annotation = await this.resolveMediaRef(ref, chatId, true, images)
+      const annotation = await this.resolveMediaRef(ref, chatId, true, images, registerRecent)
       if (idx >= 0 && annotation !== '') {
         out = out.slice(0, idx) + annotation + out.slice(idx + placeholder.length)
         searchFrom = idx + annotation.length
@@ -484,8 +505,16 @@ export class InboundPipeline {
         // placeholder silently unresolved.
         this.ctx.log('debug', '媒体解析失败，占位符保留原文: ' + placeholder)
         currentTrace()?.emit('media', { ok: false, reason: TRACE_REASONS.mediaResolveFailed })
-        // 占位符原样留着，游标跳过它，否则下一张图会命中同一个位置。
-        searchFrom = idx + placeholder.length
+        if (failedLabel !== undefined) {
+          // 引用场景：投递成功时注解也是 `[图片]`，文本上无法与「失败但占位符
+          // 原样保留」区分。只有在这里换成显式标记，模型才知道这张没取到，
+          // 而不是对着一个裸占位符猜。
+          out = out.slice(0, idx) + failedLabel + out.slice(idx + placeholder.length)
+          searchFrom = idx + failedLabel.length
+        } else {
+          // 占位符原样留着，游标跳过它，否则下一张图会命中同一个位置。
+          searchFrom = idx + placeholder.length
+        }
       }
     }
     return out
@@ -500,7 +529,7 @@ export class InboundPipeline {
    *
    * T18：图片引用经形参传递，不再挂在 per-chat settings 上——`handleInbound`
    * 是 fire-and-forget，同一会话并发处理两条消息时共享可变数组会互相取走。 */
-  async resolveMediaRef(ref: MediaRef, chatId: ChatId, attach = false, images?: ImageAttachmentRef[]): Promise<string> {
+  async resolveMediaRef(ref: MediaRef, chatId: ChatId, attach = false, images?: ImageAttachmentRef[], registerRecent = true): Promise<string> {
     if (ref.kind === 'file') {
       return await this.resolveNasFile(ref)
     }
@@ -520,9 +549,13 @@ export class InboundPipeline {
       case 'image': {
         // Remember the most recent inbound image for /ocr (survives /new);
         // consume the pre-routing pending ref so /ocr never re-resolves it.
-        const settings = this.ctx.getSettings(chatId)
-        settings.lastImagePath = resolved.path
-        settings.pendingImageRef = undefined
+        // registerRecent=false 用于引用/转发展开出的图：它们不该顶掉用户自己
+        // 刚发的那张图，否则下一条 /ocr 会去识别别人的图。
+        if (registerRecent) {
+          const settings = this.ctx.getSettings(chatId)
+          settings.lastImagePath = resolved.path
+          settings.pendingImageRef = undefined
+        }
         if (attach && this.ctx.deliverInboundImage !== undefined) {
           let delivered: ImageAttachmentRef | undefined
           try {
@@ -576,14 +609,17 @@ export class InboundPipeline {
   }
 
   /** Memo shared by the mention gate (needs the author) and the quote
-   * expansion (needs the text) so one reply costs a single get_msg. */
-  private readonly quoteMemo = new Map<string, { text: string; author: string }>()
+   * expansion (needs the text + images) so one reply costs a single get_msg. */
+  private readonly quoteMemo = new Map<string, { text: string; author: string; media: MediaRef[] }>()
 
-  /** Fetch a quoted message once: flattened [引用] text + the author's QQ. */
-  private async fetchQuote(messageId: string): Promise<{ text: string; author: string }> {
+  /** Fetch a quoted message once: flattened [引用] text, the author's QQ, and
+   * the quoted images (parsed but **not** downloaded — the mention gate calls
+   * this for every un-@'d reply and must not pay for media I/O). */
+  private async fetchQuote(messageId: string): Promise<{ text: string; author: string; media: MediaRef[] }> {
     const cached = this.quoteMemo.get(messageId)
     if (cached !== undefined) return cached
-    let entry: { text: string; author: string } = { text: '', author: '' }
+    let entry: { text: string; author: string; media: MediaRef[] } = { text: '', author: '', media: [] }
+    const startedAt = Date.now()
     try {
       const data = await this.ctx.call('get_msg', { message_id: Number(messageId) }) as {
         message?: unknown
@@ -592,10 +628,24 @@ export class InboundPipeline {
       }
       const segments = Array.isArray(data.message) ? data.message as OneBotSegment[] : undefined
       const raw = typeof data.raw_message === 'string' ? data.raw_message : ''
-      const text = cqUnescape(segmentText(segments, raw))
+      // 阶段 0 取证探针（只观测，不改变行为）：回答「引用消息里的图片段到底带
+      // 什么字段、url 是否可作为下载主路径」。故意不带 reason —— trace 的同
+      // cause 5 分钟限频按 stage+reason 去重，带 reason 会把第二条样本吞掉。
+      currentTrace()?.emit('quote', {
+        ok: true,
+        ms: Date.now() - startedAt,
+        data: { probe: 'quote-shape', ...this.describeQuoteShape(segments, raw) },
+      })
+      const parsed = parseMessage(segments, raw)
+      const capped = capQuoteImages(cqUnescape(parsed.text), parsed.media)
+      const text = capped.text
       const name = data.sender?.nickname ?? ''
       const author = data.sender?.user_id !== undefined ? String(data.sender.user_id) : ''
-      entry = { text: text.trim() === '' ? '' : '[引用]' + (name !== '' ? name + ': ' : '') + text, author }
+      entry = {
+        text: text.trim() === '' ? '' : '[引用]' + (name !== '' ? name + ': ' : '') + text,
+        author,
+        media: capped.media,
+      }
     } catch (error) {
       this.ctx.log('debug', 'quote expansion failed: ' + describeError(error))
       currentTrace()?.emit('quote', { ok: false, reason: '引用消息展开失败，已降级为空引用: ' + describeError(error) })
@@ -610,6 +660,60 @@ export class InboundPipeline {
     return entry
   }
 
+  /**
+   * 阶段 0 取证探针的形状摘要：只描述 get_msg 返回的段结构，不解析、不下载。
+   *
+   * 脱敏约束：trace 文件会长期留在 mediaDir 并被打进 `/doctor export` 诊断包，
+   * 所以**绝不落完整 URL**（QQ 图片链接带 rkey 签名）。这里只保留 host、query
+   * 参数名集合（能看出有没有 rkey/term）、file 的形态分类与扩展名——足够回答
+   * 「url 能不能直接用」「只有 file 时是什么形状」，又不会泄签名。
+   */
+  private describeQuoteShape(segments: OneBotSegment[] | undefined, raw: string): Record<string, unknown> {
+    const list = segments !== undefined && segments.length > 0 ? segments : parseCqString(raw)
+    const images = list.filter(seg => seg.type === 'image').map(seg => {
+      const data = seg.data
+      const url = data.url ?? ''
+      const file = data.file ?? ''
+      let host = ''
+      let queryKeys: string[] = []
+      if (url !== '') {
+        try {
+          const parsed = new URL(url)
+          host = parsed.host
+          queryKeys = [...parsed.searchParams.keys()]
+        } catch {
+          host = 'unparsable'
+        }
+      }
+      return {
+        urlPresent: url !== '',
+        urlHost: host,
+        urlQueryKeys: queryKeys,
+        fileKind: file === ''
+          ? 'empty'
+          : file.startsWith('file://')
+            ? 'file'
+            : file.startsWith('base64://')
+              ? 'base64'
+              : file.startsWith('http')
+                ? 'http'
+                : 'name',
+        fileExt: (/\.([a-z0-9]{1,6})$/i.exec(file)?.[1] ?? '').toLowerCase(),
+        fileLen: file.length,
+        fileSize: String(data.file_size ?? ''),
+        subType: data.sub_type ?? data['sub-type'] ?? '',
+      }
+    })
+    return {
+      messageIsArray: segments !== undefined && segments.length > 0,
+      segmentCount: list.length,
+      segmentTypes: list.map(seg => seg.type),
+      rawLen: raw.length,
+      imageCount: images.length,
+      images,
+    }
+  }
+
   /** Author QQ of the quoted message ('' when unknown or the fetch failed).
    * The mention gate uses this because OneBot's reply segment only carries an
    * id — an unknown author must never be mistaken for the bot itself. */
@@ -617,9 +721,10 @@ export class InboundPipeline {
     return (await this.fetchQuote(messageId)).author
   }
 
-  /** Expand a quoted (reply) message into [引用] text via get_msg. */
-  async expandQuote(messageId: string): Promise<string> {
-    return (await this.fetchQuote(messageId)).text
+  /** Expand a quoted (reply) message into [引用] text + its images via get_msg. */
+  async expandQuote(messageId: string): Promise<{ text: string; media: MediaRef[] }> {
+    const quote = await this.fetchQuote(messageId)
+    return { text: quote.text, media: quote.media }
   }
 
   /**
@@ -756,6 +861,29 @@ export class InboundPipeline {
       return { text: '[合并转发 id=' + forwardId + ' 未展开: api-error]', media: [] }
     }
   }
+}
+
+/**
+ * 把引用消息里超量的图片从 media 里截掉，并把文本里对应位置的 `[图片]`
+ * 换成显式的「未展开」标记。
+ *
+ * 两件事必须同时做：只截 media 不截文本，会留下永远填不上的裸 `[图片]`，
+ * 模型会以为图已经到了；只改文本不截 media，buildBody 的游标会继续往后找
+ * 占位符，把后续图片的注解写到错误的位置。按出现顺序替换与 parseMessage 的
+ * 产出顺序天然一致（它按段遍历 push）。
+ *
+ * 非图片媒体（语音/视频/文件）一律不进引用展开：语音要走 STT 的异步补递、
+ * 文件要走 get_file 的双通道，都依赖入站正文那条路径的上下文，引用里没有。
+ */
+function capQuoteImages(text: string, media: MediaRef[]): { text: string; media: MediaRef[] } {
+  const images = media.filter(ref => ref.kind === 'image')
+  if (images.length <= QUOTE_MEDIA_MAX) return { text, media: images }
+  let seen = 0
+  const capped = text.replace(/\[图片\]/g, match => {
+    seen += 1
+    return seen <= QUOTE_MEDIA_MAX ? match : '[引用图片:超过上限未展开]'
+  })
+  return { text: capped, media: images.slice(0, QUOTE_MEDIA_MAX) }
 }
 
 /** The placeholder a media ref contributes to the parsed text. */

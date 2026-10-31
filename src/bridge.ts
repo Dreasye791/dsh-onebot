@@ -490,7 +490,7 @@ export class ChatBridge {
       transcriber: deps.transcriber,
       steerTranscript: (chatId, text) => this.steerTranscript(chatId, text),
       tryHandleCommand: (chatId, text, userId, nickname) => this.tryHandleCommand(chatId, text, userId, nickname),
-      buildBody: (text, media, chatId, images) => this.buildBody(text, media, chatId, images),
+      buildBody: (text, media, chatId, images, registerRecent, failedLabel) => this.buildBody(text, media, chatId, images, registerRecent, failedLabel),
       expandQuote: messageId => this.expandQuote(messageId),
       dispatchFollowup: (chatId, text, role, nickname, images, userId) => this.dispatchFollowup(chatId, text, role, nickname, images, userId),
       deliverInboundImage: (path, chatId) => this.deliverInboundImage(path, chatId),
@@ -1117,8 +1117,8 @@ export class ChatBridge {
    * Build the message body text: placeholders become annotated local paths
    * (images/voices/videos) and voice files are transcribed when enabled.
    */
-  private buildBody(text: string, media: MediaRef[], chatId: ChatId, images?: ImageAttachmentRef[]): Promise<string> {
-    return this.inbound.buildBody(text, media, chatId, images)
+  private buildBody(text: string, media: MediaRef[], chatId: ChatId, images?: ImageAttachmentRef[], registerRecent?: boolean, failedLabel?: string): Promise<string> {
+    return this.inbound.buildBody(text, media, chatId, images, registerRecent, failedLabel)
   }
 
   /** Resolve one media ref to a text annotation with a local path. */
@@ -1242,8 +1242,8 @@ export class ChatBridge {
     return true
   }
 
-  /** Expand a quoted (reply) message into [引用] text via get_msg. */
-  private expandQuote(messageId: string): Promise<string> {
+  /** Expand a quoted (reply) message into [引用] text + its images via get_msg. */
+  private expandQuote(messageId: string): Promise<{ text: string; media: MediaRef[] }> {
     return this.inbound.expandQuote(messageId)
   }
 

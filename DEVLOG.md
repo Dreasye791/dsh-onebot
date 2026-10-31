@@ -1512,3 +1512,54 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
   测试（关闭时 8 项全在列表里、总开关自身不在、开启后只剩模式相关项）；
   `settings-remote` 3 处 `behavior` 键序断言拆成 `behavior`(11) + `memory`(9)；
   **13 文件 383 用例全绿**（此前 382）。
+
+## 2026-10-31 引用消息里的图终于能看见了（T19：quote 通道补上 media）
+
+- **症状**：群里引用一张图 @机器人 问「你看得见这张图吗」，模型只拿到 `[引用]昵称: [图片][图片]`
+  两个裸占位符，翻遍 mediaDir 找不到落盘文件，最后回「看不到，你直接重发单张，别用引用」。
+  同等条件下**合并转发里的图一直正常**——差距就是这条线索。
+- **根因**：`fetchQuote` 把 `get_msg` 的段交给 `segmentText`，而它只返回
+  `parseMessage(...).text` —— 图片段明明已被解析成 `MediaRef`，就在那一行被丢掉。
+  于是引用只有文本、没有 media，永远进不了 `buildBody → deliverInboundImage`
+  这条唯一的投递链。转发路径（`expandForward` 返回 `{text, media}`）一直是对的。
+- **取证（阶段 0，探针先行，真机两条样本）**：在 `fetchQuote` 加一条只观测的 trace
+  （`data.probe='quote-shape'`，**不带 reason** 以绕开 trace 的同 cause 5 分钟限频）；
+  `describeQuoteShape` 只落 host / query 参数名 / file 形态，**不落完整 URL**（trace 会进
+  `/doctor` 诊断包，QQ 图片链接带 `rkey` 签名）。两条样本给出：
+  1. `messageIsArray:true`、`segmentTypes:["image"]` —— 引用消息可以**只有图、没有文字**；
+  2. `urlPresent:true` + `urlQueryKeys:["appid","fileid","rkey"]` —— url 存在但**带 rkey，天然有时效**；
+  3. `fileKind:"name"` / `fileLen:36` / `fileExt:png|jpg` —— file 是 NapCat 的短文件名，
+     不是 `file://` 也不是 base64，只能靠 `get_image` 换回来；
+  4. `ms = 10~29` —— `get_msg` 本身不是延迟瓶颈。
+  顺带发现一个**既存偏差**：`sub_type` 在 NapCat 上是**数字**，而 `parseMessage` 用
+  `subType === '1'`（字符串）判定表情包 → `[表情包]` 分支对 NapCat 实际是死代码，
+  表情包一直按普通图片处理。本次**不改**（改动会改变现有入站行为），仅记录。
+- **改法**：
+  - `expandQuote` 改返 `{ text, media }`；`quoteMemo` 一并缓存 media。**只解析不下载**——
+    mention gate 对每条未 @ 的引用消息都会调它，不能为此付下载代价。
+  - `parseMessage` 取代 `segmentText`，删除后者（全仓唯一调用点，tests 无覆盖）。
+  - 新增 `QUOTE_MEDIA_MAX = 4` 与 `capQuoteImages`：**同时**截 media 与文本里第 N 个之后的
+    `[图片]`（只截一边会留下填不上的裸占位符，或让 buildBody 的游标把注解写到错位）。
+    上限的理由是 `buildBody` 串行 + 单张 30s 硬超时：引用 9 图最坏会在 dispatch 前卡 4 分半。
+  - 顺序修正：先把 forward / quote 的展开（纯解析）都做完，再按**最终文本里的出现顺序**
+    `forward → quote → body` 依次 `buildBody`。此前 body 先于 forward 投递，转发里的图
+    会被排到正文图之后——**既存错位**，这次一并修正。
+  - `resolveMediaRef` 新增 `registerRecent`（引用/转发传 false）：展开出的图不再顶掉
+    `lastImagePath`，否则下一条 `/ocr` 会去识别别人的图。原 forward 分支的
+    `pendingImageRef` 保存/恢复 hack 已由该参数取代。
+  - `buildBody` 新增 `failedLabel`：投递成功时注解也是 `[图片]`，文本上无法与「失败但占位符
+    原样保留」区分，所以引用场景在失败处直接写 `[引用图片:不可用]`。
+  - `media.resolveInner`：url 分支失败后**落回 file 的 `get_image`**（rkey 过期兜底），
+    没有 file 时保持原语义，并单独记一条 warn 便于排障（原来只有外层一条）。
+  - `prompt.ts` 补一条：引用图同样以图片块送达；看到 `[引用图片:不可用]` /
+    `[引用图片:超过上限未展开]` 要如实说看不到。
+- **验证**：`tsc` exit 0；新增 `tests/quote-media.spec.ts` 4 条（投递 / 顺序 / 失败标记 /
+  超限截断）；全量 `846 passed | 4 failed`，4 条均为既有或 flaky —— `health-ref` 2 条
+  （导出文案里是 `<本机路径>` 占位符，与测试期望不一致）、`inbound.spec.ts:32`
+  （断言 `channel:dsh-onebot`，实际 section 名带 chatId 后缀，见 `bridge.ts` 的
+  `channel:dsh-onebot:${chatId}`）、`interim.spec.ts:531`（单跑通过，时序 flaky）。
+- **真机待验**：新图引用（应能描述画面）、>24h 老图引用（要么看到、要么 `[引用图片:不可用]`）、
+  引用 9 图消息（耗时可接受、超限标注正确）。判据不能看 trace 里有没有 `media` 事件
+  —— 成功路径不发、失败才发；也不能看 `dispatch` 事件，那条 `reason` 是固定文案，
+  会被 5 分钟限频吞掉。看 followup 文本是 `[图片]` 还是 `[图片:<路径>]`、
+  `attachment-ledger.json` 是否增长。

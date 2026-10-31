@@ -32,18 +32,22 @@ import { FAILURE_REF_DETAIL_MAX, FailureRefRegistry, isFailureRef, newFailureRef
 import { makeCmdHarness, makeEvent, makeHarness, sentTexts } from './helpers/bridge-harness.js'
 
 /**
- * 从一条 send_msg 的 JSON 参数里取出「诊断包已导出」文案里的真实路径。
+ * 从一条 send_msg 的 JSON 参数里取出「诊断包已导出」文案里的归档文件名，并拼回
+ * mediaDir 下的完整路径。
  *
- * 不能直接在 `JSON.stringify(params)` 上正则提路径：JSON 把 Windows 的 `\` 转义成
- * `\\`，截出来的片段（例如 `\\Users\\...`）不是可用的文件系统路径，existsSync 必假
- * （2026-10-24 审计发现的测试缺陷）。先解析 JSON、拼回文本段，再提路径。
+ * 为什么只发文件名：绝对路径会被出站统一脱敏（`redactLocalPaths` 默认开）替换成
+ * `<本机路径>`，管理员反而拿不到归档位置。文件名不含盘符，不触发脱敏。
+ *
+ * 不能直接在 `JSON.stringify(params)` 上正则提：JSON 把 Windows 的 `\` 转义成
+ * `\\`，截出来的片段不是可用的文件系统路径，existsSync 必假（2026-10-24 审计发现）。
+ * 先解析 JSON、拼回文本段，再提文件名。
  */
-function archivePathOf(line: string): string {
+function archivePathOf(line: string, mediaDir: string): string {
   const params = JSON.parse(line) as { message?: Array<{ data?: { text?: string } }> }
   const text = (params.message ?? []).map(segment => segment.data?.text ?? '').join('')
-  const found = /[^\s：]+qq-diagnostics-[^\s]*\.zip/.exec(text)
-  if (found === null) throw new Error('导出文案里没有诊断包路径: ' + text)
-  return found[0]
+  const found = /qq-diagnostics-[A-Za-z0-9._-]*\.zip/.exec(text)
+  if (found === null) throw new Error('导出文案里没有诊断包文件名: ' + text)
+  return join(mediaDir, found[0])
 }
 
 /** Trace jsonl 读取助手：逐行解析为事件数组（坏行跳过）。 */
@@ -169,7 +173,7 @@ describe('消息回合故障 → MF- 号贯穿', () => {
     h.sendText('/healthcheck export')
     await vi.waitFor(() => expect(sentTexts(h.outbound).some(t => t.includes('诊断包已导出'))).toBe(true))
     const archiveLine = sentTexts(h.outbound).find(t => t.includes('诊断包已导出'))!
-    const archivePath = archivePathOf(archiveLine)
+    const archivePath = archivePathOf(archiveLine, mediaDir)
     expect(archivePath).toMatch(new RegExp('-' + ref + '\\.zip$'))
     expect(existsSync(archivePath)).toBe(true)
 
@@ -253,7 +257,7 @@ describe('正常路径零发号 + export 文件名模式', () => {
     h.sendText('/healthcheck export')
     await vi.waitFor(() => expect(sentTexts(h.outbound).some(t => t.includes('诊断包已导出'))).toBe(true))
     const archiveLine = sentTexts(h.outbound).find(t => t.includes('诊断包已导出'))!
-    const archivePath = archivePathOf(archiveLine)
+    const archivePath = archivePathOf(archiveLine, mediaDir)
     expect(archivePath).toMatch(/qq-diagnostics-\d{4,}-\d+\.zip$/)
 
     // 显式传号：合法号逐字入名；报告带「本次导出参考号」
@@ -261,7 +265,7 @@ describe('正常路径零发号 + export 文件名模式', () => {
     h.sendText('/healthcheck export ' + explicit)
     await vi.waitFor(() => expect(sentTexts(h.outbound).filter(t => t.includes('诊断包已导出')).length).toBe(2))
     const explicitLine = sentTexts(h.outbound).filter(t => t.includes('诊断包已导出'))[1]!
-    const explicitPath = archivePathOf(explicitLine)
+    const explicitPath = archivePathOf(explicitLine, mediaDir)
     expect(explicitPath.endsWith('-' + explicit + '.zip')).toBe(true)
     expect(existsSync(explicitPath)).toBe(true)
 

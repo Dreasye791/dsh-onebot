@@ -502,8 +502,12 @@ describe('interim tracker', () => {
         { type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{}' },
       ] },
     }))
-    await vi.waitFor(() => expect(h.outbound.some(f => f.action === 'delete_msg')).toBe(true))
-    expect(chat.recalledInterimIds.has('7')).toBe(true)
+    // recall 记账发生在 delete_msg 的**响应**之后，而 outbound 记录的是请求帧：
+    // 计数到达时记账可能还没落。两个断言必须一起等（并发全量时曾因此偶发红）。
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => f.action === 'delete_msg')).toBe(true)
+      expect(chat.recalledInterimIds.has('7')).toBe(true)
+    })
 
     // turn/end: the immediate recall skips the already-revoked id — no second
     // delete_msg for the same message id.
@@ -527,8 +531,10 @@ describe('interim tracker', () => {
         { type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{}' },
       ] },
     }))
-    await vi.waitFor(() => expect(h.outbound.filter(f => f.action === 'delete_msg')).toHaveLength(2))
-    expect(chat.recalledInterimIds.has('7')).toBe(true)
+    await vi.waitFor(() => {
+      expect(h.outbound.filter(f => f.action === 'delete_msg')).toHaveLength(2)
+      expect(chat.recalledInterimIds.has('7')).toBe(true)
+    })
     h.ctx.emit('session/event', session as never, makeEvent('turn/end', { turn: 2, reason: { kind: 'completed' } }))
     await vi.waitFor(() => {
       expect(h.outbound.filter(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('"type":"image"'))).toHaveLength(2)

@@ -918,10 +918,12 @@ describe('ChatRegistry', () => {
     await vi.waitFor(() => {
       expect(h.outbound.some(f => f.action === 'send_msg' && JSON.stringify(f.params).includes('运行出错'))).toBe(true)
     })
+    // 会话映射走 debounce 写盘，并发全量时事件循环被其他 spec 挤占，默认 1s
+    // 的 waitFor 超时不够（单跑稳定过、全量偶发红，2026-10-31 实测）。
     await vi.waitFor(async () => {
       const mapping = JSON.parse(await readFile(join(h.mediaDir, 'chat-sessions.json'), 'utf8')) as Record<string, string>
       expect(Object.keys(mapping)).toHaveLength(0)
-    })
+    }, { timeout: 5_000 })
     // The next message rebuilds the chat on a fresh suffixed id and repopulates
     // the mapping with the truth.
     h.sendText('再来一条')

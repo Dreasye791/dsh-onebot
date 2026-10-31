@@ -29,7 +29,9 @@ describe('inbound pipeline', () => {
       'qq_send_image', 'qq_send_voice', 'qq_send_video', 'qq_send_file',
       'qq_send_forward', 'qq_napcat_api', 'qq_group_history',
     ]))
-    expect(h.captured.channelSections).toContain('channel:dsh-onebot')
+    // section 名按 chat 唯一（宿主作用域层把同名 section 当重复注册抛错，
+    // 见 bridge 的 installChannelScope），所以断言前缀而不是整串相等。
+    expect(h.captured.channelSections.some(name => name.startsWith('channel:dsh-onebot'))).toBe(true)
 
     // T20 接线：installChannelScope 必须把 MCP 白名单闸门装到 agent 自己的 scope 上。
     // 只测 mcp-gate 的判定语义不够 —— 这条接线被删掉时判定逻辑仍全绿，权限闸门

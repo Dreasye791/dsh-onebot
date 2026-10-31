@@ -1502,6 +1502,26 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
 - 验证：`memory-embed.spec` +2（Infinity 形态走 OpenAI 且不双拼 / Ollama 完整端点不双拼）；
   **13 文件 385 用例全绿**。
 
+### 同日补：面板新建可选会话 + chatId 格式校验 + 画像 scope 校验
+
+- **问题**：面板「新建」的会话只能选下拉里已有的，而 `listMemoryChats()` 只 `readdir`
+  记忆目录 —— **一个从没记过东西的会话不会出现在下拉里**，于是无法给它建第一条记忆
+  （典型场景：提前给某个群放一条群规）。
+- **改法**：新建表单加「会话」输入框（预填当前选中项，可改）。
+  - 客户端 `loadChats(preferChatId)`：保存后刷新列表并**停在目标会话**上，否则会跳回
+    第一个会话，用户以为没保存成功。
+  - 6 处 `setForm` 全部带上 `chatId` —— 漏一处就是「填了会话、改一下类型就被清空」，
+    而这种退化在界面上表现为「保存后写到别的会话去了」。已有静态守卫盯住。
+- **必须配套的服务端校验**：`memoryFileName` 把非 `[A-Za-z0-9._-]` 的字符替换成 `_`，
+  于是 `group:123` 与 `group_123` 会落到**同一个文件** —— 手填不规范就是静默串数据
+  （下拉显示一个会话、实际读写另一个）。新增 `requireChatId()`：只接受
+  `group:<数字>` / `private:<数字>`，四个面板方法共用；路径穿越本来就不会有（`/` 也被替换）。
+- **顺带统一画像开关**：`createMemoryEntry` 现在也按 `memoryProfileScope` 校验
+  （与 `qq_memory_remember` 同一规则：`off` 拒绝、`dm` 下群聊拒绝、`all` 放行）。
+  此前面板建画像完全不看该配置，导致「关掉画像」在面板上不成立，用户会以为配置没生效。
+- 验证：`settings-remote` +2（chatId 七种非法输入 / scope 三档）、`client-settings` +1
+  （表单含会话框 + 6 处 setForm 都带 chatId）；**13 文件 388 用例全绿**。
+
 **验证**：`tsc` exit 0；`memory-embed` +3（指纹形状、同维度不同模型、同模型不同端点）、
 `memory-backfill` +3（指纹变了重编、写回带指纹、历史条目无指纹重编）、`memory` +2
 （embedderId 不匹配跳过语义）、`settings-remote` +2（四种状态、模型名为空）、

@@ -840,6 +840,33 @@ describe('面板记忆方法（分页 / 过滤 / 校验 / 裁剪）', () => {
     expect(status.missing).toEqual(['模型目录未填写'])
   })
 
+  it('chatId 只接受 group:<数字> / private:<数字>（手填不规范会被文件名碰撞吞掉）', () => {
+    const { editor } = makeEditor()
+    // memoryFileName 把非 [A-Za-z0-9._-] 的字符换成 `_`，所以 `group_123` 与 `group:123`
+    // 会落到**同一个文件**：不校验就是「下拉显示一个会话、实际读写另一个」的静默串数据。
+    for (const bad of ['group_123', 'group:', '123456', '../../etc/passwd', 'group:abc', ' GROUP:1 ']) {
+      expect(() => createMemoryEntry(editor, bad, 'x', 'note', '', [])).toThrow('必须形如')
+    }
+    expect(() => createMemoryEntry(editor, 'group:558665922', 'x', 'note', '', [])).not.toThrow()
+    expect(() => createMemoryEntry(editor, 'private:10001', 'x', 'note', '', [])).not.toThrow()
+  })
+
+  it('画像按 memoryProfileScope 校验：off 拒绝、dm 下群聊拒绝、all 放行', () => {
+    const off = makeEditor({ memoryProfileScope: 'off' })
+    expect(() => createMemoryEntry(off.editor, 'private:10001', '话少', 'profile', '10001', [])).toThrow('已关闭')
+
+    const dm = makeEditor({ memoryProfileScope: 'dm' })
+    // 私聊可以（dm 的语义就是「只在私聊建画像」）
+    expect(() => createMemoryEntry(dm.editor, 'private:10001', '话少', 'profile', '10001', [])).not.toThrow()
+    // 群聊不行 —— 与工具侧 qq_memory_remember 同一规则
+    expect(() => createMemoryEntry(dm.editor, 'group:558665922', '话少', 'profile', '10001', []))
+      .toThrow('群聊里默认不建')
+
+    const all = makeEditor({ memoryProfileScope: 'all' })
+    expect(() => createMemoryEntry(all.editor, 'group:558665922', '话少', 'profile', '10001', []))
+      .not.toThrow()
+  })
+
   it('deleteMemoryEntry：按 ts 删除并返回剩余总数', () => {
     const { editor, dir } = makeEditor()
     appendMemory(dir, 'private:10001', { ts: 100, text: 'A' })

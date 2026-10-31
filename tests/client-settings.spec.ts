@@ -278,6 +278,15 @@ describe('T4 客户端 bundle — 四组 41 键（分组/键集/默认值 = T1 �
 describe('T4 客户端 bundle — 渲染函数模块级可测（renderGroup 纯函数）', () => {
   const draft = client.draftFromSnapshot as (snapshot: { config: Record<string, unknown> }) => Record<string, unknown>
 
+  it('新建表单含会话输入框（下拉只列「已有记忆文件」的会话，否则无法给新会话建第一条）', () => {
+    expect(CLIENT_SOURCE).toContain('会话：group:123456 或 private:10001')
+    // 6 处 setForm 都必须带 chatId —— 漏一处就会「填了会话、改一下类型就被清空」，
+    // 而这种退化在界面上只表现为「保存后写到别的会话去了」。
+    const setFormCalls = CLIENT_SOURCE.match(/setForm\(\{[^}]*\}\)/g) ?? []
+    expect(setFormCalls.length).toBeGreaterThanOrEqual(5)
+    for (const call of setFormCalls) expect(call).toContain('chatId')
+  })
+
   it('「已过期」与「最近提及」并存时要解释原因（否则看起来像 bug）', () => {
     // 保留期从首次写入（ts）算，重复提及只刷新 lastSeenAt —— 于是一条「刚被提过」
     // 的记忆可能同时显示「最近提及 3 天前」与「已过期」。文案必须区分，否则用户会

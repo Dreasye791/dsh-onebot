@@ -280,15 +280,6 @@ export declare function readMemoryEntries(editor: ConfigEditorLike, chatId: unkn
 export declare function updateMemoryEntry(editor: ConfigEditorLike, chatId: unknown, ts: unknown, text: unknown, tags: unknown): MemoryMutationResult;
 /** 删除一条记忆（按 ts）。 */
 export declare function deleteMemoryEntry(editor: ConfigEditorLike, chatId: unknown, ts: unknown): MemoryMutationResult;
-/**
- * 面板新建一条记忆。
- *
- * 与工具写入共用同一套规则：敏感信息拒绝、正文 ≤500 字、`kind: 'profile'` 必须给主体。
- * 走 `upsertMemory`（而不是无条件 append）—— 面板重复添加同一句话时只刷新「最近提及」，
- * 与模型侧的判重口径保持一致。
- *
- * 来源字段（`by` / `role`）留空：面板操作没有 QQ 身份，留空比编一个更诚实。
- */
 export declare function createMemoryEntry(editor: ConfigEditorLike, chatId: unknown, text: unknown, kind: unknown, subject: unknown, tags: unknown): MemoryMutationResult;
 /** 38 键生效值 = schema 默认值 ← 条目 config 覆盖（T1 §3 合并优先级一句话）。 */
 export declare function effectiveConfig(raw: Record<string, unknown>): Record<string, unknown>;

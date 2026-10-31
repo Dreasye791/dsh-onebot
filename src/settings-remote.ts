@@ -701,8 +701,7 @@ export function readMemoryEntries(
   query: unknown,
   kind: unknown,
 ): MemoryEntriesResult {
-  const id = typeof chatId === 'string' ? chatId : ''
-  if (id === '') throw new RemoteError('onebot-settings/bad-chat-id', '缺少 chatId，无法读取记忆', { chatId: id })
+  const id = requireChatId(chatId, '读取记忆')
   const dir = memoryDirOf(editor)
   const all = readAllMemories(dir, id)
   // 历史条目缺 kind，按 note 处理（与 selectForRecall / tools 的口径一致）。
@@ -743,8 +742,7 @@ export function updateMemoryEntry(
   text: unknown,
   tags: unknown,
 ): MemoryMutationResult {
-  const id = typeof chatId === 'string' ? chatId : ''
-  if (id === '') throw new RemoteError('onebot-settings/bad-chat-id', '缺少 chatId，无法保存', { chatId: id })
+  const id = requireChatId(chatId, '保存')
   const stamp = typeof ts === 'number' && Number.isFinite(ts) ? ts : 0
   if (stamp <= 0) throw new RemoteError('onebot-settings/bad-memory-id', '缺少记忆标识（ts）', { chatId: id })
   const next = typeof text === 'string' ? text.trim() : ''
@@ -765,8 +763,7 @@ export function updateMemoryEntry(
 
 /** 删除一条记忆（按 ts）。 */
 export function deleteMemoryEntry(editor: ConfigEditorLike, chatId: unknown, ts: unknown): MemoryMutationResult {
-  const id = typeof chatId === 'string' ? chatId : ''
-  if (id === '') throw new RemoteError('onebot-settings/bad-chat-id', '缺少 chatId，无法删除', { chatId: id })
+  const id = requireChatId(chatId, '删除')
   const stamp = typeof ts === 'number' && Number.isFinite(ts) ? ts : 0
   if (stamp <= 0) throw new RemoteError('onebot-settings/bad-memory-id', '缺少记忆标识（ts）', { chatId: id })
   const dir = memoryDirOf(editor)
@@ -783,6 +780,33 @@ export function deleteMemoryEntry(editor: ConfigEditorLike, chatId: unknown, ts:
  *
  * 来源字段（`by` / `role`）留空：面板操作没有 QQ 身份，留空比编一个更诚实。
  */
+/**
+ * 面板传进来的 chatId 校验。
+ *
+ * 只接受 OneBot 的两种形态：`private:<数字>` / `group:<数字>`。
+ *
+ * **为什么必须校验**：面板现在允许手填会话（新建时给「还没记过东西」的会话加第一条），
+ * 而 `memoryFileName` 会把非 `[A-Za-z0-9._-]` 的字符替换成 `_` —— 于是 `group:123` 与
+ * `group_123` 会落到**同一个文件**。不校验就是静默串数据：下拉显示一个会话、实际读写
+ * 另一个。路径穿越倒不会有（`/` 也被替换），但碰撞是实打实的。
+ *
+ * @param action - 出现在错误文案里（「读取 / 新建 / 保存 / 删除」）。
+ */
+function requireChatId(raw: unknown, action: string): string {
+  const id = typeof raw === 'string' ? raw.trim() : ''
+  if (id === '') {
+    throw new RemoteError('onebot-settings/bad-chat-id', '缺少 chatId，无法' + action, { chatId: id })
+  }
+  if (!/^(private|group):\d+$/.test(id)) {
+    throw new RemoteError(
+      'onebot-settings/bad-chat-id',
+      '会话 id 必须形如 group:123456 或 private:10001（' + action + '）',
+      { chatId: id },
+    )
+  }
+  return id
+}
+
 export function createMemoryEntry(
   editor: ConfigEditorLike,
   chatId: unknown,
@@ -791,14 +815,37 @@ export function createMemoryEntry(
   subject: unknown,
   tags: unknown,
 ): MemoryMutationResult {
-  const id = typeof chatId === 'string' ? chatId : ''
-  if (id === '') throw new RemoteError('onebot-settings/bad-chat-id', '缺少 chatId，无法新建', { chatId: id })
+  const id = requireChatId(chatId, '新建')
   const body = typeof text === 'string' ? text.trim() : ''
   if (body === '') throw new RemoteError('onebot-settings/bad-memory-text', '记忆正文不能为空', { chatId: id })
   const kindValue = kind === 'profile' ? 'profile' as const : 'note' as const
   const subjectValue = typeof subject === 'string' ? subject.trim() : ''
-  if (kindValue === 'profile' && subjectValue === '') {
-    throw new RemoteError('onebot-settings/bad-subject', '画像必须指定主体 QQ 号', { chatId: id })
+  const raw = findEntry(editor).options.config ?? {}
+  if (kindValue === 'profile') {
+    if (subjectValue === '') {
+      throw new RemoteError('onebot-settings/bad-subject', '画像必须指定主体 QQ 号', { chatId: id })
+    }
+    // 与工具侧同一套规则（`src/tools.ts` 的 `qq_memory_remember`）：
+    // `off` = 关闭画像；`dm` = 只在私聊建（群里给成员贴标签容易被当成议论别人）。
+    //
+    // 面板是管理员入口，但**配置的语义要对所有写入口一致** —— 否则「关掉画像」
+    // 在面板上不成立，用户会以为配置没生效。
+    const scope = raw.memoryProfileScope === 'all' ? 'all' : raw.memoryProfileScope === 'off' ? 'off' : 'dm'
+    if (scope === 'off') {
+      throw new RemoteError(
+        'onebot-settings/bad-profile-scope',
+        '成员画像已关闭（memoryProfileScope=off）。要记录会话公共信息，请把类型改成「记忆」。',
+        { chatId: id },
+      )
+    }
+    if (scope !== 'all' && id.startsWith('group:')) {
+      throw new RemoteError(
+        'onebot-settings/bad-profile-scope',
+        '群聊里默认不建个人画像（memoryProfileScope=' + scope + '）。要记本群公共信息请改用「记忆」；'
+        + '确实需要群内画像，请先把 memoryProfileScope 设为 all。',
+        { chatId: id },
+      )
+    }
   }
   const nextTags = Array.isArray(tags)
     ? tags.filter((tag): tag is string => typeof tag === 'string' && tag.trim() !== '').slice(0, 8)
@@ -808,7 +855,6 @@ export function createMemoryEntry(
   if (sensitive !== null) {
     throw new RemoteError('onebot-settings/sensitive-memory', '内容疑似包含' + sensitive + '，已拒绝保存', { chatId: id })
   }
-  const raw = findEntry(editor).options.config ?? {}
   const cap = typeof raw.memoryMaxEntriesPerChat === 'number' && raw.memoryMaxEntriesPerChat > 0
     ? Math.floor(raw.memoryMaxEntriesPerChat)
     : 200

@@ -12,7 +12,7 @@ import { SessionId as makeSessionId } from '@deepseek-ai/dsh-session'
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { readFile, readdir, realpath, stat } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import type { OneBotConnection } from './connection.js'
@@ -781,7 +781,11 @@ async function handleHealthcheckCommand(ctx: CommandContext, chatId: ChatId, arg
     }
     try {
       const archive = await ctx.exportDiagnostics(triggerRef)
-      await ctx.sendToChat(chatId, '📦 诊断包已导出（token/accessToken 已强制脱敏）：\n' + archive)
+      // 只发文件名：绝对路径会在出站被统一脱敏（redactLocalPaths 默认开）成
+      // `<本机路径>`，管理员反而拿不到归档位置。文件名不含盘符，不触发脱敏，
+      // 配合 mediaDir 即可定位（/storage 会打印该目录）。
+      await ctx.sendToChat(chatId, '📦 诊断包已导出（token/accessToken 已强制脱敏）：\n'
+        + basename(archive) + '\n（位于 mediaDir，可用 /storage 查看目录）')
     } catch (error) {
       await ctx.sendToChat(chatId, '⚠️ 诊断包导出失败：' + describeError(error))
     }

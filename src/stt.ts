@@ -10,7 +10,7 @@
 import { spawn } from 'node:child_process'
 import { constants } from 'node:fs'
 import { access, mkdir, readFile, readdir, rm } from 'node:fs/promises'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, extname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 /** STT configuration (subset of the plugin Config). */
@@ -74,13 +74,21 @@ function runProcess(
  * builtins/aliases stop being visible — callers only need real binaries).
  */
 export async function findCommand(name: string): Promise<string | undefined> {
-  for (const dir of (process.env.PATH ?? '').split(process.platform === 'win32' ? ';' : ':')) {
-    const candidate = join(dir, name)
-    try {
-      await access(candidate, constants.X_OK)
-      return candidate
-    } catch {
-      // missing or not executable — try the next dir
+  const win = process.platform === 'win32'
+  // Windows：只找 runProcess 里不带 shell 的 spawn 能启动的东西，按 libuv 解析命令的
+  // 规则来 —— 名字本身带扩展名就只试原名，否则依次补 .com、.exe。**不读 PATHEXT**：
+  // .bat/.cmd 不带 shell 会抛 EINVAL（CVE-2024-27980 之后），而 npm 放在 .cmd 旁边的
+  // 无扩展名文件是 sh 脚本，都不算「找到」。
+  const exts = win ? [...(extname(name) !== '' ? [''] : []), '.com', '.exe'] : ['']
+  for (const dir of (process.env.PATH ?? '').split(win ? ';' : ':')) {
+    for (const ext of exts) {
+      const candidate = join(dir, name + ext)
+      try {
+        await access(candidate, constants.X_OK)
+        return candidate
+      } catch {
+        // missing or not executable — try the next candidate
+      }
     }
   }
   return undefined

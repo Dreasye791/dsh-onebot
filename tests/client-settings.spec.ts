@@ -237,7 +237,7 @@ describe('T4 客户端 bundle — 四组 41 键（分组/键集/默认值 = T1 �
     // 记忆从 behavior 独立成组：behavior 管「怎么回应」，记忆管「存什么、怎么检索」
     expect(groups.map((group) => group.id)).toEqual(['connection', 'permissions', 'behavior', 'memory', 'diagnostics'])
     expect(allFields.map((field) => field.key).sort()).toEqual([...ALL_KEYS].sort())
-    expect(allFields).toHaveLength(50) // 上游 0.9.4 基线 29 键；T10/T11/T18/T20 扩到 38，NapCat 看护三项后 41，频道记忆四项后 45，语义召回五项后 50
+    expect(allFields).toHaveLength(53) // 上游 0.9.4 基线 29 键；T10/T11/T18/T20 扩到 38，NapCat 看护三项后 41，频道记忆四项后 45，语义召回五项后 50，维度/前缀/召回阈值三项后 53
   })
 
   it('默认值逐字对齐 host SCHEMA_DEFAULTS（重置按钮唯一来源）', () => {
@@ -321,7 +321,7 @@ describe('T4 客户端 bundle — 渲染函数模块级可测（renderGroup 纯�
     const titles = sections.map((section) => ((section.children[0] as StubElement).children[0] as string))
     expect(titles).toEqual(['连接', '权限', '行为', '记忆', '诊断'])
     const fieldRows = sections.flatMap((section) => walk(section).filter((element) => element.type === 'div' && element.props.className === 'obx-field'))
-    expect(fieldRows).toHaveLength(50)
+    expect(fieldRows).toHaveLength(53)
   })
 
   it('persona 渲染为多行 textarea（rows 取字段声明，不能退化为单行 input）', () => {
@@ -344,7 +344,7 @@ describe('T4 客户端 bundle — 渲染函数模块级可测（renderGroup 纯�
     expect(selects).toHaveLength(9) // 6 上游枚举 + T10 reasoningEffort（按模型档位动态收窄）+ memoryProfileScope + memoryEmbeddingMode
     expect(textareas).toHaveLength(6) // 4 个 stringArray + T11 persona + napcatLauncherArgs（多行可编辑）
     expect(inputs.filter((input) => input.props.type === 'checkbox')).toHaveLength(14 + 1) // 14 布尔（5 原有 + 6 W6 + T15 attachInboundImages + autoStartNapcat + memoryEnabled）+ secret 清除勾选
-    expect(inputs.filter((input) => input.props.type === 'text')).toHaveLength(20) // 50 键除去 9 枚举 / 15 布尔 / 6 多行 / 1 密码后的其余键（字符串 + 数字，以文本框渲染）
+    expect(inputs.filter((input) => input.props.type === 'text')).toHaveLength(23) // 53 键除去 9 枚举 / 15 布尔 / 6 多行 / 1 密码后的其余键（字符串 + 数字，以文本框渲染）
     expect(inputs.filter((input) => input.props.type === 'password')).toHaveLength(1)
   })
 
@@ -897,6 +897,8 @@ describe('T6 批 3 — 数字行内校验（UX §5.6：blur 触发、非法标�
       memoryMaxEntriesPerChat: [1, 5000], // 频道记忆：条数上限
       memoryRecallTopK: [1, 20], // 频道记忆：召回条数
       memorySemanticWeight: [0, 1], // 频道记忆（第二批）：混合召回的语义权重
+      memoryEmbeddingDim: [0, 65536], // 频道记忆（第三批）：0 = 不校验
+      memoryRecallMinScore: [0, 1], // 频道记忆（第三批）：0 = 不过滤
     })
     expect(Object.keys(NUMBER_RANGE).sort()).toEqual(allFields.filter((field) => field.type === 'number').map((field) => field.key).sort())
     // 断言「同口径」而不是行号：行号会随 host 增删而漂移，写死它只会制造无意义的红。

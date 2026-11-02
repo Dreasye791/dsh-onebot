@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -504,7 +504,7 @@ describe('memory: upsert（同一条目折叠为「最近提及」）', () => {
     upsertMemory(dir, 'private:10001', { ts: 100, text: 'x', emb: [1, 1], dim: 2 })
     upsertMemory(dir, 'private:10001', { ts: 200, text: 'x', emb: [1, 1, 1], dim: 3 })
     const [entry] = readAllMemories(dir, 'private:10001')
-    expect(entry.emb).toEqual([1, 1, 1])
+    expect(Array.from(entry.emb ?? [])).toEqual([1, 1, 1])
     expect(entry.dim).toBe(3)
   })
 
@@ -512,7 +512,7 @@ describe('memory: upsert（同一条目折叠为「最近提及」）', () => {
     const dir = makeDir()
     upsertMemory(dir, 'private:10001', { ts: 100, text: 'x', emb: [1, 2], dim: 2 })
     upsertMemory(dir, 'private:10001', { ts: 200, text: 'x' })
-    expect(readAllMemories(dir, 'private:10001')[0].emb).toEqual([1, 2])
+    expect(Array.from(readAllMemories(dir, 'private:10001')[0].emb ?? [])).toEqual([1, 2])
   })
 })
 
@@ -530,8 +530,46 @@ describe('memory: 向量字段与余弦', () => {
     const dir = makeDir()
     appendMemory(dir, 'private:10001', { ts: 1, text: '带向量', emb: [0.1, 0.2, 0.3] })
     const [entry] = readAllMemories(dir, 'private:10001')
-    expect(entry.emb).toEqual([0.1, 0.2, 0.3])
+    // 落盘是 base64(float32)：读回的数值与写入的 double 相差约 1e-8 量级 —— 这是
+    // 模型输出本身的精度（服务端就是 float32），不是丢数据；整数向量仍然精确相等。
+    expect(Array.from(entry.emb ?? []).map((value) => Number(value.toFixed(6)))).toEqual([0.1, 0.2, 0.3])
     expect(entry.dim).toBe(3)
+  })
+
+  it('落盘用 base64(float32)：体积远小于 JSON 数组，且带 embFormat', () => {
+    const dir = makeDir()
+    const vector = Array.from({ length: 768 }, (_, index) => (index % 7 - 3) / 7)
+    appendMemory(dir, 'private:10001', { ts: 1, text: '一条记忆', emb: vector })
+    const raw = readFileSync(memoryFilePath(dir, 'private:10001'), 'utf8')
+    expect(raw).toContain('"embFormat":"f32b64"')
+    expect(raw).not.toContain('"emb":[')
+    // 同样 768 维：旧写法（每维约 20 个十进制字符）要十几 KB，base64(float32) 是
+    // 3072 字节原文 → 4096 个字符，加元数据约 4 KB。直接和旧写法比，避免写死阈值。
+    const legacy = JSON.stringify({ ts: 1, text: '一条记忆', emb: vector, dim: 768 })
+    expect(Buffer.byteLength(raw)).toBeLessThan(Buffer.byteLength(legacy) / 2)
+    expect(readAllMemories(dir, 'private:10001')[0].emb).toHaveLength(768)
+  })
+
+  it('兼容旧格式：JSON 数组写的 emb 仍能读回', () => {
+    const dir = makeDir()
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(memoryFilePath(dir, 'private:10001'),
+      JSON.stringify({ ts: 1, text: '旧格式', emb: [0.5, -0.5], dim: 2, model: 'http:#old' }) + '\n', 'utf8')
+    const [entry] = readAllMemories(dir, 'private:10001')
+    // 0.5 / -0.5 在 float32 里精确可表示，所以这里仍要求逐值相等。
+    expect(Array.from(entry.emb ?? [])).toEqual([0.5, -0.5])
+    expect(entry.dim).toBe(2)
+    expect(entry.model).toBe('http:#old')
+  })
+
+  it('长度与 dim 不符的 base64 向量当作未编码（走关键词）', () => {
+    const dir = makeDir()
+    appendMemory(dir, 'private:10001', { ts: 1, text: '向量', emb: [1, 2, 3] })
+    const file = memoryFilePath(dir, 'private:10001')
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+    // 手改 dim，制造「换了模型但文件没重写」的半坏状态。
+    writeFileSync(file, JSON.stringify({ ...raw, dim: 4 }) + '\n', 'utf8')
+    expect(readAllMemories(dir, 'private:10001')[0].emb).toBeUndefined()
   })
 
   it('缺 ts 的行被跳过（否则恒过期 + 与其他坏行共享同一标识）', () => {
@@ -590,7 +628,7 @@ describe('memory: 编辑后向量失效（旧向量指向旧语义）', () => {
     appendMemory(dir, 'private:10001', { ts: 100, text: '内容', emb: [1, 2], dim: 2 })
     expect(updateMemory(dir, 'private:10001', 100, { tags: ['偏好'] })).toBe(true)
     const [entry] = readAllMemories(dir, 'private:10001')
-    expect(entry.emb).toEqual([1, 2])
+    expect(Array.from(entry.emb ?? [])).toEqual([1, 2])
     expect(entry.tags).toEqual(['偏好'])
   })
 
@@ -598,7 +636,7 @@ describe('memory: 编辑后向量失效（旧向量指向旧语义）', () => {
     const dir = makeDir()
     appendMemory(dir, 'private:10001', { ts: 100, text: '内容', emb: [1, 2], dim: 2 })
     expect(updateMemory(dir, 'private:10001', 100, { text: '内容' })).toBe(true)
-    expect(readAllMemories(dir, 'private:10001')[0].emb).toEqual([1, 2])
+    expect(Array.from(readAllMemories(dir, 'private:10001')[0].emb ?? [])).toEqual([1, 2])
   })
 })
 
@@ -658,6 +696,33 @@ describe('memory: 混合召回（关键词 + 语义）', () => {
     })
     // weight=1 + 指纹不符 → 该条没有可用的语义分，直接出局
     expect(hits).toEqual([])
+  })
+
+  it('minScore 挡住「关键词 0 分、语义仅 0.2」的弱相关条目（真实样本 0.1258 那类）', () => {
+    // 一条完全无关的记忆：关键词 0 分，余弦 ≈ 0.196 → 混合分 ≈ 0.118。
+    const weak: MemoryEntry = { ts: 1, text: '完全无关的一句话', emb: [1, 5], dim: 2, model: 'test:local' }
+    const base = { queryVector: [1, 0], weight: 0.6, topK: 5, embedderId: 'test:local' }
+    const kept = searchMemoriesHybrid([weak], '红茶', { ...base, minScore: 0 })
+    expect(kept).toHaveLength(1)
+    expect(kept[0].score).toBeGreaterThan(0)
+    expect(kept[0].score).toBeLessThan(0.15)
+    // 默认阈值 0.15 会把它挡掉
+    expect(searchMemoriesHybrid([weak], '红茶', { ...base, minScore: 0.15 })).toEqual([])
+  })
+
+  it('minScore 不影响真正的高分命中', () => {
+    const strong: MemoryEntry = { ts: 2, text: '红茶', emb: [1, 0], dim: 2, model: 'test:local' }
+    const hits = searchMemoriesHybrid([strong], '红茶', {
+      queryVector: [1, 0], weight: 0.6, topK: 5, minScore: 0.15, embedderId: 'test:local',
+    })
+    expect(hits.map((hit) => hit.entry.ts)).toEqual([2])
+  })
+
+  it('minScore 越界值按边界处理（不抛错）', () => {
+    const entry: MemoryEntry = { ts: 1, text: '红茶', emb: [1, 0], dim: 2, model: 'test:local' }
+    const base = { queryVector: [1, 0], weight: 0.6, topK: 5, embedderId: 'test:local' }
+    expect(() => searchMemoriesHybrid([entry], '红茶', { ...base, minScore: 9 })).not.toThrow()
+    expect(() => searchMemoriesHybrid([entry], '红茶', { ...base, minScore: Number.NaN })).not.toThrow()
   })
 
   it('embedderId 匹配 → 参与语义；不传 embedderId → 只比维度（老行为）', () => {

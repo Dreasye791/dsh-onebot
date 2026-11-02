@@ -80,7 +80,7 @@ export async function backfillChat(options: BackfillOptions): Promise<BackfillRe
    * http 没配 dim），此时无从判断，不误伤已有向量。
    */
   const embedderId = embedder.id
-  const needsEmbedding = (entry: { emb?: readonly number[]; model?: string }): boolean => {
+  const needsEmbedding = (entry: { emb?: readonly number[] | Float32Array; model?: string }): boolean => {
     const emb = entry.emb
     if (emb === undefined || emb.length === 0) return true
     // **指纹变了就重编**（含「历史条目没有指纹」）：只比维度不够 —— BGE-M3 与
@@ -90,7 +90,7 @@ export async function backfillChat(options: BackfillOptions): Promise<BackfillRe
     if (targetDim > 0 && emb.length !== targetDim) return true
     return false
   }
-  const shouldBackfill = (entry: { emb?: readonly number[]; model?: string; kind?: string }): boolean => {
+  const shouldBackfill = (entry: { emb?: readonly number[] | Float32Array; model?: string; kind?: string }): boolean => {
     if (!needsEmbedding(entry)) return false
     // http 模式跳过 profile（见 allowProfiles 的注释）
     if (!allowProfiles && entry.kind === 'profile') return false
@@ -119,7 +119,7 @@ export async function backfillChat(options: BackfillOptions): Promise<BackfillRe
       // 整批失败：不逐条重试（那会把一次故障放大成 N 次请求），留给下一轮。
       continue
     }
-    const updates: { ts: number; text: string; emb: readonly number[]; model: string }[] = []
+    const updates: { ts: number; text: string; emb: readonly number[] | Float32Array; model: string }[] = []
     for (let index = 0; index < batch.length; index += 1) {
       const vector = vectors[index]
       // 带上 text：写回时按 `ts + text` 双键匹配，编码期间正文被改过就不会写串
@@ -134,6 +134,13 @@ export async function backfillChat(options: BackfillOptions): Promise<BackfillRe
     await new Promise<void>((resolve) => { setTimeout(resolve, 0) })
   }
 
-  const remaining = readAllMemories(memoryDir, chatId).filter((entry) => shouldBackfill(entry)).length
+  // 不再读第二遍全量：`pending` 已扫过，`embedded` 是本轮真正写回的行数，剩下的
+  // 两种情况（整批失败 `continue`、被 `isCancelled` 中断）都仍然缺向量。
+  //
+  // 768 维 × 200 条时这一遍 `readAllMemories` 要 39 ms，而后台补齐每轮 turn/end
+  // 都会跑一次 —— 省下来的是纯 IO/parse。两种口径差异都偏保守、且只影响日志里的
+  // `remaining`：编码期间正文被改（`ts+text` 不匹配 → 少写）会让 remaining 偏大，
+  // 编码期间新追加的条目不会被算进来（下一轮重新扫描时自然补上）。
+  const remaining = Math.max(0, pending - embedded)
   return { embedded, pending, remaining, cancelled }
 }

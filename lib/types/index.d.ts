@@ -184,6 +184,30 @@ export interface Config {
     memoryEmbeddingUrl: string;
     /** `http` 模式的 Bearer token（仅 OpenAI 协议使用）。 */
     memoryEmbeddingKey: string;
+    /**
+     * 模型输出的向量维度（0 = 不校验，默认）。
+     *
+     * `http` 模式建议填实际维度（bge-small-zh=512 / bge-base-zh=768 / bge-m3=1024）：
+     * 填了之后「服务返回的维度和预期不符」会在编码时抛错（走既有的降级 + 节流上报），
+     * 而不是等召回打分时因长度不等悄悄退回关键词；后台补齐也能据此判断「模型换了但
+     * 模型名没换」的条目需要重编。
+     */
+    memoryEmbeddingDim: number;
+    /**
+     * 只加在**查询**一侧的指令前缀（默认空）。
+     *
+     * bge 系中文模型建议填 `为这个句子生成表示以用于检索相关文章：`；记忆正文
+     * （写入选与后台补齐编码的 passage）**永不加**前缀 —— 加了反而污染语义空间。
+     */
+    memoryEmbeddingQueryPrefix: string;
+    /**
+     * 召回的最低分（0~1，默认 0.15）：低于它的条目不返回，0 = 不过滤。
+     *
+     * 为什么需要：混合分只要 `> 0` 就入选，于是「关键词 0 分、语义只有 0.1 出头」的
+     * 弱相关条目会挤占 topK（实测样本：查「习惯」时一条无关记忆以 0.1258 入选）。
+     * 纯语义模式（`memorySemanticWeight = 1`）分数整体偏低，可调低或设 0。
+     */
+    memoryRecallMinScore: number;
     /** 混合召回的语义权重（0~1，默认 0.6）：0 = 纯关键词，1 = 纯语义。 */
     memorySemanticWeight: number;
     interimMessages: boolean;

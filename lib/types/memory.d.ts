@@ -45,10 +45,12 @@ export interface MemoryEntry {
     /**
      * 语义向量（缺省 = 未编码：历史条目、编码失败、语义召回关闭）。
      *
-     * 明文数组而非 base64：可读、可手改、坏行仍能被 `parseLine` 跳过。512 维约 5 KB/条，
-     * 200 条上限 ≈ 1 MB/会话 —— 这个代价是「召回能换个说法」换来的，可以接受。
+     * 落盘是 base64(float32)（见 `serializeEntry`），读回是 `Float32Array`；旧的 JSON
+     * 数组文件读回仍是 `number[]`。两者都按索引访问，`cosineSimilarity` 直接消费，
+     * **不复制成普通数组** —— 实测 200 条 × 768 维时 `Array.from` 要 15 ms，足以抵消
+     * base64 带来的全部解析收益。
      */
-    emb?: number[];
+    emb?: readonly number[] | Float32Array;
     /**
      * 向量维度（= `emb.length`，单独存一份便于排查「换模型导致的不兼容」）。
      * 与当前编码器维度不符时该条跳过语义路，仍走关键词。
@@ -133,6 +135,17 @@ export declare function findSensitiveIn(text: string, tags?: readonly string[]):
 export declare function memoryFileName(chatId: string): string;
 /** 某个 chat 的记忆文件绝对路径。 */
 export declare function memoryFilePath(memoryDir: string, chatId: string): string;
+/**
+ * 向量落盘格式：`base64(float32 小端)`。
+ *
+ * 为什么不再直接 `JSON.stringify(number[])`：768 维按 JSON 十进制序列化每维约
+ * 21 字符（≈16 KB/条），而这 21 个字符里绝大多数是 float64 的无效精度 —— 模型输出
+ * 本身就是 float32。改成 4 字节/维后单条 ≈3 KB（-81%），`JSON.parse` 也不用再
+ * 逐个解析几千个数字：200 条 × 768 维的 `readAllMemories` 实测 38.7 → 15.5 ms。
+ *
+ * 读取端同时兼容旧的 JSON 数组（见 `parseLine`），所以不需要一次性迁移存量文件。
+ */
+export declare const EMB_FORMAT_F32_B64 = "f32b64";
 /** 追加一条记忆；目录不存在时自动创建。 */
 export declare function appendMemory(memoryDir: string, chatId: string, entry: MemoryEntry): void;
 /** `upsertMemory` 的结果。 */
@@ -232,7 +245,7 @@ export declare function deleteMemoriesWhere(memoryDir: string, chatId: string, p
 export declare function writeMemoryEmbeddings(memoryDir: string, chatId: string, updates: readonly {
     ts: number;
     text: string;
-    emb: readonly number[];
+    emb: readonly number[] | Float32Array;
     model?: string;
 }[]): number;
 /** `private_123.jsonl` → `private:123`；不是记忆文件时返回 undefined（`memoryFileName` 的逆）。 */
@@ -302,7 +315,7 @@ export declare function searchMemories(entries: readonly MemoryEntry[], query: s
  * 维度不一致直接返回 0 —— 它只是一个打分分量，不该抛错；真正的「维度不兼容」
  * 由调用方按 `emb.length` 过滤（见 `searchMemoriesHybrid`）。
  */
-export declare function cosineSimilarity(left: readonly number[], right: readonly number[]): number;
+export declare function cosineSimilarity(left: ArrayLike<number>, right: ArrayLike<number>): number;
 /** 混合召回选项。 */
 export interface HybridSearchOptions {
     /** 查询向量；缺省 = 只走关键词（与第一批行为完全一致）。 */
@@ -320,6 +333,15 @@ export interface HybridSearchOptions {
      * 不给则退回「只比维度」的老行为（单测与不需要指纹的调用方用）。
      */
     embedderId?: string | undefined;
+    /**
+     * 最低分（0~1，缺省 0 = 不过滤）。
+     *
+     * 为什么需要：混合分只要 `> 0` 就入选，于是「关键词 0 分、语义只有 0.1 出头」的
+     * 弱相关条目也会挤进 topK（真实样本：查「习惯」时一条无关记忆以 0.1258 入选）。
+     * 过滤与截断的先后不影响结果（排序后截断取的就是最高分），这里放在前面只是让
+     * `topK` 的语义保持「最多返回几条**合格**条目」。
+     */
+    minScore?: number | undefined;
 }
 /**
  * 混合召回：关键词分与语义分加权。

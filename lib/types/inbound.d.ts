@@ -43,6 +43,15 @@ export interface NormalizedInbound {
      * reaches the prefix, the boundary attribute or lastNickname. */
     nickname: string;
 }
+/** The get_msg fields needed to verify a reply author and expand its text. */
+export interface QuotedMessageData {
+    message?: unknown;
+    raw_message?: string;
+    sender?: {
+        user_id?: string | number;
+        nickname?: string;
+    };
+}
 /**
  * get_msg 的原始返回（只声明本模块与 bridge facade 实际用到的字段）。
  *

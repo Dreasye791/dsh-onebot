@@ -67,6 +67,7 @@
 | rateLimitPerMinute 0 disables the inbound rate limit (M1-B7) | 0=禁用分支 |
 | injects RESTRICTED_PREFIX for restricted group members but not for admins（M2-T0） | 注入点在 processInbound 文本拼装（任务书把它列入出站闸门矩阵，但技术上属入站拼装——按实际归属迁入 inbound；管理员不注的反断言一并带走） |
 | inbound pipeline order: policy gate → mention gate → command router → quote expansion → media → dispatch（M2-T0） | 用实例方法覆写（tryHandleCommand/buildBody/expandQuote/dispatchFollowup）记录调用序 + 前置门「无调用」反证；顺序即契约，五拆后顺序变了此测试先红。T19 起展开（纯解析）先于任何 buildBody：图块顺序必须与最终文本里 forward → quote → body 的出现顺序一致，否则引用里的图会被当成用户自己发的 |
+| 引用唤醒门控（`reply-mention.spec.ts`） | 数组/CQ 引用在命令、媒体与排队/插话之前通过 `get_msg` 校验作者；覆盖群友引用、@其他人、错误 qq、未知作者/查询失败、已确认机器人引用与单次查询复用；无效 ID 零查询；四种 trace 丢弃原因；显式 @、私聊及关闭提及门控时无效引用仅跳过展开 |
 
 ### 3.3 outbound.spec.ts（PR4 目标）
 

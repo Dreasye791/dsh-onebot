@@ -72,6 +72,14 @@ export declare class MediaStore {
      * 与「超过大小上限」拒掉，再读文件；否则任意宿主文件都会被复制进 mediaDir。
      */
     private assertLocalMediaSource;
+    /**
+     * 图片按魔数定名，其他 kind 保持 `extForKind` 的默认扩展名。
+     *
+     * 为什么必须按 kind 分流：`reconcileExt` 只看字节，`file` / `voice` / `video`
+     * 里若是 GIF/PNG 内容也会被改名（于是 `[文件:xxx.gif]` 与「文件」语义不符）。
+     * 上游 `tests/media-ext.spec.ts` 的 `non-image media is left alone` 就是这一条。
+     */
+    private namedPath;
     private resolveInner;
     /**
      * Download a URL into the scratch dir, behind the SSRF fence: http/https
@@ -83,7 +91,9 @@ export declare class MediaStore {
      * @param maxBytes - size cap; `<=0`/undefined disables it.
      * @returns the local path.
      */
-    downloadUrl(url: string, ext: string, maxBytes?: number): Promise<string>;
+    downloadUrl(url: string, ext: string, maxBytes?: number, options?: {
+        sniffImage?: boolean;
+    }): Promise<string>;
 }
 /** Guess a file extension for a URL. */
 export declare function extForUrl(url: string, kind: 'image' | 'voice' | 'video' | 'file'): string;
@@ -94,21 +104,30 @@ export declare function extForUrl(url: string, kind: 'image' | 'voice' | 'video'
  * is kept — same rule as extForUrl.
  */
 export declare function extForInboundName(name: string): string;
-/** Default extension per media kind. */
-export declare function extForKind(kind: 'image' | 'voice' | 'video' | 'file'): string;
 /**
- * Identify an image container from its magic bytes.
+ * Image extension from the file's magic bytes; undefined when the header is
+ * not a JPEG/PNG/GIF/WebP/BMP. QQ download URLs carry no extension in the path,
+ * so extForUrl falls back to '.jpg' for every inbound image and GIF/PNG/WebP
+ * stickers land as .jpg — the host's read_image then refuses the file
+ * because its content does not match the extension.
  *
  * `.bmp` 会被识别出来，但**宿主附件服务不支持该 MIME**（`dsh-attachment-local`
  * 的 `mediaTypes` 只有 png/jpeg/webp/gif，见 attach.ts 的 HOST_MEDIA_TYPES 注释）。
  * 因此 BMP 在本插件里的命运是：扩展名被校正成 `.bmp` → 附件投递判定为
  * `unsupported-type` → 退回 `[图片:<路径>]` 文本。识别它仍然有价值（避免一个
- * 真 BMP 被当成 `.jpg` 送给下游），只是不要把"识别"误当成"可投递"。
- * @param data - file bytes (only the head is inspected).
+ * 真 BMP 被当成 `.jpg` 送给下游），只是不要把「识别」误当成「可投递」。
+ * @param head - 文件头字节（调用方读前 12 字节即可，传完整 body 也安全）。
  * @returns the canonical extension ('.png' / '.jpg' / '.gif' / '.webp' /
  *   '.bmp'), or undefined when the bytes are not a recognised image.
  */
-export declare function sniffImageExt(data: Buffer): string | undefined;
+export declare function sniffImageExt(head: Buffer): string | undefined;
+/**
+ * Rename a downloaded image so its extension matches its content (see
+ * sniffImageExt). Unknown formats and any I/O error keep the original path.
+ */
+export declare function matchImageExt(path: string): Promise<string>;
+/** Default extension per media kind. */
+export declare function extForKind(kind: 'image' | 'voice' | 'video' | 'file'): string;
 /**
  * Replace a scratch path's extension with the one its bytes actually carry.
  * The bytes win: QQ (and other OneBot implementations) routinely serve a

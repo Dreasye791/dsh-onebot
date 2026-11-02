@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+// 取本地：本地的表情标签函数叫 faceToLabel（上游这版改名为 faceToEmoji）。
 import { cqUnescape, parseMessage, detectExplicitMention, detectMention, parseCqString, faceToLabel } from '../src/cq.js'
 
 describe('cqUnescape', () => {
@@ -83,6 +84,9 @@ describe('detectMention', () => {
     // 引用作者由门禁的 get_msg 校验决定；这里只覆盖「段内自带 qq 扩展」这种
     // 同步可判的情况，避免把「引用别人」也当唤醒。
     expect(detectMention([{ type: 'reply', data: { id: '1' } }], '', '10001', '')).toBe(false)
+    // 上游补的两条边界：CQ 字符串里的裸 reply，以及 reply 段 + 别人的 @。
+    expect(detectMention(undefined, '[CQ:reply,id=1] hello', '10001', '')).toBe(false)
+    expect(detectMention(undefined, '[CQ:reply,id=1][CQ:at,qq=999] hello', '10001', '')).toBe(false)
   })
   it('A8: reply mentions only when it determinably replies to the bot itself', () => {
     // Replied-to user qq == learned selfId → mention.
@@ -101,6 +105,19 @@ describe('detectMention', () => {
   })
   it('fails closed when bot id unknown', () => {
     expect(detectMention([{ type: 'at', data: { qq: '10001' } }], '', '', '')).toBe(false)
+    expect(detectMention([{ type: 'reply', data: { id: '1' } }], '', '', '')).toBe(false)
+  })
+})
+
+describe('detectExplicitMention', () => {
+  it('never treats a reply as an explicit @, even when its qq names the bot', () => {
+    expect(detectExplicitMention([{ type: 'reply', data: { id: '1', qq: '10001' } }], '', '10001', '')).toBe(false)
+  })
+  it('preserves explicit @bot and @all triggers in both message formats', () => {
+    for (const qq of ['10001', 'all']) {
+      expect(detectExplicitMention([{ type: 'at', data: { qq } }], '', '10001', '')).toBe(true)
+      expect(detectExplicitMention(undefined, `[CQ:at,qq=${qq}] hi`, '', '10001')).toBe(true)
+    }
   })
 })
 

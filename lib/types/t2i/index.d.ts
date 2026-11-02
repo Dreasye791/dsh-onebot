@@ -26,6 +26,8 @@ export interface RenderOptions {
     fontFiles?: readonly string[];
     /** Preferred font family names. */
     fontFamilies?: readonly string[];
+    /** Preferred mono family names for code text (before fontFamilies/platform defaults). */
+    monoFamilies?: readonly string[];
 }
 /**
  * Render markdown text as a styled PNG card (synchronous; the original was

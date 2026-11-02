@@ -98,6 +98,12 @@ export interface BridgeConfig {
    * with the final text only). Absent/true = the full recall behavior. */
   interimRecall?: boolean
   sendErrorNotice: boolean
+  /** T8 (#3): auto-receipt notice switches — absent → both on (0.9.x
+   * behavior unchanged). steerAccepted gates the steer-mode auto receipt;
+   * queue gates the once-per-running-turn queue notice. The explicit /steer
+   * command confirmation is a command reply, not an auto receipt, and stays
+   * on regardless of this knob. */
+  notices?: { steerAccepted?: boolean, queue?: boolean }
   /** B7: per-chat per-minute sliding-window cap for normal (non-command)
    * messages; absent → 30, 0 disables. */
   rateLimitPerMinute?: number
@@ -117,6 +123,8 @@ export interface BridgeConfig {
   cardFooter: string
   fontFiles: readonly string[]
   fontFamilies: readonly string[]
+  /** T2 (P1): preferred mono family names for code text (t2i); absent → t2i platform defaults. */
+  monoFamilies?: readonly string[]
   agentPreset: string
   /** QQ 通道的思考强度覆盖：''/缺省 = 继承宿主 agent-default-model（0.9.4 及
    * 以前的行为）；非空 = 本通道 agent 的 reasoningEffort，Web/GUI 会话不受影响。 */
@@ -1081,6 +1089,9 @@ export class ChatBridge {
       setPendingSelection: (chatId, value) => { bridge.registry.getSettings(chatId).pendingSelection = value },
       // /session: the per-chat switchable history and the switch itself.
       switchableSessions: chatId => bridge.registry.switchableSessions(chatId),
+      // T4 (#15): the run-scoped broken-session count (the retire record) so
+      // the /session list can surface quarantined history.
+      brokenSessionCount: () => bridge.registry.brokenSessionCount(),
       switchSession: (chatId, targetSessionId) => bridge.registry.switchSession(chatId, targetSessionId),
       // /session list previews: cold-read each retired session's first user
       // input through the persistence port (read handle, small prefix).
@@ -1264,15 +1275,21 @@ export class ChatBridge {
     if ((this.deps.config.newMessagePolicy ?? 'queue') === 'steer' && plain && !restricted && autoSteerAllowed) {
       this.steerMessage(chatId, text)
       currentTrace()?.emit('dispatch', { ok: true, reason: TRACE_REASONS.busyTurnSteered })
-      this.sendToChat(chatId, STEER_ACCEPTED_NOTICE).catch((error: unknown) => {
-        this.deps.log('debug', '插话提交提示发送失败: ' + describeError(error))
-        currentTrace()?.emit('notice', { ok: false, reason: '插话提交提示发送失败: ' + describeError(error) })
-      })
+      // T8 (#3): the auto receipt is switchable (notices.steerAccepted);
+      // the steer itself always happens.
+      if (this.deps.config.notices?.steerAccepted ?? true) {
+        this.sendToChat(chatId, STEER_ACCEPTED_NOTICE).catch((error: unknown) => {
+          this.deps.log('debug', '插话提交提示发送失败: ' + describeError(error))
+          currentTrace()?.emit('notice', { ok: false, reason: '插话提交提示发送失败: ' + describeError(error) })
+        })
+      }
       return true
     }
     await this.dispatchFollowup(chatId, text, role, nickname, images, userId)
     currentTrace()?.emit('dispatch', { ok: true, reason: TRACE_REASONS.busyTurnQueued })
-    if (!this.queueNoticeChats.has(chatId)) {
+    // T8 (#3): the once-per-running-turn queue notice is switchable
+    // (notices.queue); the queueing itself always happens.
+    if ((this.deps.config.notices?.queue ?? true) && !this.queueNoticeChats.has(chatId)) {
       this.queueNoticeChats.add(chatId)
       this.sendToChat(chatId, QUEUE_NOTICE_TEXT).catch((error: unknown) => {
         this.deps.log('debug', '排队提示发送失败: ' + describeError(error))
@@ -1475,6 +1492,17 @@ export class ChatBridge {
             trace?.emit('notice', { ok: false, reason: TRACE_REASONS.noticeErrorSendFailed })
           })
         }
+      }
+      // #4a: a 'blocked' turn claims the user's message then discards it in
+      // the pre-step rejection — without a notice the user sees pure silence
+      // and reads it as the bot ignoring them. Same fault-notice discipline
+      // as the error branch above: queuable send; a deferred-tracked turn
+      // keeps its single terminal notice on the补发 path instead.
+      if (reason.kind === 'blocked' && !deferredTracked && this.deps.config.sendErrorNotice) {
+        this.sendToChat(chatId, '⚠️ 该消息未生成回复：回合在开始处理前被系统拦截，请稍后重发。', { queuable: true }).catch((error: unknown) => {
+          this.deps.log('debug', '拦截提示发送失败: ' + describeError(error))
+          trace?.emit('notice', { ok: false, reason: TRACE_REASONS.noticeErrorSendFailed })
+        })
       }
       this.stopTyping(chat)
       chat.lastActivityAt = Date.now()

@@ -216,6 +216,16 @@ export interface Config {
     /** M3-D2b: interim recall degrade switch (false = send-only interims). */
     interimRecall: boolean;
     sendErrorNotice: boolean;
+    /** T8: auto-receipt notice switches (default true keeps existing behavior). */
+    notices: {
+        steerAccepted: boolean;
+        queue: boolean;
+    };
+    /** T14 (#6 补充): qq_send_segments 插件页开关与分段发送间隔（呼吸感）。 */
+    segments: {
+        enabled: boolean;
+        intervalMs: number;
+    };
     /** Per-chat per-minute sliding-window cap for normal (non-command) messages; 0 disables. */
     rateLimitPerMinute: number;
     restrictedMemberPrefix: boolean;
@@ -242,6 +252,7 @@ export interface Config {
     cardFooter: string;
     fontFiles: string[];
     fontFamilies: string[];
+    monoFamilies: string[];
     agentPreset: string;
     /** QQ 通道的思考强度覆盖：留空（默认）=继承宿主 agent-default-model 的
      * reasoningEffort；非空则本通道创建/恢复的每个 agent 都用该值，不影响

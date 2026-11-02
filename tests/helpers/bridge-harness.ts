@@ -23,6 +23,22 @@ import { InboundRecorder } from '../../src/record.js'
 import { InjectChannel } from '../../src/inject.js'
 import type { Embedder } from '../../src/memory-embed.js'
 
+/** dsh 0.2.2 host-faithful Agent.model stub: current() returns the last
+ * recorded selection, else the agentOptions fallback (provider/model), else
+ * undefined; select() records the selection — mirroring the durable
+ * model/selection event the host's AgentModel appends. */
+function makeFakeModel(agentOptions?: { provider?: string; model?: string }) {
+  const selections: Array<{ provider: string; model: string }> = []
+  return {
+    current: () => selections[selections.length - 1]
+      ?? (agentOptions?.provider !== undefined && agentOptions?.model !== undefined
+        ? { provider: agentOptions.provider, model: agentOptions.model }
+        : undefined),
+    select: (next: { provider: string; model: string }) => { selections.push({ provider: next.provider, model: next.model }) },
+    selections,
+  }
+}
+
 /** A fake agent handle for the bridge. */
 export function makeFakeAgents(
   sessionIds: string[],
@@ -31,7 +47,7 @@ export function makeFakeAgents(
 ) {
   const disposed: string[] = []
   const agents = {
-    create: vi.fn(async (options: { sessionId: string; meta?: { cwd?: string; agentPreset?: string }; setup?: (agentCtx: unknown) => unknown }) => {
+    create: vi.fn(async (options: { sessionId: string; meta?: { cwd?: string; agentPreset?: string }; agentOptions?: { provider?: string; model?: string }; setup?: (agentCtx: unknown) => unknown }) => {
       if (opts?.createDelayMs !== undefined) await new Promise(resolve => setTimeout(resolve, opts.createDelayMs))
       const sessionId = String(options.sessionId)
       sessionIds.push(sessionId)
@@ -42,6 +58,7 @@ export function makeFakeAgents(
       const agent = {
         session: { id: sessionId, seq: 0, header: { cwd: options.meta?.cwd ?? process.cwd() } },
         status: 'idle',
+        model: makeFakeModel(options.agentOptions),
         cancel: () => { agent.status = 'idle' },
         followup: (message: { content: Array<{ type: string; text?: string }> }) => {
           const text = message.content.map(b => b.text ?? '').join('')
@@ -81,13 +98,14 @@ export function makeFakeAgents(
       return { agent, dispose: vi.fn(async () => { disposed.push(sessionId) }) }
     }),
     disposed,
-    resume: vi.fn(async (options: { resumeSessionId: string; setup?: (agentCtx: unknown) => unknown }) => {
+    resume: vi.fn(async (options: { resumeSessionId: string; agentOptions?: { provider?: string; model?: string }; setup?: (agentCtx: unknown) => unknown }) => {
       if (opts?.resumeOk !== true) throw new Error('not persisted')
       const sessionId = String(options.resumeSessionId)
       sessionIds.push(sessionId)
       const agent = {
         session: { id: sessionId, seq: 1, header: { cwd: process.cwd() } },
         status: 'idle',
+        model: makeFakeModel(options.agentOptions),
         cancel: () => { agent.status = 'idle' },
         followup: (message: { content: Array<{ type: string; text?: string }> }) => {
           const text = message.content.map(b => b.text ?? '').join('')
@@ -120,7 +138,7 @@ export function makeFakeAgents(
 }
 
 /** Full bridge + WS harness: inbound via real WebSocket, outbound captured. */
-export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean; createDelayMs?: number; transcriber?: Transcriber; trace?: TraceSink; ignoreSelf?: boolean; recorder?: InboundRecorder; inject?: InjectChannel; newMessagePolicy?: 'queue' | 'steer'; deferredTimeoutMs?: number; mcpToolAllow?: string[]; log?: (level: string, message: string) => void }) {
+export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: string; interimMessages?: boolean; textImageThreshold?: number; maxImageBytes?: number; resumeOk?: boolean; createDelayMs?: number; transcriber?: Transcriber; trace?: TraceSink; ignoreSelf?: boolean; recorder?: InboundRecorder; inject?: InjectChannel; newMessagePolicy?: 'queue' | 'steer'; deferredTimeoutMs?: number; mcpToolAllow?: string[]; log?: (level: string, message: string) => void; notices?: { steerAccepted?: boolean, queue?: boolean }; monoFamilies?: readonly string[] }) {
   const ctx = new Context()
   const sessionIds: string[] = []
   const captured = { followups: [] as Array<{ text: string; sessionId: string }>, steers: [] as Array<{ text: string; sessionId: string }>, channelTools: [] as string[], channelSections: [] as string[], guards: [] as Array<(exec: { name?: unknown }) => string | undefined>, guardThis: undefined as unknown }
@@ -153,6 +171,10 @@ export async function makeHarness(opts?: { failCreateFor?: string; mediaDir?: st
       ...(opts?.deferredTimeoutMs !== undefined ? { deferredTimeoutMs: opts.deferredTimeoutMs } : {}),
       // T20: MCP 工具白名单（absent = [] = fail-closed，禁用全部 MCP）。
       mcpToolAllow: opts?.mcpToolAllow ?? [],
+      // T8: auto-receipt notice override (absent = both on).
+      ...(opts?.notices !== undefined ? { notices: opts.notices } : {}),
+      // T2/T11: preferred mono families for t2i code text (absent = undefined).
+      ...(opts?.monoFamilies !== undefined ? { monoFamilies: opts.monoFamilies } : {}),
       // W1: optional decision-trace sink (absent = tracing off).
       trace: opts?.trace,
       // W1/T5: optional recorder / inject channel (absent = feature off).
@@ -247,6 +269,9 @@ export async function makeCmdHarness(opts?: {
   memoryEmbedder?: Embedder
   /** T4 (P3): optional log capture for reference-number assertions. */
   log?: (level: string, message: string) => void
+  /** T8: auto-receipt notice override (absent = both on). */
+  notices?: { steerAccepted?: boolean, queue?: boolean }
+  monoFamilies?: readonly string[]
 }) {
   const ctx = new Context()
   const sessionIds: string[] = []
@@ -290,6 +315,10 @@ export async function makeCmdHarness(opts?: {
       ...(opts?.interimRecall !== undefined ? { interimRecall: opts.interimRecall } : {}),
       ...(opts?.rateLimitPerMinute !== undefined ? { rateLimitPerMinute: opts.rateLimitPerMinute } : {}),
       sendErrorNotice: true,
+      // T8: auto-receipt notice override (absent = both on).
+      ...(opts?.notices !== undefined ? { notices: opts.notices } : {}),
+      // T2/T11: preferred mono families for t2i code text (absent = undefined).
+      ...(opts?.monoFamilies !== undefined ? { monoFamilies: opts.monoFamilies } : {}),
       ...(opts?.restrictedMemberPrefix !== undefined ? { restrictedMemberPrefix: opts.restrictedMemberPrefix } : {}),
       ...(opts?.newMessagePolicy !== undefined ? { newMessagePolicy: opts.newMessagePolicy } : {}),
       ...(opts?.autoSteerPolicy !== undefined ? { autoSteerPolicy: opts.autoSteerPolicy } : {}),

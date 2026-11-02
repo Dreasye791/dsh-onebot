@@ -68,6 +68,15 @@ export interface BridgeConfig {
      * with the final text only). Absent/true = the full recall behavior. */
     interimRecall?: boolean;
     sendErrorNotice: boolean;
+    /** T8 (#3): auto-receipt notice switches — absent → both on (0.9.x
+     * behavior unchanged). steerAccepted gates the steer-mode auto receipt;
+     * queue gates the once-per-running-turn queue notice. The explicit /steer
+     * command confirmation is a command reply, not an auto receipt, and stays
+     * on regardless of this knob. */
+    notices?: {
+        steerAccepted?: boolean;
+        queue?: boolean;
+    };
     /** B7: per-chat per-minute sliding-window cap for normal (non-command)
      * messages; absent → 30, 0 disables. */
     rateLimitPerMinute?: number;
@@ -87,6 +96,8 @@ export interface BridgeConfig {
     cardFooter: string;
     fontFiles: readonly string[];
     fontFamilies: readonly string[];
+    /** T2 (P1): preferred mono family names for code text (t2i); absent → t2i platform defaults. */
+    monoFamilies?: readonly string[];
     agentPreset: string;
     /** QQ 通道的思考强度覆盖：''/缺省 = 继承宿主 agent-default-model（0.9.4 及
      * 以前的行为）；非空 = 本通道 agent 的 reasoningEffort，Web/GUI 会话不受影响。 */

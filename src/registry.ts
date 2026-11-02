@@ -11,12 +11,12 @@
  * table, the outbound pipeline and the session-event links keep working.
  * @module dsh-onebot/registry
  */
-import type { Agent, AgentRegistry, AgentSetup, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentRegistry, AgentSetup, ModelSelection } from '@deepseek-ai/dsh-agent'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import type { SessionId, SessionStore } from '@deepseek-ai/dsh-session'
 import { SessionId as makeSessionId } from '@deepseek-ai/dsh-session'
 import type { Context } from '@deepseek-ai/cordis'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { constants, copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 
 import type { MediaRef } from './cq.js'
 import type { ChatId, UserRole } from './chat.js'
@@ -26,6 +26,21 @@ import { describeError } from './errors.js'
 
 /** The mapping file name inside the media dir. */
 const MAPPING_FILE = 'chat-sessions.json'
+
+/** #18: local structural stand-in for the ModelSelectionRef the dsh 0.2.1
+ * host's two-arg installModelSelection(agentCtx, selectionRef) expected —
+ * the 0.2.2 package removed the type export, so it is declared here instead
+ * of imported. `assembled` stays undefined: the pre-0.2.2 wiring only ever
+ * seeded `current` (see the 83a6055 modelWiring). */
+interface ModelSelectionRef {
+  current: ModelSelection
+  assembled: ModelSelection | undefined
+}
+
+/** #18: arity-erased view of installModelSelection — the installed 0.2.2
+ * package types it single-arg, but the 0.2.1 host takes a second
+ * selectionRef; the runtime branch reads the real function's `.length`. */
+type InstallModelSelection = (agentCtx: Context, selectionRef?: ModelSelectionRef) => () => void
 /** The retired-session-id file name inside the media dir (append-only). */
 const RETIRED_FILE = 'retired-sessions.json'
 /** The per-chat switchable-session file name inside the media dir. */
@@ -173,8 +188,8 @@ export interface ChatAgent {
   activeTurnUser: string | undefined
   /** The last user message text actually fed to the agent (for /retry). */
   lastFollowup: string | undefined
-  /** Mutable per-agent model selection (installModelSelection-bound); the
-   * /model command swaps `.current` for the next step. */
+  /** dsh 0.2.1 宿主没有 `agent.model` 子 API：/model 的读写走这里持有的可变选择
+   * （0.2.2 上选择由 `agent.model` 承载，本字段闲置但保持存在，便于命令层统一回退）。 */
   selectionRef: ModelSelectionRef | undefined
 }
 
@@ -280,27 +295,31 @@ export class ChatRegistry {
    * — agent options for the registry call plus the mutable per-agent
    * selection ref (undefined when the deployment has no default model).
    *
-   * config.reasoningEffort overrides the host default for this channel only:
-   * installModelSelection's agent/request hook strips the inherited effort and
-   * re-applies `selection.assembled.reasoningEffort`, so overriding it on the
-   * selection we hand to installModelSelection is what actually changes the
-   * request — the host's own agent-default-model stays untouched (Web/GUI
-   * sessions keep inheriting it). Empty string keeps the pre-existing
-   * inheritance verbatim. `sameRoute` compares provider/model only, so an
-   * effort-only difference never emits a model-switch notice. */
-  private modelWiring(): { agentOptions: { provider?: string; model?: string }; selectionRef: ModelSelectionRef | undefined } {
+   * config.reasoningEffort overrides the host default for this channel only：
+   * 0.2.1 由 `installModelSelection` re-apply `assembled.reasoningEffort`，
+   * 所以覆盖必须落在交给它的 selection 上；0.2.2 没有 ref，改由
+   * `agentOptions.reasoningEffort` 作为创建种子。两条路都设，行为一致。
+   * 宿主自己的 agent-default-model 不受影响（Web/GUI 会话继续继承）。
+   * 空串保持原样继承；`sameRoute` 只比 provider/model，effort-only 的差异
+   * 不会触发模型切换通知。 */
+  private modelWiring(): {
+    agentOptions: { provider?: string; model?: string; reasoningEffort?: ModelSelection['reasoningEffort'] }
+    selectionRef: ModelSelectionRef | undefined
+  } {
     const inherited = this.deps.defaultModel?.()
     const effort = this.deps.config.reasoningEffort
-    // config.reasoningEffort 是插件的字符串联合（index.ts:107 的 ReasoningEffort），
+    // config.reasoningEffort 是插件的字符串联合（index.ts 的 ReasoningEffort），
     // 宿主的 ModelSelection 用 branded ReasoningEffortId：档位名已由 schema 的
     // z.union 校验过，这里只需在类型层收窄（运行期值不变）。
     const selection = inherited !== undefined && effort !== undefined && effort !== ''
-      ? ({ ...inherited, reasoningEffort: effort } as ModelSelectionRef['current'])
+      ? ({ ...inherited, reasoningEffort: effort } as ModelSelection)
       : inherited
-    const agentOptions: { provider?: string; model?: string } = {}
+    const agentOptions: { provider?: string; model?: string; reasoningEffort?: ModelSelection['reasoningEffort'] } = {}
     if (selection !== undefined) {
       agentOptions.provider = selection.provider
       agentOptions.model = selection.model
+      // 0.2.2 单参安装时没有 ref 可以携带 effort，只能靠创建选项。
+      if (selection.reasoningEffort !== undefined) agentOptions.reasoningEffort = selection.reasoningEffort
     }
     const selectionRef: ModelSelectionRef | undefined = selection !== undefined
       ? { current: selection, assembled: undefined }
@@ -316,8 +335,20 @@ export class ChatRegistry {
     return async agentCtx => {
       this.deps.installChannelScope(agentCtx, chatId)
       await this.joinPreset(agentCtx, recordedPreset)
-      if (selectionRef !== undefined) {
-        installModelSelection(agentCtx, selectionRef)
+      // 双宿主 arity 兼容（上游 #18）：0.2.2 删掉了 `ModelSelectionRef` 导出与第二参
+      // （单参只装切换通知监听，选择本身挂在 `agent.model`），而 0.2.1 宿主仍要求
+      // `installModelSelection(agentCtx, selectionRef)`。按运行时参数个数分支：
+      // 0.2.1 用上面 `modelWiring()` 算好的 ref（带 reasoningEffort 覆盖），
+      // 0.2.2 走无条件单参。忽略返回的 disposer 与宿主调用方一致
+      // （dsh-api-session-controller / dsh-headless / dsh-acp）。
+      const install = installModelSelection as InstallModelSelection
+      if (install.length >= 2) {
+        // 0.2.1：双参宿主需要插件持有的 ref —— 复用上面算好的那份（含 effort 覆盖），
+        // 不能在这里现取 defaultModel()，否则 reasoningEffort 配置会被悄悄丢掉。
+        if (selectionRef !== undefined) install(agentCtx, selectionRef)
+      } else {
+        // 0.2.2：选择本身挂在 agent.model，单参只装切换通知监听
+        install(agentCtx)
       }
     }
   }
@@ -337,6 +368,7 @@ export class ChatRegistry {
       chatId,
       sessionId: handle.agent.session.id,
       agent: handle.agent,
+      selectionRef,
       dispose: () => handle.dispose(),
       lastActivityAt: Date.now(),
       loopPending: null,
@@ -354,7 +386,6 @@ export class ChatRegistry {
       pendingTurnUsers: [],
       activeTurnUser: undefined,
       lastFollowup: undefined,
-      selectionRef,
     }
   }
 
@@ -494,60 +525,95 @@ export class ChatRegistry {
 
   /** Resume persisted chats from the mapping file (best-effort). */
   async loadMapping(): Promise<void> {
+    let content: string
     try {
-      const content = await readFile(this.mappingPath(), 'utf8')
-      // D4b/T3: additive format — a legacy entry is a bare session-id string; a
-      // new entry is { session, interimOverride?, goal?, workspacePath? }.
-      const mapping = JSON.parse(content) as Record<string, string | PersistedChatSettings>
-      this.deps.log('debug', 'mapping file has ' + Object.keys(mapping).length + ' chat(s)')
-      for (const [chatId, entry] of Object.entries(mapping)) {
-        const sessionId = typeof entry === 'string' ? entry : entry?.session
-        if (typeof sessionId !== 'string' || sessionId === '') continue
-        // Restore the persisted mode/goal/workspace override BEFORE the resume
-        // attempt (old files carry neither — the settings then fall back to
-        // their current defaults). T3: restoring the override first closes the
-        // hole where a failed resume (retire → fresh session) lost the
-        // per-chat /workspace choice.
-        if (typeof entry === 'object' && entry !== null) {
-          const settings = this.getSettings(chatId)
-          if (typeof entry.interimOverride === 'boolean') settings.interimOverride = entry.interimOverride
-          if (typeof entry.goal === 'string' && entry.goal !== '') settings.goal = entry.goal
-          if (typeof entry.workspacePath === 'string' && entry.workspacePath !== '') settings.workspacePath = entry.workspacePath
-        }
-        // T3: a durably retired session id (recorded by resetChat's settings
-        // snapshot) must never be resumed — the entry only carries the
-        // settings for the chat's NEXT session. T3-R1 (review closure): keep
-        // the object entry in evictedChats so any mid-flight saveMapping
-        // (stop(), another chat's createChat) still writes it — a
-        // settings-only chat sits in neither chats nor evictedChats, and one
-        // dropped save would erase workspacePath/goal/mode from the file
-        // before the next restart.
-        if (this.retiredSessionIds.has(sessionId)) {
-          this.deps.log('debug', 'skipping resume of retired session ' + sessionId + ' for ' + chatId + ' (settings only)')
-          if (typeof entry === 'object' && entry !== null) this.evictedChats.set(chatId, entry)
-          continue
-        }
-        this.deps.log('debug', 'attempting resume of ' + chatId + ' @ ' + sessionId)
-        if (this.deps.isStopping()) return
-        try {
-          await this.resumeChat(chatId, sessionId)
-        } catch (error) {
-          this.retireSession(sessionId)
-          // T3-R2: mirror the retired-skip branch above — keep the object
-          // entry in evictedChats as a settings carrier so any later
-          // saveMapping keeps writing it (otherwise one dropped save erases
-          // workspacePath/goal/mode from the file before the next restart).
-          if (typeof entry === 'object' && entry !== null) this.evictedChats.set(chatId, entry)
-          this.deps.log('warn', 'resume failed for ' + chatId + ': ' + describeError(error))
-        }
-      }
+      content = await readFile(this.mappingPath(), 'utf8')
     } catch (error) {
-      // R-01：只有「文件不存在」才算全新启动。JSON 截断 / 读权限错误若也当空集处理，
-      // 下一次 saveMapping（turn/end 必触发）就会用空映射覆盖原文件 —— 这是静默
-      // 数据丢失，不是降级。置旗标后 saveMapping 拒绝覆盖，留给人工修复。
-      if ((error as { code?: string }).code !== 'ENOENT') {
+      // T4 (#15) inner split: a missing mapping file is the ordinary fresh
+      // start — silent. Any other read failure warns (a silent "empty" here
+      // would let a later saveMapping overwrite whatever is on disk, the
+      // loadRetired hazard) but does not quarantine — the file may be
+      // transiently unreadable rather than corrupt.
+      if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        // R-01：读失败不隔离（可能只是暂时不可读），但必须置旗标 —— 否则下一次
+        // saveMapping（turn/end 必触发）会用这份空映射覆盖磁盘上的真实映射。
         this.mappingLoadFailed = true
-        this.deps.log('warn', 'chat-sessions.json 读取失败，已停止覆盖写以保护现有映射（修复文件后重启）: ' + describeError(error))
+        this.deps.log('warn', 'mapping read failed; starting fresh and refusing to overwrite: ' + describeError(error))
+      }
+      return
+    }
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(content) as unknown
+    } catch (error) {
+      // T4 (#15): a parse failure is no longer silently swallowed — warn,
+      // quarantine the file, and continue with an empty mapping.
+      await this.quarantineCorruptMapping(error)
+      return
+    }
+    // T4 (#15): a structural failure (not a plain JSON object) takes the same
+    // quarantine path as a parse failure.
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      await this.quarantineCorruptMapping(new Error('mapping file is not a JSON object'))
+      return
+    }
+    const mapping = parsed as Record<string, string | PersistedChatSettings>
+    this.deps.log('debug', 'mapping file has ' + Object.keys(mapping).length + ' chat(s)')
+    for (const [chatId, entry] of Object.entries(mapping)) {
+      const sessionId = typeof entry === 'string' ? entry : entry?.session
+      if (typeof sessionId !== 'string' || sessionId === '') continue
+      // Restore the persisted mode/goal/workspace override BEFORE the resume
+      // attempt (old files carry neither — the settings then fall back to
+      // their current defaults). T3: restoring the override first closes the
+      // hole where a failed resume (retire → fresh session) lost the
+      // per-chat /workspace choice.
+      if (typeof entry === 'object' && entry !== null) {
+        const settings = this.getSettings(chatId)
+        if (typeof entry.interimOverride === 'boolean') settings.interimOverride = entry.interimOverride
+        if (typeof entry.goal === 'string' && entry.goal !== '') settings.goal = entry.goal
+        if (typeof entry.workspacePath === 'string' && entry.workspacePath !== '') settings.workspacePath = entry.workspacePath
+      }
+      // T3: a durably retired session id (recorded by resetChat's settings
+      // snapshot) must never be resumed — the entry only carries the
+      // settings for the chat's NEXT session. T3-R1 (review closure): keep
+      // the object entry in evictedChats so any mid-flight saveMapping
+      // (stop(), another chat's createChat) still writes it — a
+      // settings-only chat sits in neither chats nor evictedChats, and one
+      // dropped save would erase workspacePath/goal/mode from the file
+      // before the next restart.
+      if (this.retiredSessionIds.has(sessionId)) {
+        this.deps.log('debug', 'skipping resume of retired session ' + sessionId + ' for ' + chatId + ' (settings only)')
+        if (typeof entry === 'object' && entry !== null) this.evictedChats.set(chatId, entry)
+        continue
+      }
+      this.deps.log('debug', 'attempting resume of ' + chatId + ' @ ' + sessionId)
+      if (this.deps.isStopping()) return
+      try {
+        await this.resumeChat(chatId, sessionId)
+      } catch (error) {
+        this.retireSession(sessionId)
+        // T3-R2: mirror the retired-skip branch above — keep the object
+        // entry in evictedChats as a settings carrier so any later
+        // saveMapping keeps writing it (otherwise one dropped save erases
+        // workspacePath/goal/mode from the file before the next restart).
+        if (typeof entry === 'object' && entry !== null) this.evictedChats.set(chatId, entry)
+        this.deps.log('warn', 'resume failed for ' + chatId + ': ' + describeError(error))
+      }
+    }
+  }
+
+  /** T4 (#15): quarantine an unparsable/structurally invalid mapping file —
+   * warn, copy it to `<chat-sessions.json>.bak` (an existing .bak is never
+   * overwritten: the earliest post-corruption copy wins), and leave the load
+   * with an empty mapping so the chat stays usable. */
+  private async quarantineCorruptMapping(error: unknown): Promise<void> {
+    this.deps.log('warn', 'mapping file is corrupt; quarantining to .bak and starting fresh: ' + describeError(error))
+    try {
+      await copyFile(this.mappingPath(), this.mappingPath() + '.bak', constants.COPYFILE_EXCL)
+    } catch (copyError) {
+      // EEXIST = a previous quarantine already holds the .bak — keep it.
+      if ((copyError as NodeJS.ErrnoException)?.code !== 'EEXIST') {
+        this.deps.log('warn', 'mapping .bak copy failed: ' + describeError(copyError))
       }
     }
   }
@@ -746,6 +812,13 @@ export class ChatRegistry {
     this.brokenSessions.add(id)
     this.retiredSessionIds.add(id)
     void this.saveRetired()
+  }
+
+  /** T4 (#15): the run's hard-retired (broken) session count, straight from
+   * the retire record — the /session list surfaces it so broken history
+   * stays visible to the admin. */
+  brokenSessionCount(): number {
+    return this.brokenSessions.size
   }
 
   /** Whether the persistence layer already owns a durable log for this id —

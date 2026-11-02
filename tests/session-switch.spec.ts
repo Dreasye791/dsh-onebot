@@ -44,6 +44,17 @@ function recordSwitchableOf(r: ChatRegistry): (chatId: string, id: string) => vo
 function makeDirectAgents(opts?: { failResumeIds?: string[] }) {
   const created: string[] = []
   const resumed: string[] = []
+  // dsh 0.2.2: /status reads agent.model.current(); the stub mirrors the
+  // host semantics (recorded selection ?? agentOptions fallback ?? undefined).
+  const makeModel = (agentOptions?: { provider?: string; model?: string }) => {
+    let recorded: { provider: string; model: string } | undefined
+    return {
+      current: () => recorded ?? (agentOptions?.provider !== undefined && agentOptions?.model !== undefined
+        ? { provider: agentOptions.provider, model: agentOptions.model }
+        : undefined),
+      select: (next: { provider: string; model: string }) => { recorded = { provider: next.provider, model: next.model } },
+    }
+  }
   const agents = {
     create: vi.fn(async (options: { sessionId: string; meta?: { cwd?: string } }) => {
       const id = String(options.sessionId)
@@ -52,6 +63,7 @@ function makeDirectAgents(opts?: { failResumeIds?: string[] }) {
         agent: {
           session: { id, seq: 0, header: { cwd: options.meta?.cwd ?? process.cwd() } },
           status: 'idle',
+          model: makeModel(),
           cancel: () => undefined,
           followup: () => undefined,
           steer: () => undefined,
@@ -68,6 +80,7 @@ function makeDirectAgents(opts?: { failResumeIds?: string[] }) {
         agent: {
           session: { id, seq: 1, header: { cwd: process.cwd() } },
           status: 'idle',
+          model: makeModel(),
           cancel: () => undefined,
           followup: () => undefined,
           steer: () => undefined,
@@ -586,4 +599,47 @@ describe('/session command (bridge harness)', () => {
     await h.bridge.stop()
     await h.connection.stop()
   }, 60_000)
+
+  it('#4b: bracketed serials normalize — /session <1> and ＜1＞ switch like /session 1', async () => {
+    const h = await makeHarness({ resumeOk: true })
+    h.sendText('第一条')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(1))
+    const s1 = h.sessionIds[0]
+    h.sendText('/new')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('已开启新会话'))).toBe(true)
+    })
+    h.sendText('第二条')
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
+    const s2 = h.sessionIds[1]
+    expect(s2).not.toBe(s1)
+
+    h.sendText('/session')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes(' 退休 · ' + s1 + '）'))).toBe(true)
+    })
+    // Half-width angle brackets.
+    h.sendText('/session <1>')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('已切回历史会话：' + s1))).toBe(true)
+    })
+    const registry = registryOf(h)
+    const agents = (registry as unknown as { deps: { agents: { resume: ReturnType<typeof vi.fn> } } }).deps.agents
+    expect(agents.resume).toHaveBeenCalledWith(expect.objectContaining({ resumeSessionId: s1 }))
+
+    // Fullwidth angle brackets: the round trip switches back to s2.
+    h.sendText('/session')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes(' 退休 · ' + shortSessionId(s2) + '）'))).toBe(true)
+    })
+    h.sendText('/session ＜1＞')
+    await vi.waitFor(() => {
+      expect(h.outbound.some(f => JSON.stringify(f.params).includes('已切回历史会话：' + s2))).toBe(true)
+    })
+    expect(String(registry.chats.get('private:10001')?.sessionId ?? '')).toBe(s2)
+
+    h.client.close()
+    await h.bridge.stop()
+    await h.connection.stop()
+  }, 30_000)
 })

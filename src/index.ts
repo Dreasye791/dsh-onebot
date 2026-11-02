@@ -45,6 +45,7 @@ let InjectChannel: typeof import('./inject.js').InjectChannel
 let redactSnapshot: typeof import('./health.js').redactSnapshot
 let describeError: typeof import('./errors.js').describeError
 let MIB: typeof import('./attach.js').MIB
+let configureSendSegments: typeof import('./tools.js').configureSendSegments
 
 try {
   ;({ default: z } = await import('@deepseek-ai/schemastery'))
@@ -58,6 +59,7 @@ try {
   ;({ redactSnapshot } = await import('./health.js'))
   ;({ describeError } = await import('./errors.js'))
   ;({ MIB } = await import('./attach.js'))
+  ;({ configureSendSegments } = await import('./tools.js'))
 } catch (error) {
   // 原生模块缺失与 peer 缺失是两类完全不同的故障：@napi-rs/canvas 属于本包
   // dependencies（自带、不经宿主 peer 路由），装不上是平台/架构或安装不完整；
@@ -232,6 +234,10 @@ export interface Config {
   /** M3-D2b: interim recall degrade switch (false = send-only interims). */
   interimRecall: boolean
   sendErrorNotice: boolean
+  /** T8: auto-receipt notice switches (default true keeps existing behavior). */
+  notices: { steerAccepted: boolean, queue: boolean }
+  /** T14 (#6 补充): qq_send_segments 插件页开关与分段发送间隔（呼吸感）。 */
+  segments: { enabled: boolean, intervalMs: number }
   /** Per-chat per-minute sliding-window cap for normal (non-command) messages; 0 disables. */
   rateLimitPerMinute: number
   restrictedMemberPrefix: boolean
@@ -258,6 +264,7 @@ export interface Config {
   cardFooter: string
   fontFiles: string[]
   fontFamilies: string[]
+  monoFamilies: string[]
   agentPreset: string
   /** QQ 通道的思考强度覆盖：留空（默认）=继承宿主 agent-default-model 的
    * reasoningEffort；非空则本通道创建/恢复的每个 agent 都用该值，不影响
@@ -434,6 +441,20 @@ export const Config: Z<Config> = z.object({
     .description('中间消息撤回开关：true（默认）=每条中间消息在 interimRecallMs 后自动撤回，回合结束先发整轮 t2i 小结卡再立即撤回原消息；false=只发不撤——中间消息照常实时发出但保留在聊天里：不排自动撤回定时器、回合结束不发小结卡也不撤回原消息，只发最终回复'),
   sendErrorNotice: z.boolean().default(true)
     .description('一轮运行出错时向用户发送 ⚠️ 错误提示'),
+  notices: z.object({
+    steerAccepted: z.boolean().default(true)
+      .description('steer 模式下补充指令受理后的自动回执开关；/steer 命令的手动确认回复不受影响'),
+    queue: z.boolean().default(true)
+      .description('消息排队提示开关（每个运行回合至多一条）'),
+  }).default({})
+    .description('自动回执开关集合；缺省全部开启（与 0.9.x 行为一致）'),
+  segments: z.object({
+    enabled: z.boolean().default(true)
+      .description('qq_send_segments 分段发送工具开关（T14）：true（默认）=工具可用；false=工具下线（模型不可见，无法调用）'),
+    intervalMs: z.number().min(0).max(3000).default(0)
+      .description('分段消息相邻两段的发送间隔（毫秒，0–3000，默认 0 = 不等待）：逐条发送之间的间隔营造打字呼吸感；qq_send_segments 的 intervalMs 参数可按次临时覆盖（同样截断到 0–3000）'),
+  }).default({})
+    .description('qq_send_segments 分段发送配置（T14）；缺省 = 启用且无间隔（与 0.9.10 行为一致）'),
   rateLimitPerMinute: z.number().default(30)
     .description('每 chat 每分钟允许的普通消息条数上限（60 秒滑动窗口）；命令消息不计入也不受限；超限时每窗口最多提示一次；0=禁用频控'),
   restrictedMemberPrefix: z.boolean().default(true)
@@ -478,6 +499,8 @@ export const Config: Z<Config> = z.object({
     .description('t2i 渲染器注册的字体文件路径（Linux/自定义字体；macOS 自动用系统字体）'),
   fontFamilies: z.array(z.string()).default([])
     .description('t2i 渲染器优先使用的字体家族名（覆盖平台默认）'),
+  monoFamilies: z.array(z.string()).default([])
+    .description('t2i 渲染器代码文本优先使用的等宽字体家族名（优先于 fontFamilies 与平台默认，如 Cascadia Code / Consolas）'),
   agentPreset: z.string().default('')
     .description('QQ 会话加入的 agent 预设 id；留空用部署默认（settings 的 agent-presets.default，当前为 router-flash）。创建时总是解析有效预设并写入会话 header，Web 界面可见；resume 优先恢复会话自己记录的预设'),
   reasoningEffort: z.union([z.const(''), z.const('off'), z.const('minimal'), z.const('low'), z.const('medium'), z.const('high'), z.const('xhigh'), z.const('max')]).default('')
@@ -637,6 +660,9 @@ export function logMetaEvent(selfId: string, event: OneBotEvent, minLevel: Confi
 export function apply(ctx: Context, config: Config): void {
   // D4a: honor the deprecated config names before any consumer reads them.
   config = resolveDeprecatedConfig(config)
+  // T14: qq_send_segments 插件页开关与发送间隔——必须在任何 agent scope 注册
+  // 工具（bridge.installChannelScope → registerTools）之前生效。
+  configureSendSegments(config.segments)
   const mediaDir = config.mediaDir !== '' ? config.mediaDir : defaultMediaDir()
   const policy = resolvePolicy(config)
   /** Console log line callback (level, message) — shared by the bridge deps,
@@ -828,6 +854,7 @@ export function apply(ctx: Context, config: Config): void {
       interimRecallMs: Math.max(3_000, config.interimRecallMs),
       interimRecall: config.interimRecall,
       sendErrorNotice: config.sendErrorNotice,
+      notices: { steerAccepted: config.notices.steerAccepted, queue: config.notices.queue },
       rateLimitPerMinute: config.rateLimitPerMinute,
       restrictedMemberPrefix: config.restrictedMemberPrefix,
       sensitivePatterns: config.sensitivePatterns,
@@ -841,6 +868,7 @@ export function apply(ctx: Context, config: Config): void {
       cardFooter: config.cardFooter,
       fontFiles: config.fontFiles,
       fontFamilies: config.fontFamilies,
+      monoFamilies: config.monoFamilies,
       agentPreset: config.agentPreset,
       reasoningEffort: config.reasoningEffort,
       persona: config.persona,

@@ -17,7 +17,7 @@ import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import type { ChatBridge } from './bridge.js'
 import type { OneBotConnection } from './connection.js'
 import { fileToBase64, isUrl } from './media.js'
-import { deleteMemoriesWhere, findSensitiveIn, readAllMemories, readMemories, searchMemories, searchMemoriesHybrid, selectForRecall, speakerFromUserEvents, trimMemories, upsertMemory } from './memory.js'
+import { deleteMemoriesWhere, findSensitiveIn, readAllMemories, searchMemories, searchMemoriesHybrid, selectForRecall, speakerFromUserEvents, upsertMemory } from './memory.js'
 import { embedSafely } from './memory-embed.js'
 import { splitChatId } from './chat.js'
 import type { OneBotSegment } from './cq.js'
@@ -752,11 +752,17 @@ export function registerTools(
           ...(speaker !== undefined ? { by: speaker } : {}),
           role,
           ...embedded,
-        })
-        const dropped = trimMemories(memoryDir, chatId, cap)
-        const stored = readMemories(memoryDir, chatId, cap).length
+        }, { cap })
+        // 写入路径已经读过整个文件，总数与丢弃数由它直接给出 —— 不再 trim/read 各读一遍。
         // embedded 回给模型看，避免它以为「说了已记住」但其实连向量都没算出来。
-        return { ok: true, stored, dropped, kind, refreshed: write.refreshed, embedded: vector !== undefined }
+        return {
+          ok: true,
+          stored: Math.min(write.total, cap),
+          dropped: write.dropped,
+          kind,
+          refreshed: write.refreshed,
+          embedded: vector !== undefined,
+        }
       },
     }))
 
@@ -931,21 +937,27 @@ export function registerTools(
           // 与 JsonValue 的索引签名冲突。
           return {
             removed: 0,
-            total: readMemories(memoryDir, chatId, cap).length,
+            total: Math.min(all.length, cap),
             items: [] as Array<{ ts: number; text: string; kind: string }>,
           }
         }
-        const removed = deleteMemoriesWhere(memoryDir, chatId, (entry) => targetTs.has(entry.ts) && mayForget(entry))
+        // 把刚读到的 `all` 当快照传进去：删除路径不再自己读第二遍文件。
+        const result = deleteMemoriesWhere(
+          memoryDir,
+          chatId,
+          (entry) => targetTs.has(entry.ts) && mayForget(entry),
+          { snapshot: all },
+        )
         // 命中但无权删：明确报错，而不是静默返回 0 —— 后者会让模型以为「本来就没有」，
         // 然后改用 remember 再记一条，问题反而更大。
-        if (removed.length === 0) {
+        if (result.removed.length === 0) {
           throw new Error('qq_memory_forget: 命中了 ' + targetTs.size + ' 条，但你只能删除自己写的、'
             + '或关于你自己的画像；会话公共记忆与别人的画像需要管理员操作。')
         }
         return {
-          removed: removed.length,
-          total: readMemories(memoryDir, chatId, cap).length,
-          items: removed.map((entry) => ({
+          removed: result.removed.length,
+          total: Math.min(result.total, cap),
+          items: result.removed.map((entry) => ({
             ts: entry.ts,
             text: entry.text,
             kind: entry.kind ?? 'note',

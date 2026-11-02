@@ -433,6 +433,28 @@ describe('memory: upsert（同一条目折叠为「最近提及」）', () => {
     expect(entries[0].lastSeenAt).toBe(100)
   })
 
+  it('传 cap 时顺带裁剪：total / dropped 由写入路径给出（调用方不必再读文件）', () => {
+    const dir = makeDir()
+    for (let index = 0; index < 3; index += 1) {
+      appendMemory(dir, 'private:10001', { ts: 100 + index, text: 't' + index })
+    }
+    const result = upsertMemory(dir, 'private:10001', { ts: 200, text: '新的一条' }, { cap: 3 })
+    expect(result).toMatchObject({ refreshed: false, total: 3, dropped: 1 })
+    // 保留最新的 3 条：新写入的 ts 最大，不会被裁掉
+    expect(readAllMemories(dir, 'private:10001').map((entry) => entry.text)).toEqual(['t1', 't2', '新的一条'])
+  })
+
+  it('未超限时不重写文件（仍是追加），dropped 为 0', () => {
+    const dir = makeDir()
+    appendMemory(dir, 'private:10001', { ts: 100, text: 'A' })
+    const before = readFileSync(memoryFilePath(dir, 'private:10001'), 'utf8')
+    const result = upsertMemory(dir, 'private:10001', { ts: 200, text: 'B' }, { cap: 10 })
+    expect(result).toMatchObject({ refreshed: false, total: 2, dropped: 0 })
+    const after = readFileSync(memoryFilePath(dir, 'private:10001'), 'utf8')
+    // 追加式：原有内容原样保留，只在末尾多一行（没有为了计数而重写整个文件）
+    expect(after.startsWith(before)).toBe(true)
+  })
+
   it('完全相同的条目只刷新 lastSeenAt，不新增行', () => {
     const dir = makeDir()
     upsertMemory(dir, 'private:10001', { ts: 100, text: '喜欢螺蛳粉' })
@@ -872,19 +894,21 @@ describe('memory: 装配守卫（漏传 = 工具完全不注册）', () => {
 })
 
 describe('memory: 按谓词批量删除（qq_memory_forget 的底层）', () => {
-  it('只删命中项，返回被删的条目内容', () => {
+  it('只删命中项，返回被删的条目内容与剩余总数', () => {
     const dir = makeDir()
     appendMemory(dir, 'private:10001', { ts: 100, text: '周五要交周报' })
     appendMemory(dir, 'private:10001', { ts: 200, text: '周报已经交了' })
-    const removed = deleteMemoriesWhere(dir, 'private:10001', (entry) => entry.ts === 100)
+    const { removed, total } = deleteMemoriesWhere(dir, 'private:10001', (entry) => entry.ts === 100)
     expect(removed.map((entry) => entry.text)).toEqual(['周五要交周报'])
+    // 剩余总数顺带返回，调用方不必再读一遍文件。
+    expect(total).toBe(1)
     expect(readAllMemories(dir, 'private:10001').map((entry) => entry.text)).toEqual(['周报已经交了'])
   })
 
-  it('无命中时返回空数组且不重写文件', () => {
+  it('无命中时返回空 removed 与当前总数，且不重写文件', () => {
     const dir = makeDir()
     appendMemory(dir, 'private:10001', { ts: 100, text: 'A' })
-    expect(deleteMemoriesWhere(dir, 'private:10001', () => false)).toEqual([])
+    expect(deleteMemoriesWhere(dir, 'private:10001', () => false)).toEqual({ removed: [], total: 1 })
     expect(readAllMemories(dir, 'private:10001')).toHaveLength(1)
   })
 
@@ -893,15 +917,30 @@ describe('memory: 按谓词批量删除（qq_memory_forget 的底层）', () => 
     appendMemory(dir, 'group:1', { ts: 1, text: 'x', by: '10001' })
     appendMemory(dir, 'group:1', { ts: 2, text: 'y', by: '10001' })
     appendMemory(dir, 'group:1', { ts: 3, text: 'z', by: '20002' })
-    const removed = deleteMemoriesWhere(dir, 'group:1', (entry) => entry.by === '10001')
+    const { removed } = deleteMemoriesWhere(dir, 'group:1', (entry) => entry.by === '10001')
     expect(removed).toHaveLength(2)
     expect(readAllMemories(dir, 'group:1').map((entry) => entry.text)).toEqual(['z'])
+  })
+
+  it('传 snapshot 时不再读文件，写回以快照为准', () => {
+    const dir = makeDir()
+    appendMemory(dir, 'private:10001', { ts: 1, text: 'A' })
+    appendMemory(dir, 'private:10001', { ts: 2, text: 'B' })
+    const snapshot = readAllMemories(dir, 'private:10001')
+    // 快照之后又追加了一条：它不在快照里
+    appendMemory(dir, 'private:10001', { ts: 3, text: 'C' })
+    const { removed, total } = deleteMemoriesWhere(dir, 'private:10001', (entry) => entry.ts === 1, { snapshot })
+    expect(removed.map((entry) => entry.text)).toEqual(['A'])
+    expect(total).toBe(1) // 快照里剩 B
+    // 已知取舍：写回用的是快照推导出的 kept，窗口内新增的 C 会丢。原实现读两次也有同类
+    // 窗口（且更长）；要绝对安全只能加文件锁，那与「一次工具调用只读一遍」的目标冲突。
+    expect(readAllMemories(dir, 'private:10001').map((entry) => entry.text)).toEqual(['B'])
   })
 
   it('删空时文件保留为空（不删文件）', () => {
     const dir = makeDir()
     appendMemory(dir, 'private:10001', { ts: 100, text: 'A' })
-    expect(deleteMemoriesWhere(dir, 'private:10001', () => true)).toHaveLength(1)
+    expect(deleteMemoriesWhere(dir, 'private:10001', () => true).removed).toHaveLength(1)
     expect(readAllMemories(dir, 'private:10001')).toEqual([])
   })
 })

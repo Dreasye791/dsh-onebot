@@ -55,7 +55,7 @@ import type { Context } from '@deepseek-ai/cordis'
  *  list()，不打开 registry 内部态——import type 零运行时依赖，不改 bridge.ts）。 */
 import type { WorkspaceRegistryLike } from './bridge.js'
 import { MCP_ALLOW_ITEM_MAX_LEN, MCP_ALLOW_MAX_ENTRIES } from './mcp-gate.js'
-import { deleteMemory, findSensitiveIn, isExpired, listMemoryFiles, readAllMemories, searchMemories, trimMemories, updateMemory, upsertMemory } from './memory.js'
+import { deleteMemory, findSensitiveIn, isExpired, listMemoryFiles, readAllMemories, searchMemories, updateMemory, upsertMemory } from './memory.js'
 import { memoryDirFor } from './paths.js'
 
 /** patch insert 中 dsh-onebot 主条目的 id（T1 §2/§3：唯一持久层条目）。 */
@@ -877,12 +877,11 @@ export function createMemoryEntry(
     text: body.length > 500 ? body.slice(0, 500) : body,
     ...(nextTags.length > 0 ? { tags: nextTags } : {}),
     ...(kindValue === 'profile' ? { kind: 'profile' as const, subject: subjectValue } : {}),
-  })
-  // 面板新建同样要遵守单会话上限（与工具写入一致）。
-  trimMemories(dir, id, cap)
+  }, { cap })
+  // 面板新建同样要遵守单会话上限（与工具写入一致）；总数由写入路径直接给出。
   return {
     ok: true,
-    total: readAllMemories(dir, id).length,
+    total: Math.min(result.total, cap),
     ...(result.refreshed ? { refreshed: true } : {}),
   }
 }

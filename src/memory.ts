@@ -280,6 +280,15 @@ export function appendMemory(memoryDir: string, chatId: string, entry: MemoryEnt
 export interface UpsertResult {
   /** true = 命中了完全相同的条目，只刷新了 `lastSeenAt`（没有新增行）。 */
   refreshed: boolean
+  /**
+   * 写入（并可能按 `cap` 裁剪）后的条目总数。
+   *
+   * 存在的意义：调用方原本要再 `readMemories()` 一次只为拿这个数（200 条 × 768 维
+   * 约 14 ms），而写入路径本来就已经把整个文件读进内存了，直接算出来即可。
+   */
+  total: number
+  /** 本次因超出 `cap` 被丢弃的条数（未传 cap 或未超限时为 0）。 */
+  dropped: number
 }
 
 /**
@@ -316,8 +325,14 @@ export function allocateTs(entries: readonly MemoryEntry[], now: number = Date.n
  *
  * 注意 `appendMemory` 保持原语义（无条件追加），单测与历史调用方不受影响。
  */
-export function upsertMemory(memoryDir: string, chatId: string, entry: MemoryEntry): UpsertResult {
+export function upsertMemory(
+  memoryDir: string,
+  chatId: string,
+  entry: MemoryEntry,
+  options: { cap?: number } = {},
+): UpsertResult {
   const entries = readAllMemories(memoryDir, chatId)
+  const cap = options.cap !== undefined ? Math.floor(options.cap) : 0
   const kindOf = (item: MemoryEntry): MemoryKind => item.kind ?? 'note'
   const index = entries.findIndex((existing) =>
     kindOf(existing) === kindOf(entry)
@@ -328,8 +343,10 @@ export function upsertMemory(memoryDir: string, chatId: string, entry: MemoryEnt
     // 变成「删/改多条」或「改错条」。`lastSeenAt` 与 `ts` 保持一致，表示「首次写入、
     // 尚未被再次提及」。
     const fresh = allocateTs(entries, entry.ts)
-    appendMemory(memoryDir, chatId, { ...entry, ts: fresh, lastSeenAt: fresh })
-    return { refreshed: false }
+    const written: MemoryEntry = { ...entry, ts: fresh, lastSeenAt: fresh }
+    // 追加是快路径（0.1 ms 级）；只有超限需要裁剪时才重写整个文件。
+    appendMemory(memoryDir, chatId, written)
+    return finishUpsert(memoryDir, chatId, [...entries, written], cap, false)
   }
   const previous = entries[index]
   // 刷新时**不能只写 lastSeenAt**：新条目带来的 tags 与向量必须并进去。
@@ -351,7 +368,28 @@ export function upsertMemory(memoryDir: string, chatId: string, entry: MemoryEnt
   // 写失败直接抛：这里的语义是「这条已经记过了，只刷新时间」，静默失败会让模型
   // 以为刷新成功，而实际上「最近提及」永远停在旧值。
   if (!writeAll(memoryDir, chatId, entries)) throw new Error('记忆写入失败：' + chatId + '（磁盘写入错误）')
-  return { refreshed: true }
+  return finishUpsert(memoryDir, chatId, entries, cap, true)
+}
+
+/**
+ * 写入收尾：按 `cap` 裁剪，并把「总数 / 丢弃数」直接算出来。
+ *
+ * 为什么在这里做：调用方原本要再 `readMemories()` 一次（200 条 × 768 维约 14 ms）
+ * 才拿得到总数，而这里手上已有完整条目列表。裁剪失败不抛（与 `trimMemories` 同
+ * 口径）：它是防无限增长的兜底，最多让文件多留几条，下一次写入会重试。
+ */
+function finishUpsert(
+  memoryDir: string,
+  chatId: string,
+  all: readonly MemoryEntry[],
+  cap: number,
+  refreshed: boolean,
+): UpsertResult {
+  const kept = trimEntries(all, cap)
+  const dropped = all.length - kept.length
+  if (dropped === 0) return { refreshed, total: all.length, dropped: 0 }
+  const written = writeAll(memoryDir, chatId, kept)
+  return { refreshed, total: written ? kept.length : all.length, dropped: written ? dropped : 0 }
 }
 
 /**
@@ -492,11 +530,21 @@ export function readMemories(memoryDir: string, chatId: string, max = 200): Memo
 export function trimMemories(memoryDir: string, chatId: string, max: number): number {
   if (max <= 0) return 0
   const all = readAllMemories(memoryDir, chatId)
-  if (all.length <= max) return 0
-  const kept = all.slice(all.length - max)
+  const kept = trimEntries(all, max)
+  if (kept.length === all.length) return 0
   // 裁剪失败**不抛**：它是「防止无限增长」的兜底，失败最多让文件多留几条，
   // 不该让这次 remember 整体失败（用户已经被告知「记住了」）。下一次写入会重试。
   return writeAll(memoryDir, chatId, kept) ? all.length - kept.length : 0
+}
+
+/**
+ * 只保留最近 `max` 条（纯函数）。
+ *
+ * 写入路径（`upsertMemory`）与 `trimMemories` 共用：前者已经读过整个文件，没有理由
+ * 为了裁剪再读一遍。无裁剪时返回副本，避免调用方误改传入数组。
+ */
+function trimEntries(all: readonly MemoryEntry[], max: number): MemoryEntry[] {
+  return max > 0 && all.length > max ? all.slice(all.length - max) : [...all]
 }
 
 /**
@@ -546,26 +594,35 @@ export function forgetAllProfiles(memoryDir: string, chatId: string): number {
  * 为什么不复用 `deleteMemory`：那个按 `ts` 删**单条**，而 forget 需要「关键词命中
  * + 权限过滤」的组合条件，逐条删会重写 N 次文件。
  *
- * @returns 被删除的条目（调用方用它回显「删了什么」，否则模型只能猜）。
+ * @returns 被删除的条目（调用方用它回显「删了什么」，否则模型只能猜）与剩余总数。
  */
+export interface DeleteWhereResult {
+  removed: MemoryEntry[]
+  /** 删除后的条目总数 —— 调用方原本要为此再读一遍文件。 */
+  total: number
+}
+
 export function deleteMemoriesWhere(
   memoryDir: string,
   chatId: string,
   predicate: (entry: MemoryEntry) => boolean,
-): MemoryEntry[] {
-  const all = readAllMemories(memoryDir, chatId)
+  options: { snapshot?: readonly MemoryEntry[] } = {},
+): DeleteWhereResult {
+  // `snapshot`：调用方刚刚读过的同一份内容（forget 要先用关键词筛出候选 ts）。
+  // 传进来就省掉第二次全量读，顺带把「读 → 写」的窗口缩短成一次读。
+  const all = options.snapshot ?? readAllMemories(memoryDir, chatId)
   const removed: MemoryEntry[] = []
   const kept: MemoryEntry[] = []
   for (const entry of all) {
     if (predicate(entry)) removed.push(entry)
     else kept.push(entry)
   }
-  if (removed.length === 0) return []
+  if (removed.length === 0) return { removed: [], total: all.length }
   // 写失败必须抛，不能返回空数组：上层（`qq_memory_forget`）拿到空数组会判定为
   // 「一条都没命中你会删的」，进而报「你只能删除自己写的」—— 真正的磁盘故障被
   // 伪装成权限不足，模型会据此改用 `remember` 再记一条。
   if (!writeAll(memoryDir, chatId, kept)) throw new Error('记忆删除失败：' + chatId + '（磁盘写入错误）')
-  return removed
+  return { removed, total: kept.length }
 }
 
 /**

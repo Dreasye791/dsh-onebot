@@ -152,6 +152,15 @@ export declare function appendMemory(memoryDir: string, chatId: string, entry: M
 export interface UpsertResult {
     /** true = 命中了完全相同的条目，只刷新了 `lastSeenAt`（没有新增行）。 */
     refreshed: boolean;
+    /**
+     * 写入（并可能按 `cap` 裁剪）后的条目总数。
+     *
+     * 存在的意义：调用方原本要再 `readMemories()` 一次只为拿这个数（200 条 × 768 维
+     * 约 14 ms），而写入路径本来就已经把整个文件读进内存了，直接算出来即可。
+     */
+    total: number;
+    /** 本次因超出 `cap` 被丢弃的条数（未传 cap 或未超限时为 0）。 */
+    dropped: number;
 }
 /**
  * 为一个新条目分配**本会话内唯一**的 `ts`。
@@ -180,7 +189,9 @@ export declare function allocateTs(entries: readonly MemoryEntry[], now?: number
  *
  * 注意 `appendMemory` 保持原语义（无条件追加），单测与历史调用方不受影响。
  */
-export declare function upsertMemory(memoryDir: string, chatId: string, entry: MemoryEntry): UpsertResult;
+export declare function upsertMemory(memoryDir: string, chatId: string, entry: MemoryEntry, options?: {
+    cap?: number;
+}): UpsertResult;
 /** 读取某个 chat 的全部记忆（旧→新）。 */
 export declare function readAllMemories(memoryDir: string, chatId: string): MemoryEntry[];
 /** 读取某个 chat 的记忆（旧→新），`max` 只保留最近的若干条。 */
@@ -222,9 +233,16 @@ export declare function forgetAllProfiles(memoryDir: string, chatId: string): nu
  * 为什么不复用 `deleteMemory`：那个按 `ts` 删**单条**，而 forget 需要「关键词命中
  * + 权限过滤」的组合条件，逐条删会重写 N 次文件。
  *
- * @returns 被删除的条目（调用方用它回显「删了什么」，否则模型只能猜）。
+ * @returns 被删除的条目（调用方用它回显「删了什么」，否则模型只能猜）与剩余总数。
  */
-export declare function deleteMemoriesWhere(memoryDir: string, chatId: string, predicate: (entry: MemoryEntry) => boolean): MemoryEntry[];
+export interface DeleteWhereResult {
+    removed: MemoryEntry[];
+    /** 删除后的条目总数 —— 调用方原本要为此再读一遍文件。 */
+    total: number;
+}
+export declare function deleteMemoriesWhere(memoryDir: string, chatId: string, predicate: (entry: MemoryEntry) => boolean, options?: {
+    snapshot?: readonly MemoryEntry[];
+}): DeleteWhereResult;
 /**
  * 批量写回向量（后台补齐用），一次重写整个文件。
  *

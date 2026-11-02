@@ -605,7 +605,8 @@ export declare class ChatBridge {
      */
     private interceptBusyTurn;
     /** Expand a quote, forwarding the gate's already-verified response so the
-     * inbound message never pays for a second get_msg. */
+     * inbound message never pays for a second get_msg. 返回 text + media（保留本地
+     * 的引用图片投递，上游这一版只返回 string）。 */
     private expandQuote;
     /** Send one message to a chat and return its message id. */
     private sendMsg;

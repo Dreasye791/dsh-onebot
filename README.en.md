@@ -233,6 +233,12 @@ default). Common options:
 
 Env vars: `ONEBOT_ALLOWED_USERS` (comma-separated admins), `ONEBOT_ALLOW_ALL_USERS=true` (development).
 
+### Reply-trigger lookup cost and diagnostics
+
+With `requireMention` enabled, each valid reply without an explicit @ triggers one `get_msg` lookup after the group-policy and dedup gates, provided the bot identity is known. This includes members replying to one another. Accepted replies reuse the response for quote expansion. The lookup precedes the inbound message rate limit, so `rateLimitPerMinute` does not cap these queries. There is no cross-message cache; caching can be considered if high-traffic groups reveal a bottleneck.
+
+Reply IDs must be exactly representable decimal integers (negative IDs are supported); invalid IDs skip the query. When tracing is enabled, the `mention` stage distinguishes invalid IDs, failed lookups or empty responses, missing authors, non-bot authors and ordinary unmentioned messages. For explicit @, private messages and disabled mention gating, an invalid quote skips only its expansion, not the message itself.
+
 ## Record · Replay · Inject · Healthcheck (W1)
 
 | Capability | Switches (default) | Usage |
@@ -460,7 +466,7 @@ Lessons ported from the source DEVLOG:
 
 | Symptom | Cause & fix |
 |---|---|
-| Group chat not responding | With `requireMention: true`, @ or reply-to-the-bot is required; @ detection is fail-closed; make sure botQQ was learned from meta events or configured explicitly |
+| Group chat not responding | With `requireMention: true`, @ or reply-to-the-bot is required; make sure botQQ was learned from events or configured explicitly. Reply-only triggers also require `get_msg` to confirm the bot as the original author; explicitly @ the bot if the original message is unavailable or lookup fails |
 | Image download 403 | NapCat escapes `&` in URLs to `&amp;` (parsing unescapes automatically); if it still fails, check the media download line in the log |
 | File receive fails | NapCat on a different machine needs the "file-to-URL" switch on, otherwise `get_file` returns an unreachable container path; confirm dsh ↔ NapCat network connectivity |
 | Tofu CJK in text images | Linux without CJK fonts: `apt install fonts-noto-cjk`, and point `fontFiles` at an SC font file |

@@ -11,6 +11,7 @@ import { OneBotConnection } from '../src/connection.js'
 import { ChatBridge } from '../src/bridge.js'
 import { MediaStore } from '../src/media.js'
 import { Transcriber } from '../src/stt.js'
+import type { QuotedMessageData } from '../src/inbound.js'
 
 import { makeCmdHarness, makeEvent, makeFakeAgents, makeHarness } from './helpers/bridge-harness.js'
 
@@ -269,6 +270,8 @@ describe('ChatBridge', () => {
     const order: string[] = []
     const target = h.bridge as unknown as {
       tryHandleCommand(chatId: string, text: string, userId: string): Promise<boolean>
+      // 取本地签名：pipeline-order 覆写点要匹配本地的 5 参 buildBody 与
+      // 返回 { text, media } 的 expandQuote。
       buildBody(text: string, media: unknown[], chatId: string, images?: unknown[], registerRecent?: boolean): Promise<string>
       expandQuote(messageId: string, verifiedData?: unknown): Promise<{ text: string; media: unknown[] }>
       dispatchFollowup(chatId: string, text: string, role: string, nickname?: string): Promise<void>
@@ -294,9 +297,11 @@ describe('ChatBridge', () => {
       return await realDispatch(chatId, text, role, nickname)
     }
     const realCall = h.connection.call.bind(h.connection)
+    const quoteCalls: unknown[] = []
     h.connection.call = (async (action: string, params: unknown) => {
       if (action === 'get_msg') {
-        return { message: [{ type: 'text', data: { text: '被引用的原文' } }], raw_message: '被引用的原文', sender: { nickname: '引用来源' } }
+        quoteCalls.push(params)
+        return { message: [{ type: 'text', data: { text: '被引用的原文' } }], raw_message: '被引用的原文', sender: { user_id: 10002, nickname: '引用来源' } }
       }
       return await realCall(action, params)
     }) as never
@@ -342,6 +347,22 @@ describe('ChatBridge', () => {
     const text = h.captured.followups[0].text
     expect(text).toContain('[引用]引用来源: 被引用的原文')
     expect(text).toContain('[图片:')
+
+    // 4. A reply-only trigger verifies the author at the mention gate, then
+    // keeps the same bridge expansion seam without a second get_msg call.
+    order.length = 0
+    quoteCalls.length = 0
+    h.client.send(JSON.stringify({
+      post_type: 'message', message_type: 'group', user_id: 10001, group_id: 888, self_id: 10002,
+      message: [{ type: 'reply', data: { id: '555' } }, { type: 'text', data: { text: '只引用机器人' } }],
+      raw_message: '[CQ:reply,id=555]只引用机器人', sender: { user_id: 10001, nickname: '小明' },
+    }))
+    await vi.waitFor(() => expect(h.captured.followups).toHaveLength(2))
+    // 本地 T19 的顺序：展开（纯解析）先于任何 buildBody，这里同样先 quote 再 media。
+    expect(order).toEqual(['command', 'quote', 'media', 'dispatch'])
+    expect(quoteCalls).toEqual([{ message_id: 555 }])
+    expect(h.captured.followups[1].text).toContain('[@我]')
+    expect(h.captured.followups[1].text).toContain('[引用]引用来源: 被引用的原文')
     h.client.close()
     await h.bridge.stop()
     await h.connection.stop()

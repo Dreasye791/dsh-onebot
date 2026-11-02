@@ -51,6 +51,8 @@ describe('version range guards', () => {
     const peer = pkg.peerDependencies?.['@deepseek-ai/schemastery']
     expect(peer).toBeDefined()
     expect(peer).not.toContain('0.1.5-rc.1')
-    expect(peer).toBe('^3.18.0')
+    // 2026-11 合并上游 0.9.7：追加 3.18.6-alpha 预发段（宿主 3.18.5 与其预发版都能装）。
+    // 仍在 3.18 线上，没有套 dsh 的 0.1.5/0.2.x 区间。
+    expect(peer).toBe('^3.18.0 || >=3.18.6-alpha.1 <3.19.0-0')
   })
 })

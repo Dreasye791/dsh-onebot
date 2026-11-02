@@ -19,6 +19,8 @@ import { extForInboundName } from './media.js'
 import type { Transcriber } from './stt.js'
 import { transcriptLabel } from './stt.js'
 import type { OneBotSegment, MediaRef } from './cq.js'
+// 不取上游这版的 `segmentText`：本地 cq.ts 没有这个导出（本地用 parseCqString
+// 做同一件事），而 `parseCqString` 是 describeQuoteShape 的 raw 回退所必需。
 import { cqUnescape, detectExplicitMention, detectMention, parseCqString, parseMessage } from './cq.js'
 import type { AccessPolicyConfig, ChatId, UserRole } from './chat.js'
 import {
@@ -67,6 +69,13 @@ export interface NormalizedInbound {
    * sanitized; the pipeline's M3-D5 identity whitelist sanitizes it before it
    * reaches the prefix, the boundary attribute or lastNickname. */
   nickname: string
+}
+
+/** The get_msg fields needed to verify a reply author and expand its text. */
+export interface QuotedMessageData {
+  message?: unknown
+  raw_message?: string
+  sender?: { user_id?: string | number; nickname?: string }
 }
 
 /**
@@ -305,6 +314,7 @@ export class InboundPipeline {
     if (kind === 'group' && this.ctx.config.requireMention
       && !detectExplicitMention(inbound.segments, inbound.raw, this.ctx.selfId(), this.ctx.config.botQQ)) {
       mentioned = false
+      // 与上游 `||` 等价；显式三元更清楚地表达「空串回退到配置值」。
       const bot = this.ctx.selfId() !== '' ? this.ctx.selfId() : this.ctx.config.botQQ
       if (bot !== '' && inbound.replyId !== undefined) {
         const messageId = numericReplyId(inbound.replyId)
@@ -313,7 +323,9 @@ export class InboundPipeline {
         } else {
           try {
             // reply 段自带的 qq 不是权威来源：以 get_msg 返回的作者为准。
-            verifiedQuote = await this.ctx.call('get_msg', { message_id: messageId }) as QuotedMessageData
+            // 类型带 `| undefined`：引用已删除时适配器可能返回 null，下面的
+            // `== null` 分支就是为它准备的。
+            verifiedQuote = await this.ctx.call('get_msg', { message_id: messageId }) as QuotedMessageData | undefined
             const author = String(verifiedQuote?.sender?.user_id ?? '')
             mentioned = author === bot
             // 稳定 reason 保持 trace 的同因去重，同时区分「取不到原文」与
@@ -359,11 +371,9 @@ export class InboundPipeline {
     // Fire-and-forget temp cleanup on each inbound.
     void this.ctx.media.cleanupExpired()
 
-    // C6a: route slash commands BEFORE any media/quote I/O — a message that
-    // happens to carry media must not pay for downloads or get_msg calls just
-    // to be consumed as a command (admin-only; unknown /-words still fall
-    // through to the model). The most recent inbound image is registered from
-    // parsed.media up front so /ocr still sees it (resolved lazily there).
+    // Route commands before media/quote expansion. A reply-only group trigger
+    // must already have passed author verification above; explicit @ commands
+    // and private commands still avoid quote I/O. Register images lazily for /ocr.
     for (const ref of inbound.media) {
       if (ref.kind === 'image') this.ctx.getSettings(chatId).pendingImageRef = ref
     }
@@ -383,6 +393,8 @@ export class InboundPipeline {
     // 文本之后（见 bridge 的 dispatchFollowup），只有「图块顺序 == 文本占位符
     // 顺序」模型才能把图和文字对上——先 body 再 expansion 会让引用/转发里的图
     // 排到用户自己那张图的后面，等于张冠李戴。
+    // 上游在此处的 `body`/`quote` 两行被下面更完整的 forward → quote → body
+    // 顺序实现取代（重复声明会编译失败），故不保留。
     let forward = ''
     let forwardMedia: MediaRef[] = []
     if (inbound.forwardId !== undefined) {
@@ -671,6 +683,7 @@ export class InboundPipeline {
     }
     const startedAt = Date.now()
     try {
+      // Local to one message: no cross-chat cache or shared mutable quote state.
       const data = verifiedData ?? await this.ctx.call('get_msg', { message_id: numericId }) as QuotedMessageData
       const segments = Array.isArray(data.message) ? data.message as OneBotSegment[] : undefined
       const raw = typeof data.raw_message === 'string' ? data.raw_message : ''
@@ -927,7 +940,6 @@ function capQuoteImages(text: string, media: MediaRef[]): { text: string; media:
   })
   return { text: capped, media: images.slice(0, QUOTE_MEDIA_MAX) }
 }
-
 /** The placeholder a media ref contributes to the parsed text. */
 function placeholderFor(ref: MediaRef): string {
   switch (ref.kind) {

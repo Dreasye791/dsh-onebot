@@ -74,60 +74,69 @@ export function faceToLabel(id: string): string {
 const CQ_AT_RE = /\[CQ:at,qq=([^,\]]+)\]/g
 
 /**
- * Detect whether the message mentions the bot. Prefers the segment array;
- * falls back to CQ-string scanning. @-detection stays fail-closed: with an
- * unknown bot id and no configured botQQ, group messages are never treated
- * as mentioning us.
+ * Detect explicit @bot / @all only; a reply segment never implies an @.
  *
- * Reply segments are TARGET-AWARE and fail-CLOSED. The OneBot 11 spec's reply
- * segment carries only `id` — no `qq` at all (some implementations, NapCat
- * included, may add it as an extension). Treating a missing `qq` as "replied to
- * the bot" made *every* quote-tap in a group wake the bot, so an absent or
- * foreign target now counts as NOT a mention. The quoted target is resolved
- * upstream (get_msg) when the segment itself cannot answer it; see
- * `replyTargetIsBot`.
+ * 为什么单独拆出来：门禁的决策是「显式 @ → 直接放行；否则若带 replyId，再去
+ * get_msg 校验被引作者」，两件事正交。合在一个函数里会让「新增一条提及规则」
+ * 必须同时改三个分支（段数组 / CQ 字符串 / 引用作者），也让门禁无法区分
+ * 「无效 id / 取数失败 / 作者未知 / 引用了别人」这四种丢弃原因。
  * @param segments - segment array (may be undefined for CQ-only payloads).
  * @param raw - raw CQ string.
  * @param selfId - learned bot QQ id ('' when unknown).
  * @param botQQ - configured bot QQ id ('' when unset).
- * @param replyTarget - resolved author of the quoted message, when the inbound
- *   pipeline managed to fetch it. '' / undefined = unknown (not a mention).
+ * @returns whether this message explicitly mentions the known bot.
  */
-export function detectMention(
+export function detectExplicitMention(
   segments: OneBotSegment[] | undefined,
   raw: string,
   selfId: string,
   botQQ: string,
-  replyTarget?: string,
 ): boolean {
   const bot = selfId !== '' ? selfId : botQQ
+  if (bot === '') return false
   // 空数组要按「没有段」处理，与 parseMessage（本文件 :208 的
   // `segments !== undefined && segments.length > 0 ? segments : parseCqString(raw)`）
   // 保持同一判据：normalizeOneBot11 在 event.message 为 [] 时会把 segments 置为 []
   // 但保留 raw_message，若这里只判 `!== undefined`，正文由 raw 解析出了 @、
   // 提及判定却在空循环后返回 false —— 真实 @机器人 反而在 requireMention 群里被丢弃。
   if (segments !== undefined && segments.length > 0) {
-    for (const seg of segments) {
-      if (seg.type === 'reply') {
-        // Prefer the segment's own target when present; fall back to the
-        // target resolved by the pipeline. Unknown target = not a mention.
-        const qq = seg.data.qq ?? ''
-        const target = qq !== '' ? qq : (replyTarget ?? '')
-        if (target !== '' && target === bot) return true
-        continue
-      }
-      if (bot !== '' && seg.type === 'at' && (seg.data.qq === bot || seg.data.qq === 'all')) return true
-    }
-    return false
+    return segments.some(seg => seg.type === 'at' && (seg.data.qq === bot || seg.data.qq === 'all'))
   }
-  if (bot === '') return false
   CQ_AT_RE.lastIndex = 0
   for (const m of raw.matchAll(CQ_AT_RE)) {
     if (m[1] === bot || m[1] === 'all') return true
   }
-  // A CQ-string reply carries no author either: only a resolved target counts.
-  if (replyTarget !== undefined && replyTarget !== '' && replyTarget === bot) return true
   return false
+}
+
+/**
+ * Detect whether the message mentions the bot: an explicit @ first, then a reply
+ * segment that carries the target qq as an adapter extension (the OneBot 11 spec's
+ * reply segment has only `id`; NapCat et al. may add `qq`).
+ *
+ * A bare reply id carries **no author information** and therefore cannot imply a
+ * mention — the inbound gate resolves the quoted author via get_msg for that case
+ * and decides there (see `replyTargetIsBot`). Keeping that decision out of here is
+ * what lets the gate report *why* it dropped a message.
+ * @param segments - segment array (may be undefined for CQ-only payloads).
+ * @param raw - raw CQ string.
+ * @param selfId - learned bot QQ id ('' when unknown).
+ * @param botQQ - configured bot QQ id ('' when unset).
+ */
+export function detectMention(
+  segments: OneBotSegment[] | undefined,
+  raw: string,
+  selfId: string,
+  botQQ: string,
+): boolean {
+  if (detectExplicitMention(segments, raw, selfId, botQQ)) return true
+  const bot = selfId !== '' ? selfId : botQQ
+  if (bot === '') return false
+  // 同样保留「空数组回落 raw」的判据：normalizeOneBot11 在 event.message 为 []
+  // 时把 segments 置为 [] 而保留 raw_message，若这里只判 `!== undefined`，
+  // 段内没扫到 reply 就会漏掉 raw 里的 reply 段。
+  const list = segments !== undefined && segments.length > 0 ? segments : parseCqString(raw)
+  return list.some(seg => seg.type === 'reply' && String(seg.data.qq ?? '') === bot)
 }
 
 /** Split a raw CQ string into segments; used only when no segment array exists. */

@@ -38,7 +38,7 @@ import type { OutboundSegment, SendOptions } from './outbound.js'
 import { ChatRegistry } from './registry.js'
 import type { ChatAgent } from './registry.js'
 import { InboundPipeline, normalizeOneBot11 } from './inbound.js'
-import type { NormalizedInbound } from './inbound.js'
+import type { NormalizedInbound, QuotedMessageData } from './inbound.js'
 import { InterimTracker } from './interim.js'
 import { DeferredDelivery } from './deferred.js'
 import { DEFAULT_DEFERRED_TIMEOUT_MS } from './deferred.js'
@@ -165,6 +165,10 @@ export interface BridgeConfig {
   memoryEmbedder?: Embedder
   /** 混合召回的语义权重（0~1，缺省 0.6）。0 = 纯关键词，1 = 纯语义。 */
   memorySemanticWeight?: number
+  /** 召回最低分（0~1，缺省 0.15）。低于它的条目不返回；0 = 不过滤。 */
+  memoryRecallMinScore?: number
+  /** 只加在**查询**一侧的指令前缀（缺省空）。记忆正文永不加——加了会污染语义空间。 */
+  memoryQueryPrefix?: string
   /** T2 (P1): how a new ordinary message is handled while the chat's task
    * (agent turn) is running; absent → 'queue' (the default). 'queue' = the
    * message keeps the 0.8.1 dispatch path (agent.followup queues it as the
@@ -491,7 +495,7 @@ export class ChatBridge {
       steerTranscript: (chatId, text) => this.steerTranscript(chatId, text),
       tryHandleCommand: (chatId, text, userId, nickname) => this.tryHandleCommand(chatId, text, userId, nickname),
       buildBody: (text, media, chatId, images, registerRecent, failedLabel) => this.buildBody(text, media, chatId, images, registerRecent, failedLabel),
-      expandQuote: messageId => this.expandQuote(messageId),
+      expandQuote: (messageId, verifiedData) => this.expandQuote(messageId, verifiedData),
       dispatchFollowup: (chatId, text, role, nickname, images, userId) => this.dispatchFollowup(chatId, text, role, nickname, images, userId),
       deliverInboundImage: (path, chatId) => this.deliverInboundImage(path, chatId),
       interceptBusyTurn: (chatId, text, role, nickname, plain, images, userId) => this.interceptBusyTurn(chatId, text, role, nickname, plain, images, userId),
@@ -702,6 +706,19 @@ export class ChatBridge {
     const raw = this.deps.config.memorySemanticWeight
     if (raw === undefined || !Number.isFinite(raw)) return 0.6
     return Math.max(0, Math.min(1, raw))
+  }
+
+  /** 召回最低分（0~1）；缺省 0.15，越界按边界处理，0 = 不过滤。 */
+  memoryRecallMinScore(): number {
+    const raw = this.deps.config.memoryRecallMinScore
+    if (raw === undefined || !Number.isFinite(raw)) return 0.15
+    return Math.max(0, Math.min(1, raw))
+  }
+
+  /** 查询侧的指令前缀（空串 = 不加）。只作用于 qq_memory_recall 的 query 编码，
+   * 写入/补齐的 passage 一律不加——见 Config.memoryEmbeddingQueryPrefix 的说明。 */
+  memoryQueryPrefix(): string {
+    return this.deps.config.memoryQueryPrefix ?? ''
   }
 
   /**
@@ -1263,9 +1280,10 @@ export class ChatBridge {
     return true
   }
 
-  /** Expand a quoted (reply) message into [引用] text + its images via get_msg. */
-  private expandQuote(messageId: string): Promise<{ text: string; media: MediaRef[] }> {
-    return this.inbound.expandQuote(messageId)
+  /** Expand a quote, forwarding the gate's already-verified response so the
+   * inbound message never pays for a second get_msg. */
+  private expandQuote(messageId: string, verifiedData?: QuotedMessageData): Promise<{ text: string; media: MediaRef[] }> {
+    return this.inbound.expandQuote(messageId, verifiedData)
   }
 
   // ------------------------------------------------------------ outbound

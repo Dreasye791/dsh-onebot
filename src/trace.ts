@@ -87,6 +87,12 @@ export const TRACE_REASONS = {
   inboundDmBlocked: '私聊用户不在允许名单，已忽略',
   inboundGroupBlocked: '群聊不在允许名单，已忽略',
   inboundUnmentioned: '群聊未 @ 机器人，已忽略',
+  // 引用触发的四种丢弃原因：只报一条 inboundUnmentioned 无法区分「id 无效 /
+  // 取数失败 / 作者未知 / 引用了别人」，排障时这四种处置完全不同。
+  quoteInvalidId: '引用消息 id 无效，未发起 get_msg',
+  inboundReplyLookupFailed: '引用消息取数失败，未唤醒机器人',
+  inboundReplyAuthorUnknown: '引用消息作者未知，未唤醒机器人',
+  inboundReplyOtherAuthor: '引用的不是机器人的消息，未唤醒机器人',
   inboundCommand: '消息已由命令处理',
   inboundDedup: '消息在去重窗口内重复投递，已跳过',
   inboundRateLimited: '消息频率超限，已丢弃',

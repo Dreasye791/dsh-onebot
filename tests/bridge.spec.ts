@@ -270,7 +270,7 @@ describe('ChatBridge', () => {
     const target = h.bridge as unknown as {
       tryHandleCommand(chatId: string, text: string, userId: string): Promise<boolean>
       buildBody(text: string, media: unknown[], chatId: string, images?: unknown[], registerRecent?: boolean): Promise<string>
-      expandQuote(messageId: string): Promise<{ text: string; media: unknown[] }>
+      expandQuote(messageId: string, verifiedData?: unknown): Promise<{ text: string; media: unknown[] }>
       dispatchFollowup(chatId: string, text: string, role: string, nickname?: string): Promise<void>
     }
     const realCommand = target.tryHandleCommand.bind(h.bridge)
@@ -284,9 +284,9 @@ describe('ChatBridge', () => {
       return await realBody(text, media, chatId, images, registerRecent)
     }
     const realQuote = target.expandQuote.bind(h.bridge)
-    target.expandQuote = async (messageId) => {
+    target.expandQuote = async (messageId, verifiedData) => {
       order.push('quote')
-      return await realQuote(messageId)
+      return await realQuote(messageId, verifiedData as Parameters<typeof realQuote>[1])
     }
     const realDispatch = target.dispatchFollowup.bind(h.bridge)
     target.dispatchFollowup = async (chatId, text, role, nickname) => {

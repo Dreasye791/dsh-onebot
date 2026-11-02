@@ -44,6 +44,21 @@ export interface NormalizedInbound {
     nickname: string;
 }
 /**
+ * get_msg 的原始返回（只声明本模块与 bridge facade 实际用到的字段）。
+ *
+ * 契约取舍：门禁与展开之间传**原始响应**，而不是解析好的 `[引用]` 文本 ——
+ * 门禁只需要 sender，展开需要 message/raw_message，两边各取所需；将来若要加
+ * 「引用时间戳 / 消息类型 / 引用里的 @」，或把引用渲染成结构化块，都不必改契约。
+ */
+export interface QuotedMessageData {
+    message?: unknown;
+    raw_message?: string;
+    sender?: {
+        user_id?: string | number;
+        nickname?: string;
+    };
+}
+/**
  * Reduce one raw OneBot 11 event to the neutral inbound shape, or null when
  * the event is not a processable chat message (notice/recall, meta, unknown
  * message_type, or a missing sender id). Pure: no I/O, no state — the
@@ -106,8 +121,10 @@ export interface InboundContext {
      * 并发入站（handleInbound 是 fire-and-forget）会互相取走对方的图。 */
     buildBody(text: string, media: MediaRef[], chatId: ChatId, images?: ImageAttachmentRef[], registerRecent?: boolean, failedLabel?: string): Promise<string>;
     /** Quote (reply) expansion (bridge facade: overridable, see the pipeline-order test).
-     * 返回被引用消息的文本与其中可投递的图片（只解析，不下载）。 */
-    expandQuote(messageId: string): Promise<{
+     * 返回被引用消息的文本与其中可投递的图片（只解析，不下载）。
+     * `verifiedData` = 门禁刚刚校验过的那次 get_msg 原始响应；传入即复用，
+     * 不再重复请求。不传 = 由展开自己取（私聊、未开 requireMention、命令后的路径）。 */
+    expandQuote(messageId: string, verifiedData?: QuotedMessageData): Promise<{
         text: string;
         media: MediaRef[];
     }>;
@@ -149,10 +166,6 @@ export declare const DEFAULT_DEDUP_WINDOW_SECONDS = 300;
 /** W2-②: max entries kept in the dedup window map (LRU-evicted beyond this)
  * so a flood of distinct message_ids cannot grow memory unbounded. */
 export declare const DEDUP_MAX_ENTRIES = 4096;
-/** Cap on the get_msg quote memo (text + author per quoted id). Same LRU
- * reasoning as DEDUP_MAX_ENTRIES: an unbounded map would leak under a flood of
- * distinct quoted ids. */
-export declare const QUOTE_MEMO_MAX_ENTRIES = 512;
 /** 单条引用消息最多解析/投递的图片张数。
  *
  * 为什么要有上限：`buildBody` 对 media 是**串行** `await`，而单张下载的硬超时
@@ -221,13 +234,19 @@ export declare class InboundPipeline {
      * into the chat's turn (steer at the running turn's nearest step boundary,
      * or a new turn when the agent is idle). Failure keeps [语音] as final. */
     private transcribeLater;
-    /** Memo shared by the mention gate (needs the author) and the quote
-     * expansion (needs the text + images) so one reply costs a single get_msg. */
-    private readonly quoteMemo;
-    /** Fetch a quoted message once: flattened [引用] text, the author's QQ, and
-     * the quoted images (parsed but **not** downloaded — the mention gate calls
-     * this for every un-@'d reply and must not pay for media I/O). */
-    private fetchQuote;
+    /**
+     * Expand a quoted (reply) message into [引用] text + 其中可投递的图片
+     * （只解析，不下载）。
+     *
+     * `verifiedData` 非空 = 门禁刚刚为本条消息取过一次 get_msg，直接复用；为空
+     * 就自己取（私聊、未开 requireMention、或门禁没跑到引用的路径）。**不做跨
+     * 消息缓存**：缓存会在引用被编辑/撤回后返回旧快照，也会把连接瞬断的失败固化
+     * 成空引用（见文件上方关于 memo 取舍的说明）。
+     */
+    expandQuote(messageId: string, verifiedData?: QuotedMessageData): Promise<{
+        text: string;
+        media: MediaRef[];
+    }>;
     /**
      * 阶段 0 取证探针的形状摘要：只描述 get_msg 返回的段结构，不解析、不下载。
      *
@@ -237,15 +256,6 @@ export declare class InboundPipeline {
      * 「url 能不能直接用」「只有 file 时是什么形状」，又不会泄签名。
      */
     private describeQuoteShape;
-    /** Author QQ of the quoted message ('' when unknown or the fetch failed).
-     * The mention gate uses this because OneBot's reply segment only carries an
-     * id — an unknown author must never be mistaken for the bot itself. */
-    resolveReplyTarget(messageId: string): Promise<string>;
-    /** Expand a quoted (reply) message into [引用] text + its images via get_msg. */
-    expandQuote(messageId: string): Promise<{
-        text: string;
-        media: MediaRef[];
-    }>;
     /**
      * Fetch an inbound QQ file to a local path. NapCat's get_file may return
      * container-internal paths unreachable from this host, so:

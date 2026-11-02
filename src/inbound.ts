@@ -19,7 +19,7 @@ import { extForInboundName } from './media.js'
 import type { Transcriber } from './stt.js'
 import { transcriptLabel } from './stt.js'
 import type { OneBotSegment, MediaRef } from './cq.js'
-import { cqUnescape, detectMention, parseCqString, parseMessage } from './cq.js'
+import { cqUnescape, detectExplicitMention, detectMention, parseCqString, parseMessage } from './cq.js'
 import type { AccessPolicyConfig, ChatId, UserRole } from './chat.js'
 import {
   buildChatId, buildGroupMessagePrefix, classifyUserRole, dmAllowed, groupAllowed,
@@ -67,6 +67,19 @@ export interface NormalizedInbound {
    * sanitized; the pipeline's M3-D5 identity whitelist sanitizes it before it
    * reaches the prefix, the boundary attribute or lastNickname. */
   nickname: string
+}
+
+/**
+ * get_msg 的原始返回（只声明本模块与 bridge facade 实际用到的字段）。
+ *
+ * 契约取舍：门禁与展开之间传**原始响应**，而不是解析好的 `[引用]` 文本 ——
+ * 门禁只需要 sender，展开需要 message/raw_message，两边各取所需；将来若要加
+ * 「引用时间戳 / 消息类型 / 引用里的 @」，或把引用渲染成结构化块，都不必改契约。
+ */
+export interface QuotedMessageData {
+  message?: unknown
+  raw_message?: string
+  sender?: { user_id?: string | number; nickname?: string }
 }
 
 /**
@@ -164,8 +177,10 @@ export interface InboundContext {
    * 并发入站（handleInbound 是 fire-and-forget）会互相取走对方的图。 */
   buildBody(text: string, media: MediaRef[], chatId: ChatId, images?: ImageAttachmentRef[], registerRecent?: boolean, failedLabel?: string): Promise<string>
   /** Quote (reply) expansion (bridge facade: overridable, see the pipeline-order test).
-   * 返回被引用消息的文本与其中可投递的图片（只解析，不下载）。 */
-  expandQuote(messageId: string): Promise<{ text: string; media: MediaRef[] }>
+   * 返回被引用消息的文本与其中可投递的图片（只解析，不下载）。
+   * `verifiedData` = 门禁刚刚校验过的那次 get_msg 原始响应；传入即复用，
+   * 不再重复请求。不传 = 由展开自己取（私聊、未开 requireMention、命令后的路径）。 */
+  expandQuote(messageId: string, verifiedData?: QuotedMessageData): Promise<{ text: string; media: MediaRef[] }>
   /** Turn dispatch — bridge-owned orchestration (ensureChat + per-turn prefixes). */
   /** Turn dispatch — bridge-owned orchestration (ensureChat + per-turn prefixes).
    *
@@ -205,10 +220,12 @@ export const DEFAULT_DEDUP_WINDOW_SECONDS = 300
 /** W2-②: max entries kept in the dedup window map (LRU-evicted beyond this)
  * so a flood of distinct message_ids cannot grow memory unbounded. */
 export const DEDUP_MAX_ENTRIES = 4096
-/** Cap on the get_msg quote memo (text + author per quoted id). Same LRU
- * reasoning as DEDUP_MAX_ENTRIES: an unbounded map would leak under a flood of
- * distinct quoted ids. */
-export const QUOTE_MEMO_MAX_ENTRIES = 512
+// 引用展开**不再缓存** get_msg 结果：门禁已经把同一次响应交给展开复用
+// （见 InboundContext.expandQuote 的 verifiedData），缓存只剩「跨消息命中」这点
+// 收益，代价却是三处真实缺口 —— 引用被编辑/撤回后拿到旧快照、连接瞬断的失败被
+// 永久缓存成空引用、调整图片上限/格式化策略后存量条目与新配置不一致。
+// 若将来确实需要缓存，应在外层做可注入、可关闭、带 TTL 的组件，而不是 pipeline
+// 的私有字段（那会让「有状态」变成不可配置的实现细节）。
 
 /** 单条引用消息最多解析/投递的图片张数。
  *
@@ -278,22 +295,47 @@ export class InboundPipeline {
       }
     }
 
-    // A reply segment carries only a message id (OneBot 11 has no qq there), so
-    // the gate must resolve the quoted message's author before it can tell
-    // "@me" from "someone else's quote". Only fetched when the gate would
-    // otherwise drop the message — an @-mention or requireMention=false never
-    // pays for the extra get_msg.
-    let replyTarget: string | undefined
-    const needsReplyResolution = kind === 'group' && this.ctx.config.requireMention
-      && inbound.replyId !== undefined
-      && !detectMention(inbound.segments, inbound.raw, this.ctx.selfId(), this.ctx.config.botQQ)
-    if (needsReplyResolution) {
-      replyTarget = await this.resolveReplyTarget(inbound.replyId as string)
+    // 引用段只带 message id（OneBot 11 没有 qq），所以门禁必须先用 get_msg 解出
+    // 被引作者，才能区分「@我」和「引用别人」。只在真正可能丢弃时才取：显式 @
+    // 或 requireMention=false 不付这次往返。取回来的**原始响应**一路传给后面的
+    // expandQuote，展开不再二次请求（也不进任何缓存）。
+    let mentioned = detectMention(inbound.segments, inbound.raw, this.ctx.selfId(), this.ctx.config.botQQ)
+    let verifiedQuote: QuotedMessageData | undefined
+    let mentionDropReason: string = TRACE_REASONS.inboundUnmentioned
+    if (kind === 'group' && this.ctx.config.requireMention
+      && !detectExplicitMention(inbound.segments, inbound.raw, this.ctx.selfId(), this.ctx.config.botQQ)) {
+      mentioned = false
+      const bot = this.ctx.selfId() !== '' ? this.ctx.selfId() : this.ctx.config.botQQ
+      if (bot !== '' && inbound.replyId !== undefined) {
+        const messageId = numericReplyId(inbound.replyId)
+        if (messageId === undefined) {
+          mentionDropReason = TRACE_REASONS.quoteInvalidId
+        } else {
+          try {
+            // reply 段自带的 qq 不是权威来源：以 get_msg 返回的作者为准。
+            verifiedQuote = await this.ctx.call('get_msg', { message_id: messageId }) as QuotedMessageData
+            const author = String(verifiedQuote?.sender?.user_id ?? '')
+            mentioned = author === bot
+            // 稳定 reason 保持 trace 的同因去重，同时区分「取不到原文」与
+            // 「作者未知 / 引用了别人」—— 三种情况下的处置完全不同。
+            if (verifiedQuote == null) {
+              mentionDropReason = TRACE_REASONS.inboundReplyLookupFailed
+            } else if (author === '') {
+              mentionDropReason = TRACE_REASONS.inboundReplyAuthorUnknown
+            } else if (!mentioned) {
+              mentionDropReason = TRACE_REASONS.inboundReplyOtherAuthor
+            }
+          } catch (error) {
+            // 已删除/未知的引用与取数失败都绝不能唤醒机器人。
+            mentionDropReason = TRACE_REASONS.inboundReplyLookupFailed
+            this.ctx.log('debug', '引用作者校验失败，未唤醒机器人: ' + describeError(error))
+          }
+        }
+      }
     }
-    const mentioned = detectMention(inbound.segments, inbound.raw, this.ctx.selfId(), this.ctx.config.botQQ, replyTarget)
     if (kind === 'group' && this.ctx.config.requireMention && !mentioned) {
-      this.ctx.log('debug', 'ignoring unmentioned group message in ' + groupId)
-      currentTrace()?.emit('mention', { ok: false, reason: TRACE_REASONS.inboundUnmentioned })
+      this.ctx.log('debug', mentionDropReason + ': ' + groupId)
+      currentTrace()?.emit('mention', { ok: false, reason: mentionDropReason })
       return
     }
 
@@ -351,7 +393,9 @@ export class InboundPipeline {
     let quote = ''
     let quoteMedia: MediaRef[] = []
     if (inbound.replyId !== undefined) {
-      const expansion = await this.ctx.expandQuote(inbound.replyId)
+      // verifiedQuote 只对「本条消息」有效（门禁那一次 get_msg 的响应）；
+      // 为空说明门禁没跑（私聊 / 未开 requireMention），展开自己去取。
+      const expansion = await this.ctx.expandQuote(inbound.replyId, verifiedQuote)
       quote = expansion.text
       quoteMedia = expansion.media
     }
@@ -608,24 +652,26 @@ export class InboundPipeline {
     }
   }
 
-  /** Memo shared by the mention gate (needs the author) and the quote
-   * expansion (needs the text + images) so one reply costs a single get_msg. */
-  private readonly quoteMemo = new Map<string, { text: string; author: string; media: MediaRef[] }>()
-
-  /** Fetch a quoted message once: flattened [引用] text, the author's QQ, and
-   * the quoted images (parsed but **not** downloaded — the mention gate calls
-   * this for every un-@'d reply and must not pay for media I/O). */
-  private async fetchQuote(messageId: string): Promise<{ text: string; author: string; media: MediaRef[] }> {
-    const cached = this.quoteMemo.get(messageId)
-    if (cached !== undefined) return cached
-    let entry: { text: string; author: string; media: MediaRef[] } = { text: '', author: '', media: [] }
+  /**
+   * Expand a quoted (reply) message into [引用] text + 其中可投递的图片
+   * （只解析，不下载）。
+   *
+   * `verifiedData` 非空 = 门禁刚刚为本条消息取过一次 get_msg，直接复用；为空
+   * 就自己取（私聊、未开 requireMention、或门禁没跑到引用的路径）。**不做跨
+   * 消息缓存**：缓存会在引用被编辑/撤回后返回旧快照，也会把连接瞬断的失败固化
+   * 成空引用（见文件上方关于 memo 取舍的说明）。
+   */
+  async expandQuote(messageId: string, verifiedData?: QuotedMessageData): Promise<{ text: string; media: MediaRef[] }> {
+    const numericId = numericReplyId(messageId)
+    if (numericId === undefined) {
+      // 无效引用不能阻塞显式 @ / 私聊入口：只放弃展开，不发一个注定失败的请求。
+      this.ctx.log('debug', TRACE_REASONS.quoteInvalidId)
+      currentTrace()?.emit('quote', { ok: false, reason: TRACE_REASONS.quoteInvalidId })
+      return { text: '', media: [] }
+    }
     const startedAt = Date.now()
     try {
-      const data = await this.ctx.call('get_msg', { message_id: Number(messageId) }) as {
-        message?: unknown
-        raw_message?: string
-        sender?: { nickname?: string, user_id?: number | string }
-      }
+      const data = verifiedData ?? await this.ctx.call('get_msg', { message_id: numericId }) as QuotedMessageData
       const segments = Array.isArray(data.message) ? data.message as OneBotSegment[] : undefined
       const raw = typeof data.raw_message === 'string' ? data.raw_message : ''
       // 阶段 0 取证探针（只观测，不改变行为）：回答「引用消息里的图片段到底带
@@ -638,26 +684,18 @@ export class InboundPipeline {
       })
       const parsed = parseMessage(segments, raw)
       const capped = capQuoteImages(cqUnescape(parsed.text), parsed.media)
-      const text = capped.text
+      const text = capped.text.trim()
+      if (text === '') return { text: '', media: capped.media }
       const name = data.sender?.nickname ?? ''
-      const author = data.sender?.user_id !== undefined ? String(data.sender.user_id) : ''
-      entry = {
-        text: text.trim() === '' ? '' : '[引用]' + (name !== '' ? name + ': ' : '') + text,
-        author,
+      return {
+        text: '[引用]' + (name !== '' ? name + ': ' : '') + text,
         media: capped.media,
       }
     } catch (error) {
       this.ctx.log('debug', 'quote expansion failed: ' + describeError(error))
       currentTrace()?.emit('quote', { ok: false, reason: '引用消息展开失败，已降级为空引用: ' + describeError(error) })
+      return { text: '', media: [] }
     }
-    // Bounded like the dedup window: a flood of distinct quoted ids cannot
-    // grow memory unbounded. Failed lookups are cached too — a retry would
-    // fail identically, and '' keeps the mention gate fail-closed.
-    if (this.quoteMemo.size >= QUOTE_MEMO_MAX_ENTRIES) {
-      this.quoteMemo.delete(this.quoteMemo.keys().next().value as string)
-    }
-    this.quoteMemo.set(messageId, entry)
-    return entry
   }
 
   /**
@@ -712,19 +750,6 @@ export class InboundPipeline {
       imageCount: images.length,
       images,
     }
-  }
-
-  /** Author QQ of the quoted message ('' when unknown or the fetch failed).
-   * The mention gate uses this because OneBot's reply segment only carries an
-   * id — an unknown author must never be mistaken for the bot itself. */
-  async resolveReplyTarget(messageId: string): Promise<string> {
-    return (await this.fetchQuote(messageId)).author
-  }
-
-  /** Expand a quoted (reply) message into [引用] text + its images via get_msg. */
-  async expandQuote(messageId: string): Promise<{ text: string; media: MediaRef[] }> {
-    const quote = await this.fetchQuote(messageId)
-    return { text: quote.text, media: quote.media }
   }
 
   /**
@@ -861,6 +886,23 @@ export class InboundPipeline {
       return { text: '[合并转发 id=' + forwardId + ' 未展开: api-error]', media: [] }
     }
   }
+}
+
+/**
+ * 把引用 id 解析成可以安全发给 get_msg 的整数。
+ *
+ * 只接受十进制整数（允许负号，部分适配器用负 int32）。空串、前后空白、0x 前缀、
+ * 小数、指数写法一律拒绝：`Number('')` 是 0、`Number('0x10')` 是 16、`Number('1e3')`
+ * 是 1000，直接拿去请求会查一个完全不相干的消息，或让适配器报错把整轮打挂 ——
+ * 而一个坏引用不该影响显式 @ 与私聊入口。
+ * @param messageId - reply 段里的原始 id（字符串，或适配器直接给数字）。
+ * @returns 安全整数 id；不可构造请求时 undefined。
+ */
+function numericReplyId(messageId: string): number | undefined {
+  const raw = String(messageId)
+  if (raw.trim() !== raw || !/^-?\d+$/.test(raw)) return undefined
+  const value = Number(raw)
+  return Number.isSafeInteger(value) ? value : undefined
 }
 
 /**

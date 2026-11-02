@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cqUnescape, parseMessage, detectMention, parseCqString, faceToLabel } from '../src/cq.js'
+import { cqUnescape, parseMessage, detectExplicitMention, detectMention, parseCqString, faceToLabel } from '../src/cq.js'
 
 describe('cqUnescape', () => {
   it('reverses CQ attribute escaping', () => {
@@ -80,13 +80,9 @@ describe('detectMention', () => {
     expect(detectMention([{ type: 'at', data: { qq: '999' } }], '', '10001', '')).toBe(false)
   })
   it('T14: a bare reply (no qq in the segment) is NOT a mention — OneBot 11 reply carries only id', () => {
-    // Regression: this used to be `true`, which made every quote-tap in a group
-    // wake the bot even when the quoted author was somebody else entirely.
+    // 引用作者由门禁的 get_msg 校验决定；这里只覆盖「段内自带 qq 扩展」这种
+    // 同步可判的情况，避免把「引用别人」也当唤醒。
     expect(detectMention([{ type: 'reply', data: { id: '1' } }], '', '10001', '')).toBe(false)
-    // Resolved upstream via get_msg: the quoted author decides.
-    expect(detectMention([{ type: 'reply', data: { id: '1' } }], '', '10001', '', '10001')).toBe(true)
-    expect(detectMention([{ type: 'reply', data: { id: '1' } }], '', '10001', '', '999')).toBe(false)
-    expect(detectMention([{ type: 'reply', data: { id: '1' } }], '', '10001', '', '')).toBe(false)
   })
   it('A8: reply mentions only when it determinably replies to the bot itself', () => {
     // Replied-to user qq == learned selfId → mention.
@@ -100,14 +96,30 @@ describe('detectMention', () => {
     expect(detectMention(undefined, '[CQ:at,qq=10001] hi', '10001', '')).toBe(true)
     expect(detectMention(undefined, 'hi', '10001', '')).toBe(false)
   })
-  it('T14: a CQ-string reply is not a mention unless the resolved author is the bot', () => {
-    const raw = '[CQ:reply,id=42] 你好'
-    expect(detectMention(undefined, raw, '10001', '')).toBe(false)
-    expect(detectMention(undefined, raw, '10001', '', '10001')).toBe(true)
-    expect(detectMention(undefined, raw, '10001', '', '999')).toBe(false)
+  it('T14: a CQ-string reply without an author is not a mention', () => {
+    expect(detectMention(undefined, '[CQ:reply,id=42] 你好', '10001', '')).toBe(false)
   })
   it('fails closed when bot id unknown', () => {
     expect(detectMention([{ type: 'at', data: { qq: '10001' } }], '', '', '')).toBe(false)
+  })
+})
+
+describe('detectExplicitMention', () => {
+  it('counts only at / at-all, never a reply segment', () => {
+    expect(detectExplicitMention([{ type: 'at', data: { qq: '10001' } }], '', '10001', '')).toBe(true)
+    expect(detectExplicitMention([{ type: 'at', data: { qq: 'all' } }], '', '10001', '')).toBe(true)
+    // 引用机器人自己的消息 ≠ 显式 @：门禁要单独校验作者，两者不能混为一谈。
+    expect(detectExplicitMention([{ type: 'reply', data: { id: '1', qq: '10001' } }], '', '10001', '')).toBe(false)
+  })
+  it('falls back to the raw CQ string, including an EMPTY segment array', () => {
+    // 531f07a 的回归守卫：normalizeOneBot11 在 event.message 为 [] 时给的是空数组
+    // 而不是 undefined，只判 `!== undefined` 会把真实的 @ 丢掉。
+    expect(detectExplicitMention([], '[CQ:at,qq=10001] hi', '10001', '')).toBe(true)
+    expect(detectExplicitMention(undefined, '[CQ:at,qq=10001] hi', '10001', '')).toBe(true)
+  })
+  it('fails closed when the bot id is unknown', () => {
+    expect(detectExplicitMention([{ type: 'at', data: { qq: '10001' } }], '', '', '')).toBe(false)
+    expect(detectExplicitMention(undefined, '[CQ:at,qq=10001]', '', '')).toBe(false)
   })
 })
 

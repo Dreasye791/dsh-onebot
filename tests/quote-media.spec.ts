@@ -66,7 +66,7 @@ function makeHarness(getMsg: () => unknown, options: { resolveOk?: boolean } = {
       registerRecent?: boolean,
       failedLabel?: string,
     ) => pipeline.buildBody(text, media, chatId as never, images as never, registerRecent, failedLabel),
-    expandQuote: (messageId: string) => pipeline.expandQuote(messageId),
+    expandQuote: (messageId: string, verifiedData?: unknown) => pipeline.expandQuote(messageId, verifiedData as never),
     deliverInboundImage: async () => ({ attachmentId: 'sha256:test' }),
     dispatchFollowup: async (_chatId: string, text: string, _role: string, _nickname?: string, images?: unknown[]) => {
       dispatched.push({ text, images: images ?? [] })

@@ -52,26 +52,34 @@ export declare function cqUnescape(value: string): string;
  */
 export declare function faceToLabel(id: string): string;
 /**
- * Detect whether the message mentions the bot. Prefers the segment array;
- * falls back to CQ-string scanning. @-detection stays fail-closed: with an
- * unknown bot id and no configured botQQ, group messages are never treated
- * as mentioning us.
+ * Detect explicit @bot / @all only; a reply segment never implies an @.
  *
- * Reply segments are TARGET-AWARE and fail-CLOSED. The OneBot 11 spec's reply
- * segment carries only `id` — no `qq` at all (some implementations, NapCat
- * included, may add it as an extension). Treating a missing `qq` as "replied to
- * the bot" made *every* quote-tap in a group wake the bot, so an absent or
- * foreign target now counts as NOT a mention. The quoted target is resolved
- * upstream (get_msg) when the segment itself cannot answer it; see
- * `replyTargetIsBot`.
+ * 为什么单独拆出来：门禁的决策是「显式 @ → 直接放行；否则若带 replyId，再去
+ * get_msg 校验被引作者」，两件事正交。合在一个函数里会让「新增一条提及规则」
+ * 必须同时改三个分支（段数组 / CQ 字符串 / 引用作者），也让门禁无法区分
+ * 「无效 id / 取数失败 / 作者未知 / 引用了别人」这四种丢弃原因。
  * @param segments - segment array (may be undefined for CQ-only payloads).
  * @param raw - raw CQ string.
  * @param selfId - learned bot QQ id ('' when unknown).
  * @param botQQ - configured bot QQ id ('' when unset).
- * @param replyTarget - resolved author of the quoted message, when the inbound
- *   pipeline managed to fetch it. '' / undefined = unknown (not a mention).
+ * @returns whether this message explicitly mentions the known bot.
  */
-export declare function detectMention(segments: OneBotSegment[] | undefined, raw: string, selfId: string, botQQ: string, replyTarget?: string): boolean;
+export declare function detectExplicitMention(segments: OneBotSegment[] | undefined, raw: string, selfId: string, botQQ: string): boolean;
+/**
+ * Detect whether the message mentions the bot: an explicit @ first, then a reply
+ * segment that carries the target qq as an adapter extension (the OneBot 11 spec's
+ * reply segment has only `id`; NapCat et al. may add `qq`).
+ *
+ * A bare reply id carries **no author information** and therefore cannot imply a
+ * mention — the inbound gate resolves the quoted author via get_msg for that case
+ * and decides there (see `replyTargetIsBot`). Keeping that decision out of here is
+ * what lets the gate report *why* it dropped a message.
+ * @param segments - segment array (may be undefined for CQ-only payloads).
+ * @param raw - raw CQ string.
+ * @param selfId - learned bot QQ id ('' when unknown).
+ * @param botQQ - configured bot QQ id ('' when unset).
+ */
+export declare function detectMention(segments: OneBotSegment[] | undefined, raw: string, selfId: string, botQQ: string): boolean;
 /** Split a raw CQ string into segments; used only when no segment array exists. */
 export declare function parseCqString(raw: string): OneBotSegment[];
 /**

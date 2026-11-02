@@ -135,6 +135,10 @@ export interface BridgeConfig {
     memoryEmbedder?: Embedder;
     /** 混合召回的语义权重（0~1，缺省 0.6）。0 = 纯关键词，1 = 纯语义。 */
     memorySemanticWeight?: number;
+    /** 召回最低分（0~1，缺省 0.15）。低于它的条目不返回；0 = 不过滤。 */
+    memoryRecallMinScore?: number;
+    /** 只加在**查询**一侧的指令前缀（缺省空）。记忆正文永不加——加了会污染语义空间。 */
+    memoryQueryPrefix?: string;
     /** T2 (P1): how a new ordinary message is handled while the chat's task
      * (agent turn) is running; absent → 'queue' (the default). 'queue' = the
      * message keeps the 0.8.1 dispatch path (agent.followup queues it as the
@@ -424,6 +428,11 @@ export declare class ChatBridge {
     memoryEmbedder(): Embedder | undefined;
     /** 混合召回的语义权重（0~1）；缺省 0.6，越界值按边界处理。 */
     memorySemanticWeight(): number;
+    /** 召回最低分（0~1）；缺省 0.15，越界按边界处理，0 = 不过滤。 */
+    memoryRecallMinScore(): number;
+    /** 查询侧的指令前缀（空串 = 不加）。只作用于 qq_memory_recall 的 query 编码，
+     * 写入/补齐的 passage 一律不加——见 Config.memoryEmbeddingQueryPrefix 的说明。 */
+    memoryQueryPrefix(): string;
     /**
      * 上报一次语义编码失败（此时已经降级为纯关键词）。
      *
@@ -595,7 +604,8 @@ export declare class ChatBridge {
      * can lag the host driver and is deliberately NOT consulted.
      */
     private interceptBusyTurn;
-    /** Expand a quoted (reply) message into [引用] text + its images via get_msg. */
+    /** Expand a quote, forwarding the gate's already-verified response so the
+     * inbound message never pays for a second get_msg. */
     private expandQuote;
     /** Send one message to a chat and return its message id. */
     private sendMsg;

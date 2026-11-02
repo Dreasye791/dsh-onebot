@@ -11,12 +11,21 @@
  * table, the outbound pipeline and the session-event links keep working.
  * @module dsh-onebot/registry
  */
-import type { Agent, AgentRegistry, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent';
+import type { Agent, AgentRegistry, ModelSelection } from '@deepseek-ai/dsh-agent';
 import type { SessionId, SessionStore } from '@deepseek-ai/dsh-session';
 import type { Context } from '@deepseek-ai/cordis';
 import type { MediaRef } from './cq.js';
 import type { ChatId, UserRole } from './chat.js';
 import type { AgentPresetsLike, BridgeConfig, SessionPersistenceLike, WorkspaceRegistryLike } from './bridge.js';
+/** #18: local structural stand-in for the ModelSelectionRef the dsh 0.2.1
+ * host's two-arg installModelSelection(agentCtx, selectionRef) expected —
+ * the 0.2.2 package removed the type export, so it is declared here instead
+ * of imported. `assembled` stays undefined: the pre-0.2.2 wiring only ever
+ * seeded `current` (see the 83a6055 modelWiring). */
+interface ModelSelectionRef {
+    current: ModelSelection;
+    assembled: ModelSelection | undefined;
+}
 /** One switchable (retired-but-intact) session of a chat: /new, /workspace and
  * /preset switches retire the live session with its history intact — /session
  * can switch the chat back to it. Newest first, deduped, capped per chat. */
@@ -137,8 +146,8 @@ export interface ChatAgent {
     activeTurnUser: string | undefined;
     /** The last user message text actually fed to the agent (for /retry). */
     lastFollowup: string | undefined;
-    /** Mutable per-agent model selection (installModelSelection-bound); the
-     * /model command swaps `.current` for the next step. */
+    /** dsh 0.2.1 宿主没有 `agent.model` 子 API：/model 的读写走这里持有的可变选择
+     * （0.2.2 上选择由 `agent.model` 承载，本字段闲置但保持存在，便于命令层统一回退）。 */
     selectionRef: ModelSelectionRef | undefined;
 }
 /** The preset id a session's own record names: newest logged selection, else the creation header. */
@@ -226,14 +235,13 @@ export declare class ChatRegistry {
      * — agent options for the registry call plus the mutable per-agent
      * selection ref (undefined when the deployment has no default model).
      *
-     * config.reasoningEffort overrides the host default for this channel only:
-     * installModelSelection's agent/request hook strips the inherited effort and
-     * re-applies `selection.assembled.reasoningEffort`, so overriding it on the
-     * selection we hand to installModelSelection is what actually changes the
-     * request — the host's own agent-default-model stays untouched (Web/GUI
-     * sessions keep inheriting it). Empty string keeps the pre-existing
-     * inheritance verbatim. `sameRoute` compares provider/model only, so an
-     * effort-only difference never emits a model-switch notice. */
+     * config.reasoningEffort overrides the host default for this channel only：
+     * 0.2.1 由 `installModelSelection` re-apply `assembled.reasoningEffort`，
+     * 所以覆盖必须落在交给它的 selection 上；0.2.2 没有 ref，改由
+     * `agentOptions.reasoningEffort` 作为创建种子。两条路都设，行为一致。
+     * 宿主自己的 agent-default-model 不受影响（Web/GUI 会话继续继承）。
+     * 空串保持原样继承；`sameRoute` 只比 provider/model，effort-only 的差异
+     * 不会触发模型切换通知。 */
     private modelWiring;
     /** C2: the AgentSetup closure shared by the create and resume assembly
      * paths. The only difference between the callers is the preset: a resumed
@@ -266,6 +274,11 @@ export declare class ChatRegistry {
     private restoreEvictedSettings;
     /** Resume persisted chats from the mapping file (best-effort). */
     loadMapping(): Promise<void>;
+    /** T4 (#15): quarantine an unparsable/structurally invalid mapping file —
+     * warn, copy it to `<chat-sessions.json>.bak` (an existing .bak is never
+     * overwritten: the earliest post-corruption copy wins), and leave the load
+     * with an empty mapping so the chat stays usable. */
+    private quarantineCorruptMapping;
     /** Resume one persisted chat from its recorded session id (shared by
      * loadMapping and the B8c evicted-chat resume). */
     private resumeChat;
@@ -298,6 +311,10 @@ export declare class ChatRegistry {
     /** Permanently retire a session id: in-memory plus durable on-disk record,
      * so a restart never reuses an id whose log collides with a fresh session. */
     private retireSession;
+    /** T4 (#15): the run's hard-retired (broken) session count, straight from
+     * the retire record — the /session list surfaces it so broken history
+     * stays visible to the admin. */
+    brokenSessionCount(): number;
     /** Whether the persistence layer already owns a durable log for this id —
      * true means reusing the id would collide (stale on-disk log or live entry).
      * A read failure counts as no log so the caller falls back to the normal
@@ -415,3 +432,4 @@ export declare class ChatRegistry {
      * mapping, dispose every agent, clear both indexes. */
     stop(): Promise<void>;
 }
+export {};

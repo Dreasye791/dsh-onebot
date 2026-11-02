@@ -6,7 +6,7 @@
  * generated from the table (snapshot-gated in tests/commands.spec.ts).
  * @module dsh-onebot/commands
  */
-import type { Agent, ModelSelectionRef } from '@deepseek-ai/dsh-agent';
+import type { Agent, ModelSelection } from '@deepseek-ai/dsh-agent';
 import type { SessionId } from '@deepseek-ai/dsh-session';
 import type { OneBotConnection } from './connection.js';
 import type { MediaRef } from './cq.js';
@@ -14,6 +14,14 @@ import { type ChatId, type UserRole } from './chat.js';
 import type { PendingSelection, SessionSwitchOutcome, SwitchableSession } from './registry.js';
 import type { AgentDefaultModelLike, AgentPresetsLike, BridgeConfig, BridgeDeps, LlmCatalogPort, SessionPersistenceLike, SessionPreviewEvent, WorkspaceRegistryLike } from './bridge.js';
 import type { TraceStage } from './trace.js';
+/**
+ * 0.2.1 宿主的选择容器（0.2.2 已移除 `ModelSelectionRef` 导出，故本地声明结构类型）。
+ * registry 侧声明的同形类型可直接传进来。
+ */
+interface SelectionRefLike {
+    current: ModelSelection | undefined;
+    assembled?: ModelSelection | undefined;
+}
 /** Narrow view of a live chat the command handlers may read or mutate —
  * the structural subset of the bridge's internal ChatAgent that the
  * pre-split handlers actually touched. */
@@ -29,7 +37,8 @@ export interface CommandChatView {
         text: string;
         sentAt: number;
     }>;
-    selectionRef: ModelSelectionRef | undefined;
+    /** 0.2.1 宿主：registry 持有的可变选择（0.2.2 上由 `agent.model` 承载）。 */
+    selectionRef?: SelectionRefLike | undefined;
 }
 /** The bridge capabilities the command surface may touch. Deliberately
  * narrower than BridgeDeps: handlers get the outbound send path, the
@@ -75,6 +84,10 @@ export interface CommandContext {
      * a bare /workspace|/model|/preset|/session rendered; lazy 5-min TTL, see below). */
     /** /session: this chat's switchable retired sessions (newest first). */
     switchableSessions(chatId: ChatId): SwitchableSession[];
+    /** T4 (#15): broken (hard-retired) session count from the registry's
+     * retire record, surfaced by the /session list. Absent = the list omits
+     * the broken-count line (pre-T4 hosts/tests). */
+    brokenSessionCount?: (() => number) | undefined;
     /** /session <序号>: switch the chat back to a listed session. */
     switchSession(chatId: ChatId, targetSessionId: string): Promise<SessionSwitchOutcome>;
     /** /session list previews: the persistence port each retired session's
@@ -223,3 +236,4 @@ export declare function sessionPreviewFromEvents(events: readonly SessionPreview
  * unique tail must survive for the id to stay recognizable. */
 export declare function shortSessionId(id: string): string;
 export declare function packageVersion(): string | undefined;
+export {};

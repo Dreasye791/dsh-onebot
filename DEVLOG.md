@@ -1682,3 +1682,49 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
   两项「已吸收」不是口头判断，是用**上游原始测试**交叉验证的：把 `5145a11:tests/stt-find.spec.ts`、`26ca544:tests/media-guard.spec.ts` 从 git 取出直接跑本地 `src`——前者 7 条全过（3 条 POSIX 在 win32 按设计跳过），后者的 SSRF 组全过，仅 `resolveContainedPath fence` 4 条因上游那版没处理 Windows 8.3 短路径（`DONGZH~1` vs `dongzheng`）失败，而本地版本已在 `tests/media-guard.spec.ts:181` 起了守卫。两边 `src` 的 `findCommand` / `isPrivateIpv4` / `isPrivateIpv6` 逐字符一致，差异只有注释语言与本地额外能力。
 - **为什么 `behind` 不能压到 3**：`git rev-list --count HEAD..upstream/main` 的集合永远是上游线性链的**后缀**（祖先关系前缀封闭）。要让 `5145a11` / `26ca544` 成为祖先，必然连带 `83a6055` / `4ccb00b` / `9de0c5e` 一起成为祖先；可达值只有 0/1/2/3/4/5 且分别对应「从链尾往前数几个」。若真要 `behind=0`，只能用 `git merge -s ours upstream/main`（记录祖先、保留我方树），代价是 git 从此不再提示 0.2.2 的差异——所以本台账是唯一可靠的进度信号。
 - **未做**：`83a6055` 暂不合——本机宿主 0.2.1 的 `Agent` 没有 `model` 子 API、`installModelSelection` 仍是双参，「双向兼容」需要运行时探测且无法在 0.2.1 上验证 0.2.2 分支，等宿主升级后再合。
+
+## 2026-10-30 适配宿主 0.2.2-alpha.2：ModelSelectionRef 移除改用 agent.model 门面 + engines 补 0.2.2 预发段（T9）
+
+- **背景**：宿主 node_modules 切至 dsh-agent 0.2.2-alpha.2 后，`ModelSelectionRef` 类型已删除、`installModelSelection` 单参化（仅装 model-switch notice 监听），选择状态改由 Agent 公开门面 `agent.model`（`current()`/`select()`，select 即 append 持久 `model/selection` 事件）+ `modelSelection` 投影承载；tsc 自 T8 起报 3 个既有错误（src/commands.ts:9、src/registry.ts:14 引用已删类型，src/registry.ts:281 TS2554）。
+- **改法（对齐宿主正规用法，dsh-api-session-controller/lib/index.js:715/:845 同款）**：ChatAgent 删除 `selectionRef` 字段与 modelWiring 的 ref 装配；/model、/status 的当前模型读法改为 `chat?.agent.model.current() ?? safeDefaultModel(ctx)`；裸切换写法改为 `chat.agent.model.select(next)`，守卫 `chat !== undefined && chat.agent.model.current() !== undefined` 与旧 `selectionRef !== undefined` 语义等价（有部署默认→恒可切，无默认→no-op 仍回复成功）。`installModelSelection(agentCtx)` 改为无条件安装（宿主三处调用同款，忽略返回 disposer）；部署默认模型仍走 agentOptions.provider/model 直传（不 append 初始事件，与宿主 native 会话一致）。--default 路径零改动。
+- **已知有意差异（M2-C5a 语义不变的部分）**：裸切换现通过 `model/selection` 事件持久化进 session 日志，重启 resume 后保留（旧实现为内存态、重启丢失恢复为部署默认）；选择仍严格 session 级，任何路径都不写部署默认。resume 后投影 lastUsed（上一次实际路由）优先于部署默认，系宿主投影语义。
+- **engines/peer 补段**：package.json engines.dsh、peerDependencies `@deepseek-ai/dsh-agent`、dsh.plugin.json engines.dsh 均追加 `|| >=0.2.2-0 <0.2.3-0`。宿主 node_modules/semver 实测（0.2.2-alpha.2 运行环境）：现状 ranges 对 0.2.2-alpha.2 = false（prerelease 同元组规则）；补段后 0.2.2-alpha.2/0.2.2/0.2.1-rc.3/0.2.1/0.2.0 全 true，0.3.0-alpha.1/0.2.3-alpha.1 保持 false 不误纳；peer 其余版本判定逐项不变。
+- **验证**：`tsc -p tsconfig.json --noEmit` 0 错误（0.2.2-alpha.2 types 环境）；全量 vitest 40 文件/625 用例 624 过，唯一失败 tests/deferred.spec.ts「不确定结果（动作超时）」为 T8 条目已记载的并行负载时序 flake（失败项逐轮不同），隔离重跑 `--maxWorkers=1` 26/26 全绿，按 0.9.3/0.9.4/T8 同口径处理；改动直接涉及的 commands/bridge/session-switch 等文件全量内均绿。
+- **边界**：src/registry.ts、src/commands.ts、三个 range 串、tests 五文件（bridge-harness 补宿主仿真 model 桩、commands.spec 断言改 agent.model.current()、bridge.spec M2-C2 field snapshot 移除 selectionRef 行、session-switch fake 补 model、tests/README.md 断言说明同步）+ DEVLOG；未发版未 bump（版本号收口由维护者决定）；lib/ 产物未触碰，发版时统一构建；package-lock.json 未动。注意：本次适配后插件运行面要求宿主 dsh-agent ≥ 0.2.2-alpha.2（agent.model 门面），engines/peer 保留的旧版本段仅为既有声明沿用，未对 0.2.1-rc.3 等旧宿主做运行验证。
+
+## 2026-10-30 发版 0.9.8（DSH 0.2.2-alpha.2 适配收口，T10）
+
+- **改动**：本次发版为「实质发版」，与 0.9.6/0.9.7 的元数据发版不同，**lib/ 产物须重建入库**。随本发版出版本号的是已入库的 commit `83a6055`（T9：适配宿主 0.2.2-alpha.2——`ModelSelectionRef` 移除改用 `agent.model` 门面 `current()`/`select()`，/model、/status 当前模型读法与裸切换写法迁移，`installModelSelection` 无条件安装；package.json engines.dsh、peerDependencies `@deepseek-ai/dsh-agent`、dsh.plugin.json engines.dsh 均追加 `|| >=0.2.2-0 <0.2.3-0`）。lib/ 相对上一发版的差异：bridge/commands/cq/inbound/media/registry/trace 等编译产物 + 对应 types 声明同步重建（inbound +92/-x、commands、registry 等为 T9 适配的编译体现），即 0.9.2 时代 lib 基线后的首个运行时产物更新。
+- **说明（发布物边界）**：lib/ 随 npm 包 `files` 白名单（lib + cordis.patch.yml）分发；安装用户运行行为即 T9 适配后行为，要求宿主 dsh-agent ≥ 0.2.2-alpha.2。
+- **验证**：`npm run build`（scripts/build.sh，tsc 5.9.3，宿主 node_modules 0.2.2-alpha.2）重建 lib/ 成功；`npx tsc -p tsconfig.json --noEmit` 0 错误；全量 vitest 40 文件 / 625 用例一次全绿（本轮无 flake）；lib import 冒烟（node ESM import lib/index.js）可加载、导出 8 个顶层符号非空。
+- **清单同步**：package.json version 0.9.7→0.9.8；dsh.plugin.json 同步 0.9.8；tests/commands.spec.ts packageVersion 断言随版更新为 0.9.8（it 描述串 + expect 两行，仿 0.9.3–0.9.7 先例）；package-lock.json 沿用既有惯例不动。
+- **发布面收口**：commit（含 lib/）→ push origin main → tag `v0.9.8` → GitHub Release → npm publish → npmmirror 验证。宿主进程未重启。
+
+## 2026-11-01 发版 0.9.9（PR #12 Windows findCommand 修复，T1）
+
+- **改动**：随本发版出版本号的是已入库的 commit `5145a11`（PR #12：修复 Windows 上 findCommand 找不到 ffmpeg/whisper 等命令——按 libuv 解析规则在 PATH 各目录只找不带 shell 能启动的可执行文件：名字已带扩展名先试原名，再依次补 `.com`、`.exe`；不读 PATHEXT，`.bat`/`.cmd` 与无扩展名 sh 脚本不算找到，POSIX 用例不变）。
+- **验证**：`scripts/build.sh`（DSH_ROOT 指向宿主 0.2.2-alpha.2 node_modules，tsc 5.9.3）重建 lib/ 成功，lib/ 相对 0.9.8 仅 `lib/stt.js` 变化（+18/-9，PR #12 编译体现），sha256=`4159416e0089c7e3a637ec2d712aa65365199a7589ddbffab5c1bffac08c1d2c`；`npx tsc --noEmit` 0 错误；全量 vitest 40 文件 / 625 通过 + 4 skipped（tests/stt-find.spec.ts 的 4 条 win32 用例 Linux 上 skip 属预期）一次全绿。
+- **清单同步**：package.json version 0.9.8→0.9.9；dsh.plugin.json 同步 0.9.9；tests/commands.spec.ts packageVersion 断言随版更新为 0.9.9（it 描述串 + expect 两行，仿 0.9.3–0.9.8 先例）；package-lock.json 沿用既有惯例不动。
+- **发布面收口**：commit（含 lib/）→ push origin main → tag `v0.9.9`。npm publish 与 GitHub Release 属任务 T2，本任务不做。宿主进程未重启。
+
+## 2026-11-02 发版 0.9.10（0.9.9 后批次修复收口：#2 #3 #4 #6 #15 #16 #17 #18 #19）
+
+- **改动**：本次发版为「实质发版」，**lib/ 产物重建入库**。随本发版出版本号的是本批次十个已入库 commit：`f7a4fb4`（T2/#19：t2i Windows CJK 字体自动候选——CJK 依次尝试 Microsoft YaHei/YaHei UI/SimSun/SimHei/DengXian/KaiTi/FangSong、等宽依次尝试 Consolas/Cascadia Code/Cascadia Mono/Courier New，macOS/Linux 候选同文件；`monoFamilies` 独立配置项拆分，代码文本等宽家族优先于 `fontFamilies` 与平台默认）、`b47e2b5`（T3/#16：合并转发兼容 NapCat 顶层 `node.message` 形状并加 50 节点/8000 字符截断上限）、`b33d3e8`（T4/#15：loadMapping 解析失败告警 + `.bak` 隔离 + /session broken 会话计数）、`a3b8fbb`（T5/#17/#4：`agent.model.current()` 容错回退 safeDefaultModel、turn/end blocked 分支补「该消息未生成回复」提示、`/session <1>` 半/全角括号归一化）、`41c3103`（T7/#18：installModelSelection 按 arity 兼容 0.2.1/0.2.2 双宿主）、`e4b4c01`（T8/#3：自动回执开关 `notices.steerAccepted`/`notices.queue`，默认 true，`/steer` 手动确认不受影响）、`74ead33`（T9/#2：剥离模型复述的 `<user_message>` 边界标记防格式泄露）、`23d9bb6`（T10/#6：新增 `qq_send_segments` 多气泡分段发送工具——1–9 段、每段 ≤500 字，可选 `chat_id`，受 `actionRatePerMinute` 闸）、`2fd9406`+`d6371e4`（T11/T12/#19：monoFamilies 全链路接线——outbound/interim 渲染调用转发 + src/index.ts 桥构造参数补传，配置自此端到端可达 t2i 渲染端）。lib/ 相对 0.9.9 差异：bridge/commands/inbound/index/interim/outbound/registry/t2i/fonts/t2i/index/tools 编译产物 + 对应 types 声明同步重建（18 文件 +378/-82），即上批修复的编译体现。
+- **说明（发布物边界）**：lib/ 随 npm 包 `files` 白名单分发；`notices.*` 与 `monoFamilies` 均有 schema 默认值，旧配置零改动即兼容。
+- **验证**：本轮构建用 `./scripts/link-host.sh` + `npx tsc -p tsconfig.json`（tsc 5.9.3，宿主 0.2.2-alpha.2 node_modules 符号链接）——worktree 无 devDependencies、`npm install` 撞 dsh-agent↔cordis peer 冲突，效果与 build.sh 同为全量 src→lib 编译；lib 同步抽查（index.js:398 monoFamilies 接线、tools.js qq_send_segments×4、outbound.js user_message 剥离、inbound.js:540 node.message、bridge.js:621 notices.steerAccepted、registry.js:384 .bak 隔离）与 node ESM import lib/index.js 冒烟（8 导出）均过；`npx tsc --noEmit` 0 错误；全量 vitest 41 文件 657 passed + 4 skipped（stt-find win32 用例 Linux skip 属预期）。
+- **清单同步**：package.json version 0.9.9→0.9.10；dsh.plugin.json 同步 0.9.10；engines.dsh 维持现状不动；tests/commands.spec.ts packageVersion 断言随版更新为 0.9.10（it 描述串 + expect 两行，仿 0.9.3–0.9.9 先例）；package-lock.json 沿用既有惯例不动。
+- **文档**：README.md 与 README.en.md 补 `notices.steerAccepted`/`notices.queue`、`monoFamilies` 配置行（含 Windows 中文/等宽自动候选说明）、`qq_send_segments` 工具行与「分段发送」专章、平台说明行；issue 回复素材（#7/#9/#14）在未跟踪 `docs/issue-replies-0.9.10-draft.md`，不入库。
+- **发布面收口**：commit（含 lib/）为本任务范围；push origin main、tag `v0.9.10`、GitHub Release、npm publish 属后续任务，本任务不做。宿主进程未重启。
+- **T14/T15 追加（0.9.10 后）**：qq_send_segments 呼吸感（插件页开关 `segments.enabled` + 分段发送间隔 `segments.intervalMs`，0–3000 默认 0；工具 `intervalMs` 参数可按次覆盖），README 中英补配置行与「分段发送」章节能点。
+
+## 2026-11-02 吸收上游 0.9.10 批次（merge 到 upstream/main，behind 20 → 0）
+
+- **合并范围**：`git merge upstream/main`，含 0.9.8 / 0.9.9 / 0.9.10 与 #18 双宿主兼容。旧台账里「等 0.2.2 正式发版」的前提被上游自己解掉：`41c3103`(#18) 按 `installModelSelection.length` 运行时判参数个数，0.2.1 走双参、0.2.2 走单参，本机宿主（0.2.1-rc.5）合并后仍可正常 `/model`。
+- **双宿主 + 本地 reasoningEffort 共存**：`registry.ts` 保留 `selectionRef` 与 `config.reasoningEffort` 覆盖（0.9.10 上游**完全没有** reasoningEffort，那是 fork 独有能力）；`buildSetup()` 复用 `modelWiring()` 算好的 ref，而不是像上游那样现取 `defaultModel()`——否则 effort 覆盖会被悄悄丢掉。同时把 effort 写进 `agentOptions.reasoningEffort`，作为 0.2.2 单参路径的创建种子。
+- **`commands.ts` 能力探测**：上游把 `/model` 改成 `chat.agent.model.select()`，而 0.2.1 宿主没有 `agent.model`（会抛 `Cannot read properties of undefined`）。新增 `agentModelApi()`：有该子 API 用 `agent.model`，没有则回退 `chat.selectionRef`（`ChatAgent.selectionRef` 因此保留）。
+- **t2i 字体：互补合并，不是重复**：上游有 `monoFamilies` 配置、活跃字体集匹配、更全的 mono 回退清单；本地有字体**文件**注册兜底（`WINDOWS_FONT_FILES`）、`微软雅黑` 本地化名、Windows emoji 候选。合成一份：把 `微软雅黑` 并入上游的 `WINDOWS_CJK_CANDIDATES`，保留文件兜底与 emoji 候选，删掉重复的两个常量。**候选顺序沿用上游**（MAC → WINDOWS → LINUX → 活跃集）——`inkCheck` 只调整链首，本地把 Windows 排前面会让 `Microsoft YaHei` 变成链首，被缺字形检查降级掉。
+- **映射文件容错**：上游 T4 (#15) 改成「解析失败 → 复制 `.bak` → 空映射继续」，取代本地「拒绝覆盖」；本地保留 `mappingLoadFailed` 但只作用于**读失败**（非 ENOENT，此时隔离不适用），并同步改写 `registry.spec.ts` 的 R-01 用例（原断言「损坏文件一字不改」已与新契约冲突）。
+- **peer 版本带重排**：`engines.dsh` 与 7 个 `@deepseek-ai/dsh-*` peer 统一为 6 段（补 `>=0.2.2-0 <0.2.3-0`），`tests/config-ranges.spec.ts` 的「peer 与 engines 分支集合必须一致」重新成立；上游只给 `dsh-agent` 补了该段。
+- **取并集的地方**：`index.ts` 懒加载声明（`MIB` + `configureSendSegments`）、`tools.ts`（本地 S-11 URL 闸 + 上游分段配置 helper；注意两者在同一插入点，需要补上本地函数的闭合括号）、`outbound.ts`（本地 `sensitivePatterns`/`redactLocalPaths` + 上游 `monoFamilies`，以及「先脱敏再剥 `<user_message>` 边界」）、`dsh.plugin.json` 工具清单、`bridge-harness` 选项、`registry.spec.ts` 与 `tools-gate.spec.ts` 的整段 describe 拼接。
+- **验证**：`tsc -p tsconfig.json` exit 0；全量 `53 spec / 925 passed / 6 skipped`（合并前 52 spec / 888 passed；新增上游 t2i 字体、`qq_send_segments`、`notices`、T4 容错等用例）。
+- **未做**：插件页未暴露 `notices.*` / `segments.*` / `monoFamilies`——上游自己的 `lib/client.js` 同样没有这三项（属配置面能力），与本 fork 现状一致；真机未验。

@@ -6,7 +6,7 @@
  * generated from the table (snapshot-gated in tests/commands.spec.ts).
  * @module dsh-onebot/commands
  */
-import type { Agent, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
+import type { Agent, ModelSelection } from '@deepseek-ai/dsh-agent'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { SessionId as makeSessionId } from '@deepseek-ai/dsh-session'
 import { execFileSync } from 'node:child_process'
@@ -25,6 +25,34 @@ import { describeError } from './errors.js'
 import { failureRefSuffix, isFailureRef } from './ref.js'
 import type { TraceStage } from './trace.js'
 
+/**
+ * 0.2.1 宿主的选择容器（0.2.2 已移除 `ModelSelectionRef` 导出，故本地声明结构类型）。
+ * registry 侧声明的同形类型可直接传进来。
+ */
+interface SelectionRefLike {
+  current: ModelSelection | undefined
+  assembled?: ModelSelection | undefined
+}
+
+/**
+ * 0.2.2 起模型选择挂在 `agent.model`（`current()` / `select()`）；0.2.1 宿主没有这个
+ * 子 API。按能力探测，让 `/model` 在两代宿主上都能读写，而不是在 0.2.1 上抛
+ * `Cannot read properties of undefined (reading 'current')`。
+ */
+interface AgentModelApi {
+  current(): ModelSelection | undefined
+  select(selection: ModelSelection): void
+}
+
+function agentModelApi(agent: Agent | undefined): AgentModelApi | undefined {
+  const candidate = (agent as { model?: unknown } | undefined)?.model
+  if (candidate === undefined || candidate === null || typeof candidate !== 'object') return undefined
+  const api = candidate as Partial<AgentModelApi>
+  return typeof api.current === 'function' && typeof api.select === 'function'
+    ? candidate as AgentModelApi
+    : undefined
+}
+
 /** Narrow view of a live chat the command handlers may read or mutate —
  * the structural subset of the bridge's internal ChatAgent that the
  * pre-split handlers actually touched. */
@@ -36,7 +64,8 @@ export interface CommandChatView {
   lastNickname: string
   loopPending: string | null
   loopBuffer: Array<{ id: string; text: string; sentAt: number }>
-  selectionRef: ModelSelectionRef | undefined
+  /** 0.2.1 宿主：registry 持有的可变选择（0.2.2 上由 `agent.model` 承载）。 */
+  selectionRef?: SelectionRefLike | undefined
 }
 
 /** The bridge capabilities the command surface may touch. Deliberately
@@ -83,6 +112,10 @@ export interface CommandContext {
    * a bare /workspace|/model|/preset|/session rendered; lazy 5-min TTL, see below). */
   /** /session: this chat's switchable retired sessions (newest first). */
   switchableSessions(chatId: ChatId): SwitchableSession[]
+  /** T4 (#15): broken (hard-retired) session count from the registry's
+   * retire record, surfaced by the /session list. Absent = the list omits
+   * the broken-count line (pre-T4 hosts/tests). */
+  brokenSessionCount?: (() => number) | undefined
   /** /session <序号>: switch the chat back to a listed session. */
   switchSession(chatId: ChatId, targetSessionId: string): Promise<SessionSwitchOutcome>
   /** /session list previews: the persistence port each retired session's
@@ -429,12 +462,12 @@ async function resolveNumericSelection(
 }
 
 /** /model: show the current model (+ discoverable providers), or switch.
- * A bare switch retargets ONLY this chat's selection ref (M2-C5a: it no
+ * A bare switch retargets ONLY this chat's agent selection (M2-C5a: it no
  * longer rewrites the deployment default — that is the explicit --default
  * form's job). */
 async function handleModelCommand(ctx: CommandContext, chatId: ChatId, arg: string): Promise<void> {
   const chat = ctx.getChat(chatId)
-  const current = chat?.selectionRef?.current
+  const current = safeChatModel(chat, ctx)
     ?? safeDefaultModel(ctx)
   if (arg === '') {
     const cur = current !== undefined ? current.provider + '/' + current.model : '（未设置）'
@@ -519,10 +552,21 @@ async function handleModelCommand(ctx: CommandContext, chatId: ChatId, arg: stri
     await ctx.sendToChat(chatId, `✅ 已修改部署默认模型：${provider}/${model}（下一步生效）`)
     return
   }
-  // Bare switch: retarget only this chat's selection ref — never the global
-  // default (M2-C5a; the old silent saveSelection here was a scope leak).
-  if (chat?.selectionRef !== undefined) {
-    chat.selectionRef.current = next
+  // Bare switch: record the selection on this chat's agent only — never the
+  // global default (M2-C5a; the old silent saveSelection here was a scope
+  // leak). dsh 0.2.2: `agent.model.select()` appends a durable model/selection
+  // event (the host facade used by dsh-api-session-controller); the guard
+  // keeps the old semantics where a deployment without a default model had
+  // no selection ref and the switch stayed a silent no-op.
+  if (chat !== undefined && safeChatModel(chat, ctx) !== undefined) {
+    // 双宿主切换：0.2.2 走 agent.model.select（会追加持久化的模型选择事件）；
+    // 0.2.1 没有该 API，改写 registry 持有的 selectionRef（下一步生效）。
+    const api = agentModelApi(chat.agent)
+    if (api !== undefined) {
+      api.select(next)
+    } else if (chat.selectionRef !== undefined) {
+      chat.selectionRef.current = next
+    }
   }
   await ctx.sendToChat(chatId, `✅ 已切换当前会话模型：${provider}/${model}（下一步生效）`)
 }
@@ -659,7 +703,7 @@ async function handleStatusCommand(ctx: CommandContext, chatId: ChatId): Promise
     const resolved = await ctx.resolvePresetId(chatId)
     preset = (resolved ?? undefined) !== undefined ? (resolved ?? '') + '（默认/配置）' : '（未记录）'
   }
-  const current = chat?.selectionRef?.current ?? safeDefaultModel(ctx)
+  const current = safeChatModel(chat, ctx) ?? safeDefaultModel(ctx)
   const model = current !== undefined ? current.provider + '/' + current.model : '（未设置）'
   const cwd = ctx.effectiveCwd(chatId)
   let wsSuffix = ''
@@ -1102,11 +1146,24 @@ async function sessionPreviewFor(ctx: CommandContext, sessionId: string): Promis
  * numbered list is snapshotted (R2, kind 'session') so a following
  * `/session <序号>` picks without re-listing. */
 async function handleSessionCommand(ctx: CommandContext, chatId: ChatId, arg: string): Promise<void> {
+  // #4b: IM input routinely wraps the serial in brackets — /session <1>,
+  // ＜1＞ or ［1］. Strip angle/bracket wrappers before the numeric
+  // resolution so those spellings are equivalent to /session 1. Plain text
+  // (including unpaired brackets) passes through unchanged and still fails
+  // numeric resolution the old way.
+  arg = arg.trim().replace(/^[<＜([{（【]+\s*/, '').replace(/\s*[>＞)}）】\]]+$/, '').trim()
   if (arg.trim() === '') {
     const list = ctx.switchableSessions(chatId)
     const current = ctx.getChat(chatId)?.sessionId ?? await ctx.sessionIdFromMapping(chatId)
+    // T4 (#15): broken sessions never enter the switchable list, so the count
+    // comes straight from the registry's retire record — surfaced so broken
+    // history is visible instead of silently vanished.
+    const brokenCount = ctx.brokenSessionCount?.() ?? 0
     if (list.length === 0) {
-      await ctx.sendToChat(chatId, '当前 session：' + (current ?? '（未建立会话）') + '\n（该会话没有可切回的历史会话）\n用法：/session <序号> 切回；/new、/workspace、/preset 切换下来的旧会话会进入列表。')
+      let empty = '当前 session：' + (current ?? '（未建立会话）') + '\n（该会话没有可切回的历史会话）'
+      if (brokenCount > 0) empty += '\n⚠️ 另有 ' + brokenCount + ' 个损坏会话已隔离（不可切回）。'
+      empty += '\n用法：/session <序号> 切回；/new、/workspace、/preset 切换下来的旧会话会进入列表。'
+      await ctx.sendToChat(chatId, empty)
       return
     }
     // Each item carries a one-line content preview + creation time so the
@@ -1120,6 +1177,9 @@ async function handleSessionCommand(ctx: CommandContext, chatId: ChatId, arg: st
       return `${index + 1}. ${text}（${created}${formatTimestamp(entry.retiredAt)} 退休 · ${shortSessionId(entry.id)}）`
     }))
     let out = '当前 session：' + (current ?? '（未建立会话）') + '\n可切回历史会话：\n' + lines.join('\n')
+    // T4 (#15): the broken count rides the list output (these ids are absent
+    // from the switchable list, so without the line they would look lost).
+    if (brokenCount > 0) out += '\n⚠️ 另有 ' + brokenCount + ' 个损坏会话已隔离（不可切回）。'
     out += '\n回复 /session <序号> 切回（当前会话会进入列表，可来回切换）。'
     ctx.setPendingSelection(chatId, {
       kind: 'session',
@@ -1394,6 +1454,22 @@ function safeDefaultModel(ctx: CommandContext): ModelSelection | undefined {
     return ctx.agentDefaultModel?.currentSelection()
   } catch (error) {
     ctx.log('debug', 'currentSelection failed: ' + String(error))
+    return undefined
+  }
+}
+
+/** #17: chat.model.current() can throw (model registry in a bad state); the
+ * /model and /status surfaces must degrade to the deployment default instead
+ * of crashing the command handler (same pattern as safeDefaultModel). */
+function safeChatModel(chat: CommandChatView | undefined, ctx: CommandContext): ModelSelection | undefined {
+  if (chat === undefined) return undefined
+  const api = agentModelApi(chat.agent)
+  // 0.2.1：没有 agent.model，退回 registry 持有的可变选择（/model 的旧接线）。
+  if (api === undefined) return chat.selectionRef?.current
+  try {
+    return api.current()
+  } catch (error) {
+    ctx.log('debug', 'model.current failed: ' + String(error))
     return undefined
   }
 }

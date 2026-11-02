@@ -31,7 +31,7 @@
 | 文字图 | t2i 卡片渲染器（@napi-rs/canvas）：标题/粗斜体/删除线/引用/列表/代码块/表格/行内 code 胶囊/彩色 emoji/中文标点禁则；与 Hermes 原版同款数值（800px/26px/禁则集合/右缘 790） |
 | 出站 | 正文 ≤ `textImageThreshold`（默认 150）字符单条发送、**超过阈值渲染 t2i 文字图卡片**（AstrBot 风格：标题/引用/列表/表格/代码块/彩色 emoji；渲染失败、PNG 超 `outboundImageMaxBytes` 或 `<=0` 禁用卡片时回退单条纯文本）、Markdown 剥离为 QQ 纯文本、[[qq_forward]] 合并转发（群/私聊）、**实时中间消息**（interimMessages：每条中间文本立即发出、实时可见；各自在 `interimRecallMs`（默认 90s）后自动单独撤回；回合结束时先把整轮中间消息渲染成一张 **t2i 小结卡**、立即撤回仍在屏幕上的原文、再发送最终回复——不用回合末合并转发，避免长回合「原文超 2 分钟撤不回+转发卡重复」；`interimRecall: false` 时降级为只发不撤（无小结卡、不撤回））、**宿主「计划书/提问卡」自动中继**（模型调用 exit_plan_mode / ask_user_question 时把计划全文/问题选项发到 QQ）、正在输入提示（set_input_status，仅私聊） |
 | 命令 | 斜杠命令（仅管理员）：`/new` 开新会话、`/stop` 停止生成、`/steer <补充内容>` 向运行中的任务补充指令（无运行任务时回用法提示；详见下方命令表与 `newMessagePolicy` 配置）、`/model` 查看或切换当前会话模型（`--default` 修改部署默认；无参输出两级序号列表，回复序号选 provider → 再回复序号选模型）、`/workspace` 查看或切换工作区（无参编号列表，回复序号即选）、`/preset` 查看或切换 agent 预设（无参编号列表，回复序号即选）、`/session` 查看可切回历史会话并按序号切回（`/new`、`/workspace`、`/preset` 切换下来的旧会话进列表，可来回切，历史上下文恢复）、`/status` 会话全景、`/storage` 存储占用（媒体目录 / 附件库 / 本插件贡献 / 软上限）、`/doctor [export [参考号]]`（别名 `/healthcheck`）运行体检（export [参考号] 导出脱敏诊断包 qq-diagnostics-*.zip，文件名含触发参考号）、`/retry` 重跑上一条、`/id` 会话标识、`/ver` 版本、`/ocr` 识别最近图片、`/mode` 切换出站模式（跨重启持久化）、`/plan` 计划模式、`/permission` 切换宿主权限预设（QQ 别名 `w`=工作区可写+需审批、`f`=全权+免审批；完整预设名照传，未知名由宿主报错并回显可用列表；无参查看当前与可用列表，序号按 available 顺序）、`/goal` 目标记录（跨重启持久化）、`/help` 帮助；未知斜杠命令默认拦截并提示相近命令（`unknownCommand: passthrough` 改为透传给模型） |
-| 工具 | `qq_send_image`（≤9 张，路径或 URL）、`qq_send_voice`、`qq_send_video`、`qq_send_file`、`qq_send_forward`、`qq_send_meme`（配 `memeDir` 后出现，按情绪/关键词抽预置表情包）、`qq_napcat_api`（15 个白名单 action，仅管理员可调用上传/写群类；`file` 只收 file_id 或 `base64://`）、`qq_group_history`、`qq_memory_remember` / `qq_memory_recall` / `qq_memory_forget`（配 `memoryEnabled` 后出现；按 chat 分区、关键词检索；`remember` 支持会话公共记忆 `note` 与成员画像 `profile`，note 所有成员可写、画像默认只在私聊、敏感信息会被拒绝；`forget` 按 `ts` 或关键词删条目，**不接受空条件**，成员只能删自己写的或关于自己的画像）（文件编辑工具 `code_safe_edit` 等已拆至独立插件 dsh-safe-edit，见下文「安全编辑」） |
+| 工具 | `qq_send_image`（≤9 张，路径或 URL）、`qq_send_voice`、`qq_send_video`、`qq_send_file`、`qq_send_forward`、`qq_send_segments`（1–9 段纯文本分段气泡，每段 ≤500 字，见下文「分段发送」）、`qq_send_meme`（配 `memeDir` 后出现，按情绪/关键词抽预置表情包）、`qq_napcat_api`（15 个白名单 action，仅管理员可调用上传/写群类；`file` 只收 file_id 或 `base64://`）、`qq_group_history`、`qq_memory_remember` / `qq_memory_recall` / `qq_memory_forget`（配 `memoryEnabled` 后出现；按 chat 分区、关键词检索；`remember` 支持会话公共记忆 `note` 与成员画像 `profile`，note 所有成员可写、画像默认只在私聊、敏感信息会被拒绝；`forget` 按 `ts` 或关键词删条目，**不接受空条件**，成员只能删自己写的或关于自己的画像）（文件编辑工具 `code_safe_edit` 等已拆至独立插件 dsh-safe-edit，见下文「安全编辑」） |
 | 权限 | 管理员白名单（`ONEBOT_ALLOWED_USERS`）、dm/group 策略（open/allowlist/disabled）、群聊 @提及 gating、受限用户 [受限用户:仅问答] 软限制、出站敏感内容审计 |
 | 会话 | 每个 QQ 会话一个持久 Agent（session id 稳定派生），重启后自动 resume；按 `agentPreset`/`workspacePath` 挂载到 preset 与工作区；每轮结束 flush 落盘 |
 | 运维 | 热加载：profile 层 patch 的 **config 覆盖**与 **insert 新增/删除**均热生效——插件 fiber 秒级原地重启（宿主进程不重启；代价：QQ 桥一次秒级重连、在途回合中断）；touch/内容未变不触发任何动作；bundle 自带 patch、仓库模板、部署副本的 patch 文件与根配置 `cordis.yml` 的改动**不**热生效；临时媒体 TTL 过期清理 |
@@ -187,6 +187,10 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `unknownCommand` | `intercept` | 未知斜杠命令处置：`intercept`（默认）拦截并提示相近命令（前缀匹配优先，编辑距离 ≤2 兜底且仅输入长度 ≥4 时启用，至多 3 个候选；无候选提示发 `/help` 或去掉开头 `/` 重发）；`passthrough` 维持旧行为透传给模型。非 `/纯单词` 开头的文本（如路径 `/tmp/x`）不受影响 |
 | `newMessagePolicy` | `queue` | 任务运行中收到新普通消息的处理策略（P1）：`queue`（默认）=排队——消息在当前任务结束后按序处理为后续回合，等待期间每运行回合至多回复一次排队提示；`steer`=插话——运行中收到的新普通纯文字消息作为补充指令加入当前任务（模型在下一步读取）并回复提交提示。例外：图片/文件/语音/带引用或合并转发消息与 `[受限用户:仅问答]` 群成员消息两种模式下都按排队处理（软限制不放宽、媒体管线不被绕过）；自动插话资格由 `autoSteerPolicy` 控制；`/steer` 命令两种模式下均可用；无运行中任务时行为与该配置无关（与 0.8.1 一致）。设置页 behavior 组可改，热重启生效 |
 | `autoSteerPolicy` | `admin` | steer 模式下自动插话的发送者资格（T9，用户裁决 2026-10-12）：`admin`（默认）=仅管理员可自动插话；`all`=所有非受限发送者均可。不具备资格的消息按排队处理（入队+排队提示）；`/steer` 命令始终仅管理员、不受本项影响；`queue` 模式行为完全不变。设置页 behavior 组可改，热重启生效 |
+| `notices.steerAccepted` | `true` | steer 模式下补充指令受理后的自动回执开关（0.9.10 起）：`false` 时插话照常受理，但不再自动回复提交提示；`/steer` 命令的手动确认回复不受影响 |
+| `notices.queue` | `true` | 消息排队提示开关（0.9.10 起）：`false` 时新消息照常排队，但不再回复「已排队」提示（每个运行回合至多一条的提示被静音） |
+| `segments.enabled` | `true` | `qq_send_segments` 分段发送工具开关（0.9.10 起）：`false` = 工具下线（模型不可见，无法调用）；`true` = 工具可用（默认，与 0.9.10 之前行为一致） |
+| `segments.intervalMs` | `0` | 分段消息相邻两段的发送间隔（毫秒，0.9.10 起）：逐条发送之间的间隔营造打字呼吸感；范围 0–3000，超界按边界截断；`qq_send_segments` 工具的 `intervalMs` 参数可按次临时覆盖（同样截断到 0–3000）；`0` = 不等待 |
 | `deferredTimeoutMs` | `600000` | 等待模型回复超时阈值（毫秒，T3/P2 超时补发）：回合超过该时长没有任何模型输出时，向聊天回复一条超时提醒并把回合登记进补发注册表（继续运行、不放弃）；回合完成后向原聊天补发最终文字（带「（超时补发）」前缀，走既有出站分段/t2i 规则），只补最终文字与终态通知——不重放审批/提问卡/文件工具调用/图片；发送明确失败最多尝试 3 次（退避 2s/10s），发送结果不确定（动作超时/非网关错误，消息可能已到达）时保留记录并停止自动重试防重复；注册表逐行 JSONL 落盘 `mediaDir/deferred-delivery.jsonl`（原子写、逐行损坏降级、缺失=全新），插件重启后自动恢复未完结条目的跟踪；`/stop` 只终止当前聊天提交的回合并显式终止该聊天的补发跟踪（其他聊天不受影响）；正常完成（未超时）零注册表写入、零补发。设置页 behavior 组可改，热重启生效；`0`=关闭 |
 | `reasoningEffort` | `''` | QQ 通道思考强度覆盖（T10）：留空（默认）=继承宿主 `agent-default-model` 的 `reasoningEffort`，即 0.9.4 及以前的行为；填 `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` 则本通道创建或恢复的每个会话都使用该值，**只影响 QQ 通道，Web / GUI 会话不受影响**。取值必须是 pi-ai 的档位名——关闭思考写作 `off`（**不是 `none`**：`none` 只是上游 `codebuddy-cli` 在 `canDisableThinking` 模型上的 wire 拼写，宿主层不存在名为 `none` 的档位，填它会被 `resolveReasoningLevel` 抛 `UNSUPPORTED_REASONING_EFFORT`）。`off` 也仅当模型报告可禁用思考时可用，否则同样报错，此时请退到 `low`。宿主的全局默认通常是 `high`，QQ 侧常因等待思考而显得慢，降到 `low` 通常明显更快且质量损失很小。**设置页的下拉框会按当前默认模型实际支持的档位动态收窄**（T17：读宿主 `llm.resolveModelInfo` 的 `reasoning.efforts`），所以换 provider 后选项会跟着变；拿不到该信息时（旧宿主、非推理模型、上游报错）回退为静态八选一（`''` + 宿主七档），绝不因查询失败而少给选项。若已保存的档位当前模型不支持，该值仍会保留并标注「（当前模型不支持）」，不会静默改成别的值。保存后由插件级热重启生效。 |
 | `persona` | `''` | QQ 通道角色设定（T11）：纯文本注入本通道 system prompt **最前段**，用来定语气与说话方式（你是谁、怎么说话、有什么偏好）。留空（默认）=不注入人设层，行为与 0.9.4 完全一致；非空时在平台规则之前加一段「## 角色设定」，并声明与下方规则冲突时以规则为准（人设只调语气，不解除任何安全/平台约束）。**只影响 QQ 通道，Web / GUI 会话不受影响**。上限 20000 字符，首尾空白自动 trim。设置页 behavior 组（多行文本框，14 行）可改，保存后对新回合生效。 |
@@ -225,6 +229,7 @@ WS 连接、图片下载、文件解析都依赖这条网络通路；NapCat 与 
 | `textImageThreshold` | `150` | t2i 卡片阈值：正文长度 ≤ 该值单条发送；> 该值渲染为文字图卡片。渲染失败、PNG 超 `outboundImageMaxBytes` 或 `<=0` 禁用卡片时回退单条纯文本 |
 | `cardFooter` | `dsh` | 卡片页脚品牌（"Powered by <brand>"） |
 | `fontFiles` / `fontFamilies` | `[]` | t2i 字体文件/家族覆盖（Linux 部署必看：需安装 Noto CJK） |
+| `monoFamilies` | `[]` | t2i 渲染器代码文本（代码块/行内 code）优先使用的等宽字体家族名（0.9.10 起）：优先于 `fontFamilies` 与平台默认，中文正文不受影响。Windows 部署常用 `["Cascadia Code", "Consolas"]` |
 | `mediaDir` | `<dsh-home>/media/onebot` | 入站媒体/映射文件目录 |
 | `tempTtlHours` | `6` | 入站临时媒体文件保留时长（小时），到期自动清理 |
 | `inboundImageMaxPx` | `2048` | 入站图片长边上限（px）：超过则等比压缩后交给视觉模型（透明 PNG 保留、GIF 不压）；`<=0` 禁用（旧名 `imageMaxSize` deprecated，本版兼容读取） |
@@ -404,6 +409,16 @@ chat 回退到下一条消息新建会话，不会卡死。损坏（碰撞/恢�
 - 边界随会话 sandbox 策略：`danger-full-access` 无限制、`workspace-write` 限会话工作区、`read-only` 拒绝；无策略服务回落 `safeEditRoot`（默认 `/Users/mario/workspace`）
 - 模型可优先使用此工具（`code-safe-edit` skill 全渠道引导；QQ 平台提示词引导内置 read/edit 惯例，不绑定具体工具名）
 
+## 分段发送（qq_send_segments）
+
+`qq_send_segments` 工具让模型向当前 QQ 会话按顺序发送多条**独立的纯文本气泡**（每段一条单独消息），用于明确需要分条呈现的内容（如分步骤说明、清单）：
+
+- 参数 `segments`：字符串数组，**1–9 段**，每段 **≤500 字**且不能为空；按数组顺序逐条发送；
+- 可选参数 `chat_id`：目标会话（`private:<QQ号>` 或 `group:<群号>`），省略时发当前会话；
+- 不自动分段——普通回复直接输出文本即可（走既有的 t2i 卡片/自动分段路径），仅模型明确需要分条时才用；
+- 呼吸感（0.9.10 起）：相邻两段的发送间隔由插件配置 `segments.intervalMs` 控制（0–3000，默认 `0` = 不等待），工具的可选参数 `intervalMs` 可按次覆盖（同样截断到 0–3000）；插件页开关 `segments.enabled`（默认 `true`）置 `false` 后本工具下线；
+- 主动写操作，受 `actionRatePerMinute` 闸约束。
+
 ## dm / group 访问策略（初始化必选）
 
 私聊（`dmPolicy`）与群聊（`groupPolicy`）各自三选一，选项含义如下：
@@ -440,8 +455,9 @@ chat 回退到下一条消息新建会话，不会卡死。损坏（碰撞/恢�
   | 可选 `fonts-wqy-zenhei` / `fonts-wqy-microhei` | `/usr/share/fonts/truetype/wqy/*.ttc` | CJK 备选（Noto 缺失时） |
   | 可选 `fonts-unifont` | `/usr/share/fonts/opentype/unifont/*.otf` | 最后兜底 |
 
-- **自定义**：`fontFiles` 指定额外字体文件（重启生效）；`fontFamilies` 指定优先使用的家族名。
+- **自定义**：`fontFiles` 指定额外字体文件（重启生效）；`fontFamilies` 指定优先使用的家族名；`monoFamilies` 单独指定代码文本优先使用的等宽家族名（优先于 `fontFamilies` 与平台默认）。
   渲染器带墨水自检——缺字体的家族会被自动剔除并回退，不会静默出豆腐块卡片。
+- **Windows 中文自动候选**：Windows 上无需配置 `fontFiles`——渲染器自动加载系统字体并按平台候选链兜底：中文正文依次尝试 微软雅黑（Microsoft YaHei / YaHei UI）、宋体（SimSun）、黑体（SimHei）、等线（DengXian）、楷体（KaiTi）、仿宋（FangSong）；等宽/代码依次尝试 Consolas、Cascadia Code、Cascadia Mono、Courier New（可用 `monoFamilies` 把 Cascadia Code 等提到最前）。macOS 同理（Hiragino Sans GB / Songti SC 等自动候选）；Linux 仍建议安装 Noto CJK 并按需配 `fontFiles`。
 
 ## 权限与数据
 

@@ -332,22 +332,31 @@ function isPrivateIp(address: string): boolean {
   return isPrivateIpv4(address)
 }
 
-/** Private/loopback/link-local ranges for IPv4 literals. */
+/** Private/loopback/link-local/reserved ranges for IPv4 literals. */
 function isPrivateIpv4(address: string): boolean {
   const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(address)
   if (match === null) return false
   const first = Number(match[1])
   const second = Number(match[2])
+  const third = Number(match[3])
+  // 除 RFC1918/回环/链路本地外，还拦 CGNAT（100.64/10，运营商级 NAT 后面可能藏着内网）、
+  // benchmark（198.18/15）、192.0.0.0/24 与 TEST-NET-1（192.0.2.0/24）、240/4 保留段与广播。
+  // 这些都是「公网 IP 字面量但不该被下载目标」的地址，放行等于绕过 SSRF 围栏。
   return first === 0 || first === 10 || first === 127 ||
     (first === 172 && second >= 16 && second <= 31) ||
     (first === 192 && second === 168) ||
-    (first === 169 && second === 254)
+    (first === 169 && second === 254) ||
+    (first === 100 && second >= 64 && second <= 127) ||
+    (first === 198 && (second === 18 || second === 19)) ||
+    (first === 192 && second === 0 && (third === 0 || third === 2)) ||
+    first >= 240
 }
 
-/** Private/loopback/link-local ranges for IPv6 literals (no brackets). */
+/** Private/loopback/link-local/reserved ranges for IPv6 literals (no brackets). */
 function isPrivateIpv6(address: string): boolean {
   const lower = address.toLowerCase()
-  if (lower === '::' || lower === '::1') return true
+  // 64:ff9b::/32 涵盖 well-known /96 与 RFC 8215 的本地 NAT64 前缀：解析后可能落回内网。
+  if (lower === '::' || lower === '::1' || lower.startsWith('64:ff9b:')) return true
   // IPv4-mapped endings (::ffff:0:0/96) are judged by their embedded IPv4:
   // the URL parser spells them in hex (::ffff:7f00:1), DNS in dotted form.
   const dotted = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(lower)

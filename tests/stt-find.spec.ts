@@ -32,8 +32,9 @@ describe.skipIf(process.platform === 'win32')('findCommand (A8 PATH scan, no she
     await expect(findCommand('fake-whisper')).resolves.toBeUndefined()
   })
 
-  // Windows 没有 POSIX 可执行位（chmod 无效），该语义无法在 win32 上构造。2026-10-24 审计。
-  it.skipIf(process.platform === 'win32')('skips a non-executable file and keeps scanning the next dir', async () => {
+  // 外层 describe 已在 win32 上整体跳过（Windows 没有 POSIX 可执行位，chmod 无效），
+  // 这里不再叠一层 skipIf —— 与上游同一写法。
+  it('skips a non-executable file and keeps scanning the next dir', async () => {
     const noExec = mkdtempSync(join(tmpdir(), 'stt-find-noexec-'))
     const exec = mkdtempSync(join(tmpdir(), 'stt-find-exec-'))
     await writeFile(join(noExec, 'fake-whisper'), 'plain data, no x bit')

@@ -1669,4 +1669,16 @@ docker restart 会丢登录态（需重新扫码/QCE 登录）
   - `DEVLOG` / `README` 双语 / `tests/README` 取本地描述，并保留上游条目（见上方「上游 0.9.7 线」小节）。
 - **前置三项（同日，各自独立提交）**：引用展开对齐上游契约、去掉跨消息 memo（`3741db5`）；记忆新增 `memoryEmbeddingDim` / `memoryEmbeddingQueryPrefix` / `memoryRecallMinScore` 与 base64(float32) 落盘（`9267643`）；写入/删除路径合并为一次全量读（`b90ac69`）。
 - **验证**：`tsc -p tsconfig.json --noEmit` exit 0；全量 `52 spec / 888 passed / 6 skipped`（合并前 51 spec / 878 passed）。`bridge.spec.ts`「只引用机器人」用例的顺序期望按本地 T19 口径（`command → quote → media → dispatch`）。
-- **未做**：`upstream/main` 仍领先 4 个——`83a6055`（dsh 0.2.2 `ModelSelectionRef` 移除）加 3 个发版提交。本机宿主 0.2.1 的 `Agent` 没有 `model` 子 API、`installModelSelection` 仍是双参，「双向兼容」需要运行时探测且无法在 0.2.1 上验证 0.2.2 分支，等宿主升级后再合。
+- **上游台账**：`upstream/main` 仍领先 **5** 个，构成是上游线性链的后缀（`git log --reverse --oneline 6180309..upstream/main`）：
+
+  | 提交 | 内容 | 状态 |
+  |---|---|---|
+  | `83a6055` | 适配 dsh 0.2.2，移除 `ModelSelectionRef` | ❌ 真实缺口，暂不合（见下） |
+  | `4ccb00b` | 发版 0.9.8 | ⏭ 版本号，跳过 |
+  | `5145a11` | Windows `findCommand` 只找 `.com/.exe` | ✅ 内容已吸收（`4e11a63`） |
+  | `9de0c5e` | 发版 0.9.9 | ⏭ 版本号，跳过 |
+  | `26ca544` | 拒绝 CGNAT / 保留段 / NAT64 | ✅ 内容已吸收（`99791b2`） |
+
+  两项「已吸收」不是口头判断，是用**上游原始测试**交叉验证的：把 `5145a11:tests/stt-find.spec.ts`、`26ca544:tests/media-guard.spec.ts` 从 git 取出直接跑本地 `src`——前者 7 条全过（3 条 POSIX 在 win32 按设计跳过），后者的 SSRF 组全过，仅 `resolveContainedPath fence` 4 条因上游那版没处理 Windows 8.3 短路径（`DONGZH~1` vs `dongzheng`）失败，而本地版本已在 `tests/media-guard.spec.ts:181` 起了守卫。两边 `src` 的 `findCommand` / `isPrivateIpv4` / `isPrivateIpv6` 逐字符一致，差异只有注释语言与本地额外能力。
+- **为什么 `behind` 不能压到 3**：`git rev-list --count HEAD..upstream/main` 的集合永远是上游线性链的**后缀**（祖先关系前缀封闭）。要让 `5145a11` / `26ca544` 成为祖先，必然连带 `83a6055` / `4ccb00b` / `9de0c5e` 一起成为祖先；可达值只有 0/1/2/3/4/5 且分别对应「从链尾往前数几个」。若真要 `behind=0`，只能用 `git merge -s ours upstream/main`（记录祖先、保留我方树），代价是 git 从此不再提示 0.2.2 的差异——所以本台账是唯一可靠的进度信号。
+- **未做**：`83a6055` 暂不合——本机宿主 0.2.1 的 `Agent` 没有 `model` 子 API、`installModelSelection` 仍是双参，「双向兼容」需要运行时探测且无法在 0.2.1 上验证 0.2.2 分支，等宿主升级后再合。
